@@ -139,13 +139,13 @@ fn mutate_raw(
 
 fn accounts_mut(root: &mut Value) -> Result<&mut Vec<Value>, ConfigError> {
     root.as_mapping_mut()
-        .and_then(|map| map.get_mut(&key("accounts")))
+        .and_then(|map| map.get_mut(key("accounts")))
         .and_then(Value::as_sequence_mut)
         .ok_or_else(|| ConfigError::Edit("accounts 必须是列表".to_owned()))
 }
 
 fn account_name_of(value: &Value) -> Option<&str> {
-    value.as_mapping()?.get(&key("name"))?.as_str()
+    value.as_mapping()?.get(key("name"))?.as_str()
 }
 
 fn default_tasks() -> Value {
