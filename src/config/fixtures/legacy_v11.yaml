@@ -1,0 +1,20 @@
+enable: true
+version: 11
+account:
+  cookie: "account_id=100011; cookie_token=fixture-v11-cookie"
+  stoken: "fixture-v11-stoken"
+mihoyobbs:
+  enable: false
+games:
+  cn:
+    enable: true
+    retries: 3
+    genshin:
+      checkin: true
+      black_list: ["999999"]
+  os:
+    enable: false
+cloud_games:
+  genshin:
+    enable: true
+    token: "fixture-cloud-token"

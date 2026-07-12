@@ -56,6 +56,22 @@ pub enum CredentialError {
     MissingStoken,
     MissingUid,
     MidRequired,
+    MissingLoginTicket,
+    MissingCookieToken,
+    LoginTicketExpired {
+        retcode: i64,
+    },
+    StokenExpired {
+        retcode: i64,
+    },
+    RefreshAlreadyAttempted,
+    HttpStatus(u16),
+    Network,
+    InvalidCredentialHeader,
+    InvalidResponse {
+        operation: &'static str,
+        field: &'static str,
+    },
 }
 
 impl fmt::Display for CredentialError {
@@ -66,6 +82,21 @@ impl fmt::Display for CredentialError {
             Self::MissingStoken => formatter.write_str("缺少 SToken"),
             Self::MissingUid => formatter.write_str("Cookie 中缺少 UID"),
             Self::MidRequired => formatter.write_str("v2 SToken 必须同时提供 MID"),
+            Self::MissingLoginTicket => formatter.write_str("Cookie 中缺少 login_ticket"),
+            Self::MissingCookieToken => formatter.write_str("Cookie 中缺少 cookie_token"),
+            Self::LoginTicketExpired { retcode } => {
+                write!(formatter, "login_ticket 已失效（{retcode}）")
+            }
+            Self::StokenExpired { retcode } => {
+                write!(formatter, "SToken 已失效（{retcode}）")
+            }
+            Self::RefreshAlreadyAttempted => formatter.write_str("本轮凭据刷新已经尝试过"),
+            Self::HttpStatus(status) => write!(formatter, "认证接口返回 HTTP {status}"),
+            Self::Network => formatter.write_str("认证接口网络请求失败"),
+            Self::InvalidCredentialHeader => formatter.write_str("认证 Cookie 无法构造请求头"),
+            Self::InvalidResponse { operation, field } => {
+                write!(formatter, "认证接口 {operation} 响应缺少字段 {field}")
+            }
         }
     }
 }
@@ -85,12 +116,24 @@ impl From<CookieError> for CredentialError {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq)]
 pub struct Credentials {
     pub cookie: SecretString,
     pub stoken: SecretString,
     pub stuid: Option<String>,
     pub mid: Option<String>,
+}
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Credentials")
+            .field("cookie", &REDACTED)
+            .field("stoken", &REDACTED)
+            .field("stuid", &REDACTED)
+            .field("mid", &REDACTED)
+            .finish()
+    }
 }
 
 impl Credentials {
@@ -160,10 +203,14 @@ mod tests {
         assert_eq!(format!("{secret}"), "[REDACTED]");
         assert_eq!(format!("{secret:?}"), "SecretString([REDACTED])");
 
-        let credentials = Credentials::new("cookie=secret", "stoken-secret");
+        let mut credentials = Credentials::new("cookie=secret", "stoken-secret");
+        credentials.stuid = Some("123456789".to_owned());
+        credentials.mid = Some("sensitive-mid-value".to_owned());
         let debug = format!("{credentials:?}");
         assert!(!debug.contains("cookie=secret"));
         assert!(!debug.contains("stoken-secret"));
+        assert!(!debug.contains("123456789"));
+        assert!(!debug.contains("sensitive-mid-value"));
     }
 
     #[test]

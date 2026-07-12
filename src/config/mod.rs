@@ -11,6 +11,8 @@ use url::Url;
 
 use crate::auth::SecretString;
 
+mod legacy;
+
 pub const CURRENT_CONFIG_VERSION: u64 = 1;
 pub const EXAMPLE_CONFIG: &str = include_str!("../../config/config.example.yaml");
 
@@ -34,8 +36,6 @@ pub enum ConfigError {
     MissingEnvironmentVariable(String),
     #[error("环境变量占位符无效: {0}")]
     InvalidEnvironmentPlaceholder(String),
-    #[error("暂不支持旧版 Python 配置 version {0}，请先使用旧项目升级或等待迁移器实现")]
-    UnsupportedLegacy(u64),
     #[error("不支持配置版本 {0}，当前仅支持 version {CURRENT_CONFIG_VERSION}")]
     UnsupportedVersion(u64),
     #[error("配置校验失败:\n- {}", .0.join("\n- "))]
@@ -194,17 +194,41 @@ pub enum NotificationProvider {
 }
 
 pub fn load(path: &Path) -> Result<LoadedConfig, ConfigError> {
+    load_with_mode(path, false)
+}
+
+pub fn migrate_config(path: &Path) -> Result<LoadedConfig, ConfigError> {
+    load_with_mode(path, true)
+}
+
+fn load_with_mode(path: &Path, migration_requested: bool) -> Result<LoadedConfig, ConfigError> {
     let source = fs::read_to_string(path).map_err(|source| ConfigError::Read {
         path: path.to_path_buf(),
         source,
     })?;
     let mut value: Value = serde_yaml_ng::from_str(&source)?;
-    reject_unsupported_version(&value)?;
     expand_environment(&mut value, &|name| env::var(name).ok())?;
+    if let Some(11..=15) = config_version(&value) {
+        let account_name = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("legacy");
+        let loaded = legacy::migrate_value(&value, account_name)?;
+        validate(&loaded.config)?;
+        return Ok(loaded);
+    }
+    reject_unsupported_version(&value)?;
     let warnings = collect_unknown_field_warnings(&value);
     let config: Config = serde_yaml_ng::from_value(value)?;
     validate(&config)?;
-    Ok(LoadedConfig { config, warnings })
+    let mut loaded = LoadedConfig { config, warnings };
+    if migration_requested {
+        loaded
+            .warnings
+            .push("配置已经是当前 version 1，无需迁移".to_owned());
+    }
+    Ok(loaded)
 }
 
 pub fn validate(config: &Config) -> Result<(), ConfigError> {
@@ -314,16 +338,18 @@ fn validate_provider(provider: &NotificationProvider, index: usize, errors: &mut
 }
 
 fn reject_unsupported_version(value: &Value) -> Result<(), ConfigError> {
-    let version = value
-        .as_mapping()
-        .and_then(|map| map.get(&Value::String("version".to_owned())))
-        .and_then(Value::as_u64);
-    match version {
+    match config_version(value) {
         Some(CURRENT_CONFIG_VERSION) => Ok(()),
-        Some(legacy @ 11..=15) => Err(ConfigError::UnsupportedLegacy(legacy)),
         Some(other) => Err(ConfigError::UnsupportedVersion(other)),
         None => Ok(()),
     }
+}
+
+fn config_version(value: &Value) -> Option<u64> {
+    value
+        .as_mapping()
+        .and_then(|map| map.get(&Value::String("version".to_owned())))
+        .and_then(Value::as_u64)
 }
 
 fn expand_environment(
@@ -599,9 +625,9 @@ accounts:
     }
 
     #[test]
-    fn legacy_versions_are_not_silently_accepted() {
-        let source = MINIMAL.replace("version: 1", "version: 15");
-        assert!(matches!(parse(&source), Err(ConfigError::UnsupportedLegacy(15))));
+    fn unknown_versions_are_not_silently_accepted() {
+        let source = MINIMAL.replace("version: 1", "version: 99");
+        assert!(matches!(parse(&source), Err(ConfigError::UnsupportedVersion(99))));
     }
 
     #[test]
@@ -618,5 +644,15 @@ accounts:
         let debug = format!("{:?}", loaded.config);
         assert!(!debug.contains("cookie_token=secret"));
         assert!(!debug.contains("v2_secret"));
+    }
+
+    #[test]
+    fn public_migrate_api_uses_file_name_for_legacy_account() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fixture-account.yaml");
+        std::fs::write(&path, include_str!("fixtures/legacy_v15.yaml")).unwrap();
+        let migrated = migrate_config(&path).unwrap();
+        assert_eq!(migrated.config.accounts[0].name, "fixture-account");
+        assert_eq!(migrated.config.version, CURRENT_CONFIG_VERSION);
     }
 }

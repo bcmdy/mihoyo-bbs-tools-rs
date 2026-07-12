@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use reqwest::{Method, Proxy, StatusCode, Url};
-use serde::de::DeserializeOwned;
+use reqwest::{Method, Proxy, StatusCode, Url, header::HeaderMap};
+use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 const DEFAULT_USER_AGENT: &str = concat!("mihoyo-bbs-tools-rs/", env!("CARGO_PKG_VERSION"));
@@ -108,11 +108,33 @@ impl HttpClient {
     where
         T: DeserializeOwned,
     {
+        self.get_json_with(url, HeaderMap::new(), &[]).await
+    }
+
+    pub async fn get_json_with<T>(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+        query: &[(&str, String)],
+    ) -> Result<T, HttpError>
+    where
+        T: DeserializeOwned,
+    {
         let attempts = self.retry.attempts.max(1);
         for attempt in 0..attempts {
-            match self.inner.request(Method::GET, url.clone()).send().await {
+            match self
+                .inner
+                .request(Method::GET, url.clone())
+                .headers(headers.clone())
+                .query(query)
+                .send()
+                .await
+            {
                 Ok(response) if response.status().is_success() => {
-                    return response.json().await.map_err(|error| HttpError::Decode(error.to_string()));
+                    return response
+                        .json()
+                        .await
+                        .map_err(|error| HttpError::Decode(error.to_string()));
                 }
                 Ok(response) if should_retry_status(response.status()) && attempt + 1 < attempts => {}
                 Ok(response) => return Err(HttpError::Status(response.status())),
@@ -123,6 +145,35 @@ impl HttpClient {
             tokio::time::sleep(self.retry.base_delay * (attempt as u32 + 1)).await;
         }
         Err(HttpError::Connect("重试次数已耗尽".to_owned()))
+    }
+
+    /// 对可能产生外部副作用的 POST 只发送一次，由业务层决定是否可以再次尝试。
+    pub async fn post_json_once<B, T>(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+        body: &B,
+    ) -> Result<T, HttpError>
+    where
+        B: Serialize + ?Sized,
+        T: DeserializeOwned,
+    {
+        match self
+            .inner
+            .request(Method::POST, url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => response
+                .json()
+                .await
+                .map_err(|error| HttpError::Decode(error.to_string())),
+            Ok(response) => Err(HttpError::Status(response.status())),
+            Err(error) if error.is_timeout() => Err(HttpError::Timeout),
+            Err(error) => Err(HttpError::Connect(error.to_string())),
+        }
     }
 }
 

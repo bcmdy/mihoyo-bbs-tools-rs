@@ -18,6 +18,11 @@ pub enum Command {
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
     },
+    /// 执行国内游戏签到
+    Checkin {
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+    },
     /// 输出脱敏的新版配置示例
     PrintExampleConfig,
 }

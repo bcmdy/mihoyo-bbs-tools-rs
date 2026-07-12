@@ -1,0 +1,44 @@
+enable: true
+version: 15
+push: legacy-push.ini
+account:
+  cookie: "account_id=100001; cookie_token=fixture-cookie-token"
+  stuid: "100001"
+  stoken: "fixture-stoken"
+  mid: ""
+device:
+  name: "Fixture Device"
+  model: "Fixture Model"
+  id: "fixture-device-id"
+  fp: ""
+mihoyobbs:
+  enable: true
+  checkin: true
+  checkin_list: [5, 2]
+  read: true
+  like: true
+  cancel_like: true
+  share: true
+games:
+  cn:
+    enable: true
+    retries: 4
+    genshin:
+      checkin: true
+      black_list: []
+    honkai_sr:
+      checkin: true
+      black_list: []
+  os:
+    enable: false
+    cookie: ""
+cloud_games:
+  cn:
+    enable: false
+  os:
+    enable: false
+competition:
+  enable: false
+web_activity:
+  enable: false
+  activities: []

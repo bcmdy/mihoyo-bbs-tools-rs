@@ -1,13 +1,19 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use mihoyo_bbs_tools::{cli::{Cli, Command}, config, error::AppError};
+use mihoyo_bbs_tools::{
+    cli::{Cli, Command},
+    config,
+    error::AppError,
+    service,
+};
 use tracing_subscriber::EnvFilter;
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     init_tracing();
-    match run(Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
+    match run(Cli::parse()).await {
+        Ok(code) => ExitCode::from(code),
         Err(error) => {
             tracing::error!(%error);
             ExitCode::from(error.exit_code())
@@ -15,7 +21,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> Result<(), AppError> {
+async fn run(cli: Cli) -> Result<u8, AppError> {
     match cli.command {
         Command::Version => println!("{}", mihoyo_bbs_tools::cli::version_text()),
         Command::ValidateConfig { config: path } => {
@@ -25,9 +31,18 @@ fn run(cli: Cli) -> Result<(), AppError> {
             }
             println!("配置有效：{} 个账号", loaded.config.accounts.len());
         }
+        Command::Checkin { config: path } => {
+            let loaded = config::load(&path)?;
+            for warning in &loaded.warnings {
+                tracing::warn!("{warning}");
+            }
+            let report = service::run_china_checkin(&loaded.config).await;
+            print!("{}", report.render_text());
+            return Ok(report.exit_code());
+        }
         Command::PrintExampleConfig => print!("{}", config::EXAMPLE_CONFIG),
     }
-    Ok(())
+    Ok(0)
 }
 
 fn init_tracing() {
