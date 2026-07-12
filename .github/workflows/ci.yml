@@ -1,0 +1,88 @@
+name: Rust CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "codex/**"
+    paths:
+      - "**/*.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "tests/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "tests/**"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: 格式、静态检查与测试
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: 生成首次依赖锁文件
+        if: ${{ hashFiles('Cargo.lock') == '' }}
+        run: cargo generate-lockfile
+
+      - name: 检查格式
+        run: cargo fmt --all -- --check
+
+      - name: Clippy 静态检查
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: 执行测试
+        run: cargo test --all-features --locked
+
+  build:
+    name: 编译 ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: 生成首次依赖锁文件
+        if: ${{ hashFiles('Cargo.lock') == '' }}
+        run: cargo generate-lockfile
+
+      - name: 编译 Release
+        run: cargo build --release --locked

@@ -1,0 +1,35 @@
+version: 1
+
+runtime:
+  timezone: Asia/Shanghai
+  request_timeout_seconds: 30
+  retry_count: 3
+  random_delay_seconds: 10
+  log_level: info
+
+captcha:
+  endpoint: null
+
+accounts:
+  - name: example
+    enabled: true
+    credentials:
+      cookie: "${MIHOYO_COOKIE}"
+      stoken: "${MIHOYO_STOKEN}"
+    proxy:
+      url: null
+    tasks:
+      china_game_checkin: true
+      hoyolab_checkin: false
+      bbs: true
+      china_cloud_game: false
+      overseas_cloud_game: false
+      web_activity: false
+    games:
+      - genshin
+      - star_rail
+      - zenless_zone_zero
+
+notifications:
+  enabled: false
+  providers: []

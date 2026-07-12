@@ -1,0 +1,108 @@
+# 配置说明
+
+MihoyoBBSTools RS 使用 YAML 配置，并支持通过 `${ENV_NAME}` 从环境变量或 GitHub Secrets 注入敏感值。配置加载后会先转换为统一的内部模型，业务模块不得直接依赖旧版配置结构。
+
+> 当前项目仍在分阶段实现配置功能。本文档描述目标格式和兼容约束，具体可用字段以对应版本的程序校验结果为准。
+
+## 新版配置示例
+
+```yaml
+version: 1
+
+runtime:
+  timezone: Asia/Shanghai
+  request_timeout_seconds: 30
+  retry_count: 3
+  random_delay_seconds: 10
+  log_level: info
+
+captcha:
+  endpoint: null
+
+accounts:
+  - name: example
+    enabled: true
+
+    credentials:
+      cookie: "${MIHOYO_COOKIE}"
+      stoken: "${MIHOYO_STOKEN}"
+
+    proxy:
+      url: null
+
+    tasks:
+      china_game_checkin: true
+      hoyolab_checkin: false
+      bbs: true
+      china_cloud_game: false
+      overseas_cloud_game: false
+      web_activity: false
+
+    games:
+      - genshin
+      - star_rail
+      - zenless_zone_zero
+
+notifications:
+  enabled: true
+  providers:
+    - type: telegram
+      bot_token: "${TELEGRAM_BOT_TOKEN}"
+      chat_id: "${TELEGRAM_CHAT_ID}"
+```
+
+## 环境变量替换
+
+- `${ENV_NAME}` 表示读取名为 `ENV_NAME` 的环境变量。
+- 环境变量不存在时，配置加载必须返回明确错误。
+- 错误信息可以包含环境变量名称，但不能包含变量值。
+- 示例配置和仓库文档只能提交占位符，不能提交真实 Secret。
+- 首版不应隐式提供敏感字段默认值。
+
+在 GitHub Actions 中，应将 GitHub Secrets 映射为同名环境变量，而不是动态生成并上传包含明文凭据的配置 Artifact。
+
+## 配置校验
+
+`mihoyo-bbs-tools validate-config` 只读取和校验配置，不访问远程接口。校验至少包括：
+
+- `version` 是程序支持的配置版本。
+- 账号名称非空且在配置中唯一。
+- 启用的任务具备所需凭据。
+- 时区、日志级别、代理 URL 和验证码服务 URL 合法。
+- 超时、重试次数和随机延迟处于安全范围。
+- 游戏名称和推送提供商类型可识别。
+- 环境变量占位符均可解析。
+
+未知的普通字段应产生警告，可能影响认证、任务选择或网络安全的未知值必须报错。校验失败时进程退出码为 `2`。
+
+## 多账号
+
+每个账号拥有独立的名称、启用状态、凭据、代理、任务开关和游戏列表。不同账号的 HTTP 客户端和认证上下文必须隔离，不能复用另一个账号的 Cookie 或代理认证信息。
+
+单个账号失败不应阻止其他安全任务执行，但遇到验证码时应停止该账号的高风险重复请求。全部任务结束后，由统一报告聚合每个账号的成功、已完成、跳过、失败和验证码状态。
+
+## 代理
+
+账号代理通过 `proxy.url` 配置，目标支持 HTTP、HTTPS 和 SOCKS 代理。包含用户名和密码的代理 URL 属于敏感信息，不能出现在日志或推送中。
+
+未配置代理时使用直接连接。代理连接失败应分类为网络或代理故障，对应退出码 `5`。
+
+## 旧版配置兼容
+
+兼容层负责读取经过支持的 Python 版单账号和多账号 YAML，并转换为统一内部模型。兼容过程遵循以下规则：
+
+- 缺失字段使用经过文档确认的安全默认值。
+- 无法迁移的字段产生明确警告。
+- 旧格式解析完成后，业务代码只使用新版内部模型。
+- `migrate-config` 输出新版 YAML，输出内容不得包含额外日志或未脱敏 Secret。
+- 转换后的配置再次读取时应得到等价内部结果。
+
+兼容测试使用从旧项目抽取并人工脱敏的 Fixture，不得提交真实账号配置或历史日志。
+
+## 配置文件保护
+
+真实配置文件应加入 `.gitignore`，并限制为仅运行用户可读。不要把真实配置复制进 Docker 镜像，也不要将其作为 GitHub Actions Artifact 上传。更完整的要求见 [安全说明](security.md)。
+
+## 非官方声明
+
+MihoyoBBSTools RS 是社区维护的非官方开源项目，与米哈游、HoYoverse 及其关联公司无隶属、授权、认可或合作关系；相关商标归各自权利人所有。

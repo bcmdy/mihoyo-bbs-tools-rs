@@ -1,0 +1,100 @@
+name: 发布
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    name: 构建 Linux x86_64
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: 生成首次依赖锁文件
+        if: ${{ hashFiles('Cargo.lock') == '' }}
+        run: cargo generate-lockfile
+
+      - name: 编译 Release
+        run: cargo build --release --locked
+
+      - name: 打包并生成校验文件
+        run: |
+          mkdir -p dist
+          tar -C target/release -czf dist/mihoyo-bbs-tools-linux-x86_64.tar.gz mihoyo-bbs-tools
+          cd dist
+          sha256sum mihoyo-bbs-tools-linux-x86_64.tar.gz > mihoyo-bbs-tools-linux-x86_64.tar.gz.sha256
+
+      - name: 上传 Linux 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: mihoyo-bbs-tools-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  build-windows:
+    name: 构建 Windows x86_64
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: 生成首次依赖锁文件
+        if: ${{ hashFiles('Cargo.lock') == '' }}
+        run: cargo generate-lockfile
+
+      - name: 编译 Release
+        run: cargo build --release --locked
+
+      - name: 打包并生成校验文件
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Compress-Archive -LiteralPath target/release/mihoyo-bbs-tools.exe -DestinationPath dist/mihoyo-bbs-tools-windows-x86_64.zip
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath dist/mihoyo-bbs-tools-windows-x86_64.zip).Hash.ToLowerInvariant()
+          "$hash  mihoyo-bbs-tools-windows-x86_64.zip" | Set-Content -Encoding ascii dist/mihoyo-bbs-tools-windows-x86_64.zip.sha256
+
+      - name: 上传 Windows 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: mihoyo-bbs-tools-windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: 创建 GitHub Release
+    needs:
+      - build-linux
+      - build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 发布标签产物
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/* --verify-tag --generate-notes --title "MihoyoBBSTools RS ${{ github.ref_name }}"
