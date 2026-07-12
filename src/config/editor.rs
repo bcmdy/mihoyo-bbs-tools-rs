@@ -7,9 +7,14 @@ use std::{
 
 use serde_yaml_ng::{Mapping, Value};
 
-use crate::{auth::CookieJar, http::HttpClient};
+use crate::auth::CookieJar;
+#[cfg(not(test))]
+use crate::http::HttpClient;
+#[cfg(not(test))]
 use reqwest::header::{COOKIE, HeaderMap, HeaderValue, USER_AGENT};
+#[cfg(not(test))]
 use serde::Deserialize;
+#[cfg(not(test))]
 use url::Url;
 
 use super::{
@@ -130,15 +135,18 @@ pub fn add_account(path: &Path, name: Option<&str>, cookie: &str) -> Result<Stri
     Ok(account_name)
 }
 
+#[cfg(not(test))]
 #[derive(Deserialize)]
 struct ProfileEnvelope {
     retcode: i64,
     data: Option<ProfileData>,
 }
+#[cfg(not(test))]
 #[derive(Deserialize)]
 struct ProfileData {
     user_info: ProfileInfo,
 }
+#[cfg(not(test))]
 #[derive(Deserialize)]
 struct ProfileInfo {
     nickname: String,

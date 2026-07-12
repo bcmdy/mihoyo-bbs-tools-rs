@@ -232,13 +232,20 @@ async fn run_game(
                 )
                 .await
             {
-                Ok(SignState::Success) => report.push(record(
-                    account,
-                    "国内游戏签到",
-                    &subject,
-                    TaskOutcome::Success,
-                    "签到成功",
-                )),
+                Ok(SignState::Success) => {
+                    confirm_china_sign(
+                        report,
+                        account,
+                        &subject,
+                        client,
+                        signer,
+                        game,
+                        &role.region,
+                        &role.uid,
+                        false,
+                    )
+                    .await
+                }
                 Ok(SignState::AlreadySigned) => report.push(record(
                     account,
                     "国内游戏签到",
@@ -394,13 +401,12 @@ async fn solve_captcha_and_retry(
         )
         .await
     {
-        Ok(SignState::Success) => report.push(record(
-            account,
-            "国内游戏签到",
-            subject,
-            TaskOutcome::Success,
-            "验证码通过，签到成功",
-        )),
+        Ok(SignState::Success) => {
+            confirm_china_sign(
+                report, account, subject, client, signer, game, region, uid, true,
+            )
+            .await
+        }
         Ok(SignState::AlreadySigned) => report.push(record(
             account,
             "国内游戏签到",
@@ -416,6 +422,56 @@ async fn solve_captcha_and_retry(
             "验证码校验后仍被要求验证，已停止重试",
         )),
         Err(error) => push_error(report, account, subject, error),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn confirm_china_sign(
+    report: &mut RunReport,
+    account: &str,
+    subject: &str,
+    client: &ChinaCheckinClient,
+    signer: &mut DsSigner<SystemClock, ThreadRandom>,
+    game: ChinaGame,
+    region: &str,
+    uid: &str,
+    captcha: bool,
+) {
+    match client
+        .status(game, region, uid, &signer.sign_web().to_string())
+        .await
+    {
+        Ok(CheckinState::AlreadySigned { total_sign_day }) => report.push(record(
+            account,
+            "国内游戏签到",
+            subject,
+            TaskOutcome::Success,
+            &format!(
+                "{}签到成功，已再次确认今日已签到，累计 {total_sign_day} 天",
+                if captcha { "验证码通过后" } else { "" }
+            ),
+        )),
+        Ok(CheckinState::Pending { .. }) => report.push(record(
+            account,
+            "国内游戏签到",
+            subject,
+            TaskOutcome::NetworkFailed,
+            "签到接口返回成功，但再次查询仍显示未签到",
+        )),
+        Ok(CheckinState::FirstBind) => report.push(record(
+            account,
+            "国内游戏签到",
+            subject,
+            TaskOutcome::NetworkFailed,
+            "签到接口返回成功，但再次查询显示需要首次手动签到",
+        )),
+        Err(error) => report.push(record(
+            account,
+            "国内游戏签到",
+            subject,
+            TaskOutcome::NetworkFailed,
+            &format!("签到接口返回成功，但再次确认失败：{error}"),
+        )),
     }
 }
 
