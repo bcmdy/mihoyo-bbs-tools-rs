@@ -173,13 +173,12 @@ fn fetch_nickname(cookie: &str, uid: &str) -> Result<String, ConfigError> {
         .and_then(|v| v.error_for_status())
         .and_then(|v| v.json())
         .map_err(|_| ConfigError::Edit("无法获取米游社昵称，请检查 Cookie 和网络".to_owned()))?;
+    let retcode = response.retcode;
     let nickname = response
         .data
         .map(|v| v.user_info.nickname)
         .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| {
-            ConfigError::Edit(format!("米游社昵称查询失败（代码 {}）", response.retcode))
-        })?;
+        .ok_or_else(|| ConfigError::Edit(format!("米游社昵称查询失败（代码 {retcode}）")))?;
     Ok(nickname)
 }
 
