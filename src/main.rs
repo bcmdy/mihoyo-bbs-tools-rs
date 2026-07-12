@@ -9,7 +9,7 @@ use mihoyo_bbs_tools::{
     service,
 };
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::prelude::*;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -146,29 +146,24 @@ fn init_tracing(
         .map(|r| format!("{:?}", r.log_level).to_lowercase())
         .unwrap_or_else(|| "info".into());
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
-    let console = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .without_time();
     if let Some(logging) = runtime.map(|r| &r.logging).filter(|v| v.enabled) {
         if std::fs::create_dir_all(&logging.directory).is_ok() {
             let appender =
                 tracing_appender::rolling::daily(&logging.directory, &logging.file_prefix);
             let (writer, guard) = tracing_appender::non_blocking(appender);
-            let file = tracing_subscriber::fmt::layer()
-                .with_ansi(false)
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
                 .with_target(false)
-                .with_writer(writer);
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(console)
-                .with(file)
+                .with_ansi(false)
+                .with_writer(std::io::stdout.and(writer))
                 .init();
             return Some(guard);
         }
     }
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(console)
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .without_time()
         .init();
     None
 }
