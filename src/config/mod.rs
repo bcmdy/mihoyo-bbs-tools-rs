@@ -840,7 +840,10 @@ accounts:
     fn warns_about_unknown_fields_at_nested_paths() {
         let source = MINIMAL
             .replace("    tasks:", "    unexpected: true\n    tasks:")
-            .replace("    unexpected: true", "    unexpected: true\n    device:\n      typo: true")
+            .replace(
+                "    unexpected: true",
+                "    unexpected: true\n    device:\n      typo: true",
+            )
             .replace("      bbs: true", "      bbs: true\n      typo: true");
         let loaded = parse(&source).unwrap();
         assert_eq!(

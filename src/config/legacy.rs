@@ -260,10 +260,12 @@ mod tests {
         assert_eq!(account.device.fp, "fixture-device-fp");
         assert_eq!(migrated.config.runtime.retry_count, 4);
         assert!(!format!("{:?}", migrated.config).contains("fixture-cookie-token"));
-        assert!(!migrated
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("device")));
+        assert!(
+            !migrated
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("device"))
+        );
     }
 
     #[test]

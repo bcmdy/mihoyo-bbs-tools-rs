@@ -54,11 +54,8 @@ pub async fn run_china_checkin(config: &Config) -> RunReport {
 
         let cookie = account.credentials.cookie.clone();
         let device_id = resolve_device_id(&account.device.id, cookie.expose_secret());
-        let client = ChinaCheckinClient::new(
-            http,
-            SecretString::new(cookie.expose_secret()),
-            device_id,
-        );
+        let client =
+            ChinaCheckinClient::new(http, SecretString::new(cookie.expose_secret()), device_id);
         let mut signer = DsSigner::new(SystemClock, ThreadRandom);
 
         for game in account.games.iter().filter_map(config_game_to_china) {

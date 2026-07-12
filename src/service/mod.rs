@@ -30,11 +30,8 @@ mod tests {
 
     #[test]
     fn empty_device_id_is_stably_derived_from_cookie() {
-        let expected = Uuid::new_v3(
-            &Uuid::NAMESPACE_URL,
-            b"account_id=123; cookie_token=secret",
-        )
-        .to_string();
+        let expected =
+            Uuid::new_v3(&Uuid::NAMESPACE_URL, b"account_id=123; cookie_token=secret").to_string();
         assert_eq!(
             resolve_device_id("", "account_id=123; cookie_token=secret"),
             expected
