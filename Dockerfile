@@ -24,4 +24,4 @@ COPY --from=builder /app/target/release/mihoyo-bbs-tools /usr/local/bin/mihoyo-b
 USER app
 
 ENTRYPOINT ["mihoyo-bbs-tools"]
-CMD ["version"]
+CMD ["run"]
