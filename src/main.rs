@@ -9,7 +9,6 @@ use mihoyo_bbs_tools::{
     service,
 };
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -155,7 +154,7 @@ fn init_tracing(
                 .with_env_filter(filter)
                 .with_target(false)
                 .with_ansi(false)
-                .with_writer(std::io::stdout.and(writer))
+                .with_writer(writer)
                 .init();
             return Some(guard);
         }
