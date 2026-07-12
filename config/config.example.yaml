@@ -11,10 +11,11 @@ captcha:
   endpoint: null
 
 accounts:
-  - name: example
+  - name: "账号一"
     enabled: true
     credentials:
-      cookie: "${MIHOYO_COOKIE}"
+      # 完整 Cookie 中需包含 stoken；程序会自动提取，无需单独填写。
+      cookie: "${MIHOYO_COOKIE_1}"
     device:
       name: "Xiaomi MI 6"
       model: "Mi 6"
@@ -40,8 +41,101 @@ accounts:
       - star_rail
       - zenless_zone_zero
 
+  # 添加更多账号时复制完整账号块。保持注释可避免未设置的环境变量影响校验。
+  # - name: "账号二"
+  #   enabled: true
+  #   credentials:
+  #     cookie: "${MIHOYO_COOKIE_2}"
+  #   device:
+  #     name: "Xiaomi MI 6"
+  #     model: "Mi 6"
+  #     id: ""
+  #     fp: ""
+  #   proxy:
+  #     url: null
+  #   tasks:
+  #     china_game_checkin: true
+  #     hoyolab_checkin: false
+  #     bbs:
+  #       enabled: true
+  #       sign: true
+  #       read: true
+  #       like: true
+  #       cancel_like: true
+  #       share: true
+  #     china_cloud_game: false
+  #     overseas_cloud_game: false
+  #     web_activity: false
+  #   games:
+  #     - genshin
+  #     - star_rail
+  #     - zenless_zone_zero
+
 notifications:
   enabled: false
   error_only: false
   block_keywords: []
   providers: []
+
+  # 启用通知时，将 providers: [] 改成 providers:，再取消所需渠道的注释。
+  # - type: telegram
+  #   bot_token: "${TELEGRAM_BOT_TOKEN}"
+  #   chat_id: "${TELEGRAM_CHAT_ID}"
+  #   api_url: null
+  # - type: webhook
+  #   url: "${WEBHOOK_URL}"
+  # - type: pushplus
+  #   token: "${PUSHPLUS_TOKEN}"
+  #   topic: null
+  # - type: ftqq
+  #   sendkey: "${FTQQ_SENDKEY}"
+  #   api_url: null
+  # - type: pushme
+  #   token: "${PUSHME_TOKEN}"
+  #   api_url: null
+  # - type: cqhttp
+  #   url: "${CQHTTP_URL}"
+  #   qq: "${CQHTTP_QQ}"
+  #   group: null
+  # - type: wecom
+  #   corp_id: "${WECOM_CORP_ID}"
+  #   agent_id: "${WECOM_AGENT_ID}"
+  #   secret: "${WECOM_SECRET}"
+  #   to_user: "@all"
+  #   api_url: null
+  # - type: wecomrobot
+  #   url: "${WECOM_ROBOT_URL}"
+  #   mobile: null
+  # - type: pushdeer
+  #   token: "${PUSHDEER_TOKEN}"
+  #   api_url: null
+  # - type: dingrobot
+  #   webhook: "${DINGTALK_WEBHOOK}"
+  #   secret: null
+  # - type: feishubot
+  #   webhook: "${FEISHU_WEBHOOK}"
+  # - type: bark
+  #   token: "${BARK_TOKEN}"
+  #   api_url: null
+  #   icon: null
+  # - type: gotify
+  #   token: "${GOTIFY_TOKEN}"
+  #   api_url: "${GOTIFY_API_URL}"
+  #   priority: 0
+  # - type: ifttt
+  #   event: "${IFTTT_EVENT}"
+  #   key: "${IFTTT_KEY}"
+  #   api_url: null
+  # - type: qmsg
+  #   key: "${QMSG_KEY}"
+  #   api_url: null
+  # - type: discord
+  #   webhook: "${DISCORD_WEBHOOK}"
+  # - type: wxpusher
+  #   app_token: "${WXPUSHER_APP_TOKEN}"
+  #   uids: ["${WXPUSHER_UID}"]
+  #   topic_ids: []
+  #   api_url: null
+  # - type: serverchan3
+  #   sendkey: "${SERVERCHAN3_SENDKEY}"
+  #   tags: null

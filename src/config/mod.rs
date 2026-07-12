@@ -1216,6 +1216,17 @@ accounts:
     }
 
     #[test]
+    fn default_example_config_is_valid_with_one_cookie() {
+        let source = EXAMPLE_CONFIG.replace(
+            "${MIHOYO_COOKIE_1}",
+            "account_id=123; account_mid_v2=mid; stoken=v2_example",
+        );
+        let mut config: Config = serde_yaml_ng::from_str(&source).unwrap();
+        hydrate_stokens_from_cookies(&mut config);
+        validate(&config).unwrap();
+    }
+
+    #[test]
     fn bbs_boolean_and_detailed_switches_are_compatible() {
         let legacy = parse(MINIMAL).unwrap();
         let legacy_bbs = &legacy.config.accounts[0].tasks.bbs;
