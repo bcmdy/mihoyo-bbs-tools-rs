@@ -120,11 +120,36 @@ pub struct AccountConfig {
     pub enabled: bool,
     pub credentials: CredentialConfig,
     #[serde(default)]
+    pub device: DeviceConfig,
+    #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub tasks: TaskConfig,
     #[serde(default)]
     pub games: Vec<Game>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeviceConfig {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default = "default_device_name")]
+    pub name: String,
+    #[serde(default = "default_device_model")]
+    pub model: String,
+    #[serde(default)]
+    pub fp: String,
+}
+
+impl Default for DeviceConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: default_device_name(),
+            model: default_device_model(),
+            fp: String::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -551,7 +576,15 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                 inspect_mapping(
                     account,
                     &base,
-                    &["name", "enabled", "credentials", "proxy", "tasks", "games"],
+                    &[
+                        "name",
+                        "enabled",
+                        "credentials",
+                        "device",
+                        "proxy",
+                        "tasks",
+                        "games",
+                    ],
                     &mut warnings,
                 );
                 if let Some(account_map) = account.as_mapping() {
@@ -560,6 +593,13 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                         "credentials",
                         &format!("{base}.credentials"),
                         &["cookie", "stoken"],
+                        &mut warnings,
+                    );
+                    inspect_named_child(
+                        account_map,
+                        "device",
+                        &format!("{base}.device"),
+                        &["id", "name", "model", "fp"],
                         &mut warnings,
                     );
                     inspect_named_child(
@@ -714,6 +754,12 @@ const fn default_retry_count() -> u32 {
 const fn default_random_delay() -> u64 {
     10
 }
+fn default_device_name() -> String {
+    "Xiaomi MI 6".to_owned()
+}
+fn default_device_model() -> String {
+    "Mi 6".to_owned()
+}
 const fn default_true() -> bool {
     true
 }
@@ -756,7 +802,29 @@ accounts:
             loaded.config.accounts[0].credentials.cookie.expose_secret(),
             "account_id=123; cookie_token=secret"
         );
+        assert_eq!(loaded.config.accounts[0].device, DeviceConfig::default());
         assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn device_config_serializes_and_round_trips() {
+        let source = MINIMAL.replace(
+            "    tasks:",
+            "    device:\n      id: configured-id\n      name: Configured Name\n      model: Configured Model\n      fp: configured-fp\n    tasks:",
+        );
+        let loaded = parse(&source).unwrap();
+        let expected = DeviceConfig {
+            id: "configured-id".to_owned(),
+            name: "Configured Name".to_owned(),
+            model: "Configured Model".to_owned(),
+            fp: "configured-fp".to_owned(),
+        };
+        assert_eq!(loaded.config.accounts[0].device, expected);
+        assert!(loaded.warnings.is_empty());
+
+        let yaml = to_yaml(&loaded.config).unwrap();
+        let round_tripped: Config = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(round_tripped.accounts[0].device, expected);
     }
 
     #[test]
@@ -772,12 +840,14 @@ accounts:
     fn warns_about_unknown_fields_at_nested_paths() {
         let source = MINIMAL
             .replace("    tasks:", "    unexpected: true\n    tasks:")
+            .replace("    unexpected: true", "    unexpected: true\n    device:\n      typo: true")
             .replace("      bbs: true", "      bbs: true\n      typo: true");
         let loaded = parse(&source).unwrap();
         assert_eq!(
             loaded.warnings,
             vec![
                 "未知配置字段 accounts[0].unexpected",
+                "未知配置字段 accounts[0].device.typo",
                 "未知配置字段 accounts[0].tasks.typo"
             ]
         );

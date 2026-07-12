@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use uuid::Uuid;
-
 use crate::{
     auth::SecretString,
     checkin::{CheckinError, CheckinState, ChinaCheckinClient, ChinaGame, RoleState, SignState},
@@ -11,7 +9,7 @@ use crate::{
     signing::{DsSigner, SystemClock, ThreadRandom},
 };
 
-use super::{RunReport, TaskOutcome, TaskRecord};
+use super::{RunReport, TaskOutcome, TaskRecord, resolve_device_id};
 
 pub async fn run_china_checkin(config: &Config) -> RunReport {
     let mut report = RunReport::default();
@@ -55,11 +53,11 @@ pub async fn run_china_checkin(config: &Config) -> RunReport {
         };
 
         let cookie = account.credentials.cookie.clone();
-        let device_id = Uuid::new_v3(&Uuid::NAMESPACE_URL, cookie.expose_secret().as_bytes());
+        let device_id = resolve_device_id(&account.device.id, cookie.expose_secret());
         let client = ChinaCheckinClient::new(
             http,
             SecretString::new(cookie.expose_secret()),
-            device_id.to_string(),
+            device_id,
         );
         let mut signer = DsSigner::new(SystemClock, ThreadRandom);
 

@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use uuid::Uuid;
-
 use crate::{
     auth::{Credentials, SecretString},
     bbs::{BbsClient, BbsError, CoinSummary, ForumSignRequest, MissionKind, PostRef},
@@ -10,7 +8,7 @@ use crate::{
     signing::{DsSigner, SystemClock, ThreadRandom},
 };
 
-use super::{RunReport, TaskOutcome, TaskRecord};
+use super::{RunReport, TaskOutcome, TaskRecord, resolve_device_id};
 
 const READ_TARGET: u32 = 3;
 const LIKE_TARGET: u32 = 5;
@@ -90,11 +88,12 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
     };
 
     let web_cookie = SecretString::new(account.credentials.cookie.expose_secret());
-    let device_id = Uuid::new_v3(
-        &Uuid::NAMESPACE_URL,
-        account.credentials.cookie.expose_secret().as_bytes(),
+    let device_id = resolve_device_id(
+        &account.device.id,
+        account.credentials.cookie.expose_secret(),
     );
-    let client = BbsClient::new(http, app_cookie, web_cookie, device_id.to_string());
+    let client = BbsClient::new(http, app_cookie, web_cookie, device_id)
+        .device(&account.device.name, &account.device.model);
     let mut signer = DsSigner::new(SystemClock, ThreadRandom);
 
     let summary = match client.missions().await {

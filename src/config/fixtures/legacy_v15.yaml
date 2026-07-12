@@ -10,7 +10,7 @@ device:
   name: "Fixture Device"
   model: "Fixture Model"
   id: "fixture-device-id"
-  fp: ""
+  fp: "fixture-device-fp"
 mihoyobbs:
   enable: true
   checkin: true

@@ -5,7 +5,7 @@ use url::Url;
 
 use super::{
     AccountConfig, CURRENT_CONFIG_VERSION, CaptchaConfig, Config, ConfigError, CredentialConfig,
-    Game, LoadedConfig, NotificationsConfig, ProxyConfig, RuntimeConfig, TaskConfig,
+    DeviceConfig, Game, LoadedConfig, NotificationsConfig, ProxyConfig, RuntimeConfig, TaskConfig,
 };
 use crate::auth::SecretString;
 
@@ -47,6 +47,22 @@ pub(super) fn migrate_value(
                 None
             }
         });
+    let legacy_device = mapping(root, "device");
+    let device_defaults = DeviceConfig::default();
+    let device = DeviceConfig {
+        id: legacy_device
+            .and_then(|map| scalar_string(map, "id"))
+            .unwrap_or_default(),
+        name: legacy_device
+            .and_then(|map| scalar_string(map, "name"))
+            .unwrap_or(device_defaults.name),
+        model: legacy_device
+            .and_then(|map| scalar_string(map, "model"))
+            .unwrap_or(device_defaults.model),
+        fp: legacy_device
+            .and_then(|map| scalar_string(map, "fp"))
+            .unwrap_or_default(),
+    };
 
     let games = mapping(root, "games");
     let cn = games.and_then(|map| mapping(map, "cn"));
@@ -119,6 +135,7 @@ pub(super) fn migrate_value(
                 cookie: SecretString::new(cookie),
                 stoken: SecretString::new(stoken),
             },
+            device,
             proxy: ProxyConfig::default(),
             tasks: TaskConfig {
                 china_game_checkin: cn_enabled,
@@ -137,9 +154,6 @@ pub(super) fn migrate_value(
 }
 
 fn warn_about_lossy_fields(root: &Mapping, warnings: &mut Vec<String>) {
-    if mapping(root, "device").is_some() {
-        warnings.push("旧版 device 信息尚无对应的新模型，未迁移".to_owned());
-    }
     if mapping(root, "competition").is_some() {
         warnings.push("旧版 competition 功能已移除，未迁移".to_owned());
     }
@@ -240,14 +254,16 @@ mod tests {
         assert!(account.tasks.china_game_checkin);
         assert!(account.tasks.bbs);
         assert_eq!(account.games, vec![Game::Genshin, Game::StarRail]);
+        assert_eq!(account.device.id, "fixture-device-id");
+        assert_eq!(account.device.name, "Fixture Device");
+        assert_eq!(account.device.model, "Fixture Model");
+        assert_eq!(account.device.fp, "fixture-device-fp");
         assert_eq!(migrated.config.runtime.retry_count, 4);
         assert!(!format!("{:?}", migrated.config).contains("fixture-cookie-token"));
-        assert!(
-            migrated
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("device"))
-        );
+        assert!(!migrated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("device")));
     }
 
     #[test]
