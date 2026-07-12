@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::{
     auth::{Credentials, SecretString},
     bbs::{BbsClient, BbsError, CoinSummary, ForumSignRequest, MissionKind, PostRef},
+    captcha::CaptchaClient,
     config::{AccountConfig, Config},
     http::{HttpClient, RetryPolicy},
     signing::{DsSigner, SystemClock, ThreadRandom},
@@ -92,6 +93,11 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
         &account.device.id,
         account.credentials.cookie.expose_secret(),
     );
+    let captcha = config
+        .captcha
+        .endpoint
+        .clone()
+        .map(|endpoint| CaptchaClient::new(http.clone(), endpoint));
     let client = BbsClient::new(http, app_cookie, web_cookie, device_id)
         .device(&account.device.name, &account.device.model);
     let mut signer = DsSigner::new(SystemClock, ThreadRandom);
@@ -126,22 +132,24 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
     if plan.sign {
         for forum in DEFAULT_FORUMS {
             let request = ForumSignRequest::new(forum.gids);
-            let body = serde_json::to_vec(&request).expect("固定社区签到结构应当可序列化");
-            let ds = signer.sign_body("", &body).to_string();
-            match client.sign_forum_once(&request, &ds, None).await {
-                Ok(()) => report.push(record(
+            match sign_forum_with_captcha(&client, captcha.as_ref(), &mut signer, &request).await {
+                Ok(solved) => report.push(record(
                     &account.name,
                     "社区签到",
                     forum.name,
                     TaskOutcome::Success,
-                    "签到请求成功",
+                    if solved {
+                        "验证码通过后签到成功"
+                    } else {
+                        "签到请求成功"
+                    },
                 )),
-                Err(BbsError::CaptchaRequired) => {
-                    push_error(report, &account.name, forum.name, BbsError::CaptchaRequired);
+                Err(ActionError::Captcha(message)) => {
+                    push_captcha_error(report, &account.name, forum.name, &message);
                     high_risk_blocked = true;
                     break;
                 }
-                Err(error) => {
+                Err(ActionError::Bbs(error)) => {
                     let terminal = is_terminal(&error);
                     push_error(report, &account.name, forum.name, error);
                     if terminal {
@@ -187,26 +195,32 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
     }
 
     for post in selected.iter().take(plan.like as usize) {
-        let ds = signer.sign_app().to_string();
-        match client.set_like_once(&post.post_id, false, &ds, None).await {
-            Ok(()) => report.push(post_record(
+        match set_like_with_captcha(
+            &client,
+            captcha.as_ref(),
+            &mut signer,
+            &post.post_id,
+            false,
+        )
+        .await
+        {
+            Ok(solved) => report.push(post_record(
                 &account.name,
                 "点赞",
                 post,
                 TaskOutcome::Success,
-                "点赞成功",
+                if solved {
+                    "验证码通过后点赞成功"
+                } else {
+                    "点赞成功"
+                },
             )),
-            Err(BbsError::CaptchaRequired) => {
-                push_error(
-                    report,
-                    &account.name,
-                    &post.subject,
-                    BbsError::CaptchaRequired,
-                );
+            Err(ActionError::Captcha(message)) => {
+                push_captcha_error(report, &account.name, &post.subject, &message);
                 high_risk_blocked = true;
                 break;
             }
-            Err(error) => {
+            Err(ActionError::Bbs(error)) => {
                 let terminal = is_terminal(&error);
                 push_error(report, &account.name, &post.subject, error);
                 if terminal {
@@ -216,26 +230,32 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
             }
         }
 
-        let ds = signer.sign_app().to_string();
-        match client.set_like_once(&post.post_id, true, &ds, None).await {
-            Ok(()) => report.push(post_record(
+        match set_like_with_captcha(
+            &client,
+            captcha.as_ref(),
+            &mut signer,
+            &post.post_id,
+            true,
+        )
+        .await
+        {
+            Ok(solved) => report.push(post_record(
                 &account.name,
                 "取消点赞",
                 post,
                 TaskOutcome::Success,
-                "已恢复点赞状态",
+                if solved {
+                    "验证码通过后已恢复点赞状态"
+                } else {
+                    "已恢复点赞状态"
+                },
             )),
-            Err(BbsError::CaptchaRequired) => {
-                push_error(
-                    report,
-                    &account.name,
-                    &post.subject,
-                    BbsError::CaptchaRequired,
-                );
+            Err(ActionError::Captcha(message)) => {
+                push_captcha_error(report, &account.name, &post.subject, &message);
                 high_risk_blocked = true;
                 break;
             }
-            Err(error) => {
+            Err(ActionError::Bbs(error)) => {
                 let terminal = is_terminal(&error);
                 push_error(report, &account.name, &post.subject, error);
                 if terminal {
@@ -328,6 +348,94 @@ fn build_http(config: &Config, account: &AccountConfig) -> Result<HttpClient, &'
         .proxy(account.proxy.url.as_ref().map(|url| url.expose_secret()))
         .map_err(|_| "代理配置无效")?;
     builder.build().map_err(|_| "HTTP 客户端初始化失败")
+}
+
+#[derive(Debug)]
+enum ActionError {
+    Bbs(BbsError),
+    Captcha(String),
+}
+
+async fn sign_forum_with_captcha(
+    client: &BbsClient,
+    captcha: Option<&CaptchaClient>,
+    signer: &mut DsSigner<SystemClock, ThreadRandom>,
+    request: &ForumSignRequest<'_>,
+) -> Result<bool, ActionError> {
+    let body = serde_json::to_vec(request).expect("固定社区签到结构应当可序列化");
+    let ds = signer.sign_body("", &body).to_string();
+    match client.sign_forum_once(request, &ds, None).await {
+        Ok(()) => Ok(false),
+        Err(BbsError::CaptchaRequired) => {
+            let challenge = solve_bbs_captcha(client, captcha, signer).await?;
+            let ds = signer.sign_body("", &body).to_string();
+            match client
+                .sign_forum_once(request, &ds, Some(&challenge))
+                .await
+            {
+                Ok(()) => Ok(true),
+                Err(BbsError::CaptchaRequired) => Err(ActionError::Captcha(
+                    "验证码校验通过，但原签到动作重试后仍要求验证码".to_owned(),
+                )),
+                Err(error) => Err(ActionError::Bbs(error)),
+            }
+        }
+        Err(error) => Err(ActionError::Bbs(error)),
+    }
+}
+
+async fn set_like_with_captcha(
+    client: &BbsClient,
+    captcha: Option<&CaptchaClient>,
+    signer: &mut DsSigner<SystemClock, ThreadRandom>,
+    post_id: &str,
+    cancel: bool,
+) -> Result<bool, ActionError> {
+    let ds = signer.sign_app().to_string();
+    match client.set_like_once(post_id, cancel, &ds, None).await {
+        Ok(()) => Ok(false),
+        Err(BbsError::CaptchaRequired) => {
+            let challenge = solve_bbs_captcha(client, captcha, signer).await?;
+            let ds = signer.sign_app().to_string();
+            match client
+                .set_like_once(post_id, cancel, &ds, Some(&challenge))
+                .await
+            {
+                Ok(()) => Ok(true),
+                Err(BbsError::CaptchaRequired) => {
+                    let action = if cancel { "取消点赞" } else { "点赞" };
+                    Err(ActionError::Captcha(format!(
+                        "验证码校验通过，但原{action}动作重试后仍要求验证码"
+                    )))
+                }
+                Err(error) => Err(ActionError::Bbs(error)),
+            }
+        }
+        Err(error) => Err(ActionError::Bbs(error)),
+    }
+}
+
+async fn solve_bbs_captcha(
+    client: &BbsClient,
+    captcha: Option<&CaptchaClient>,
+    signer: &mut DsSigner<SystemClock, ThreadRandom>,
+) -> Result<String, ActionError> {
+    let captcha = captcha.ok_or_else(|| {
+        ActionError::Captcha("触发验证码，但未配置 captcha.endpoint".to_owned())
+    })?;
+    let ds = signer.sign_app().to_string();
+    let verification = client.create_verification(&ds).await.map_err(|error| {
+        ActionError::Captcha(format!("创建米游社验证码失败：{error}"))
+    })?;
+    let solution = captcha
+        .solve(&verification.gt, &verification.challenge)
+        .await
+        .map_err(|error| ActionError::Captcha(format!("验证码平台求解失败：{error}")))?;
+    let ds = signer.sign_app().to_string();
+    client
+        .verify_verification(&solution.challenge, &solution.validate, &ds)
+        .await
+        .map_err(|error| ActionError::Captcha(format!("米游社验证码校验失败：{error}")))
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -428,6 +536,16 @@ fn push_error(report: &mut RunReport, account: &str, subject: &str, error: BbsEr
     report.push(record(account, "米游社任务", subject, outcome, &message));
 }
 
+fn push_captcha_error(report: &mut RunReport, account: &str, subject: &str, message: &str) {
+    report.push(record(
+        account,
+        "米游社任务",
+        subject,
+        TaskOutcome::CaptchaRequired,
+        message,
+    ));
+}
+
 fn post_record(
     account: &str,
     task: &str,
@@ -458,8 +576,14 @@ fn record(
 mod tests {
     use super::*;
     use crate::{
-        bbs::MissionProgress,
+        bbs::{BbsEndpoints, MissionProgress},
         signing::{BODY_SALT, sign_ds2_with},
+    };
+    use reqwest::Url;
+    use serde_json::json;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{body_json, method, path, query_param},
     };
 
     fn summary(can_get: u32, missions: Vec<MissionProgress>) -> CoinSummary {
@@ -547,5 +671,101 @@ mod tests {
         let independently_serialized = serde_json::to_vec(&request).unwrap();
         assert_eq!(body, independently_serialized);
         assert_eq!(header.checksum, "b4ec3312d474ed70fcfcb5e6f25b04a4");
+    }
+
+    #[tokio::test]
+    async fn bbs_captcha_flow_creates_solves_and_verifies_challenge() {
+        let bbs_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/misc/api/createVerification"))
+            .and(query_param("is_high", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": {"gt": "gt-value", "challenge": "original-challenge"}
+            })))
+            .expect(1)
+            .mount(&bbs_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/misc/api/verifyVerification"))
+            .and(body_json(json!({
+                "geetest_challenge": "solver-challenge",
+                "geetest_seccode": "validate-value|jordan",
+                "geetest_validate": "validate-value"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": {"challenge": "passed-challenge"}
+            })))
+            .expect(1)
+            .mount(&bbs_server)
+            .await;
+
+        let solver_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/pass_nine"))
+            .and(query_param("gt", "gt-value"))
+            .and(query_param("challenge", "original-challenge"))
+            .and(query_param("use_v3_model", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "result": "success",
+                    "validate": "validate-value",
+                    "challenge": "solver-challenge"
+                }
+            })))
+            .expect(1)
+            .mount(&solver_server)
+            .await;
+
+        let http = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 1,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+        let bbs_base = Url::parse(&format!("{}/", bbs_server.uri())).unwrap();
+        let client = BbsClient::new(
+            http.clone(),
+            SecretString::new("stuid=123;stoken=secret"),
+            SecretString::new("cookie_token=secret"),
+            "device-id",
+        )
+        .endpoints(BbsEndpoints::from_base_url(&bbs_base).unwrap());
+        let captcha = CaptchaClient::new(
+            http,
+            Url::parse(&format!("{}/pass_nine", solver_server.uri())).unwrap(),
+        );
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+
+        assert_eq!(
+            solve_bbs_captcha(&client, Some(&captcha), &mut signer)
+                .await
+                .unwrap(),
+            "passed-challenge"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_captcha_endpoint_is_reported_without_network_attempt() {
+        let server = MockServer::start().await;
+        let http = HttpClient::builder().build().unwrap();
+        let base = Url::parse(&format!("{}/", server.uri())).unwrap();
+        let client = BbsClient::new(
+            http,
+            SecretString::new("stuid=123;stoken=secret"),
+            SecretString::new("cookie_token=secret"),
+            "device-id",
+        )
+        .endpoints(BbsEndpoints::from_base_url(&base).unwrap());
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+
+        assert!(matches!(
+            solve_bbs_captcha(&client, None, &mut signer).await,
+            Err(ActionError::Captcha(message)) if message.contains("未配置 captcha.endpoint")
+        ));
     }
 }

@@ -5,6 +5,7 @@ use mihoyo_bbs_tools::{
     cli::{Cli, Command},
     config,
     error::AppError,
+    push::{self, DeliveryStatus},
     service,
 };
 use tracing_subscriber::EnvFilter;
@@ -38,8 +39,7 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             }
             let mut report = service::run_china_checkin(&loaded.config).await;
             report.extend(service::run_hoyolab_checkin(&loaded.config).await);
-            print!("{}", report.render_text());
-            return Ok(report.exit_code());
+            return Ok(finish_report(&loaded.config, &report).await);
         }
         Command::Run { config: path } => {
             let loaded = config::load(&path)?;
@@ -49,8 +49,7 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             let mut report = service::run_china_checkin(&loaded.config).await;
             report.extend(service::run_hoyolab_checkin(&loaded.config).await);
             report.extend(service::run_bbs(&loaded.config).await);
-            print!("{}", report.render_text());
-            return Ok(report.exit_code());
+            return Ok(finish_report(&loaded.config, &report).await);
         }
         Command::MigrateConfig { input, output } => {
             let loaded = config::write_migrated_config(&input, &output)?;
@@ -62,6 +61,26 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
         Command::PrintExampleConfig => print!("{}", config::EXAMPLE_CONFIG),
     }
     Ok(0)
+}
+
+async fn finish_report(config: &config::Config, report: &service::RunReport) -> u8 {
+    print!("{}", report.render_text());
+    let push_report = push::send_report(config, report).await;
+    for delivery in push_report.deliveries {
+        match delivery.status {
+            DeliveryStatus::Sent => tracing::info!(
+                provider = delivery.provider.as_str(),
+                "{}",
+                delivery.message
+            ),
+            DeliveryStatus::Failed => tracing::warn!(
+                provider = delivery.provider.as_str(),
+                "{}",
+                delivery.message
+            ),
+        }
+    }
+    report.exit_code()
 }
 
 fn init_tracing() {

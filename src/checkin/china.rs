@@ -373,6 +373,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn captcha_solution_is_sent_with_all_required_headers() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/event/luna/sign"))
+            .and(header("x-rpc-challenge", "solved-challenge"))
+            .and(header("x-rpc-validate", "validate-value"))
+            .and(header("x-rpc-seccode", "validate-value|jordan"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": { "success": 0 }
+            })))
+            .mount(&server)
+            .await;
+
+        let headers = CaptchaHeaders {
+            challenge: "solved-challenge",
+            validate: "validate-value",
+        };
+        assert_eq!(
+            client(&server)
+                .await
+                .sign_once(
+                    ChinaGame::Genshin,
+                    "cn_gf01",
+                    "10001",
+                    "ds",
+                    Some(&headers),
+                )
+                .await
+                .unwrap(),
+            SignState::Success
+        );
+    }
+
+    #[tokio::test]
     async fn sign_post_is_not_retried_on_server_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))

@@ -177,6 +177,34 @@ impl HttpClient {
             Err(error) => Err(HttpError::Connect(error.to_string())),
         }
     }
+
+    /// 发送一次 JSON POST，并只校验 HTTP 状态码。
+    ///
+    /// 适用于 Webhook 等成功响应可能为空或并非 JSON 的接口。与
+    /// [`Self::post_json_once`] 一样，本方法不会自动重试可能产生外部副作用的请求。
+    pub async fn post_json_once_without_response<B>(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+        body: &B,
+    ) -> Result<(), HttpError>
+    where
+        B: Serialize + ?Sized,
+    {
+        match self
+            .inner
+            .request(Method::POST, url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => Ok(()),
+            Ok(response) => Err(HttpError::Status(response.status())),
+            Err(error) if error.is_timeout() => Err(HttpError::Timeout),
+            Err(error) => Err(HttpError::Connect(error.to_string())),
+        }
+    }
 }
 
 fn normalize_proxy_url(raw: &str) -> Result<Url, HttpError> {

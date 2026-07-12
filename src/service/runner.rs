@@ -2,7 +2,11 @@ use std::time::Duration;
 
 use crate::{
     auth::SecretString,
-    checkin::{CheckinError, CheckinState, ChinaCheckinClient, ChinaGame, RoleState, SignState},
+    captcha::CaptchaClient,
+    checkin::{
+        CaptchaHeaders, CheckinError, CheckinState, ChinaCheckinClient, ChinaGame, RoleState,
+        SignState,
+    },
     checkin::{HoyolabCheckinClient, HoyolabCheckinError, HoyolabGame},
     config::{Config, Game},
     http::{HttpClient, RetryPolicy},
@@ -54,12 +58,25 @@ pub async fn run_china_checkin(config: &Config) -> RunReport {
 
         let cookie = account.credentials.cookie.clone();
         let device_id = resolve_device_id(&account.device.id, cookie.expose_secret());
+        let captcha = config
+            .captcha
+            .endpoint
+            .clone()
+            .map(|endpoint| CaptchaClient::new(http.clone(), endpoint));
         let client =
             ChinaCheckinClient::new(http, SecretString::new(cookie.expose_secret()), device_id);
         let mut signer = DsSigner::new(SystemClock, ThreadRandom);
 
         for game in account.games.iter().filter_map(config_game_to_china) {
-            run_game(&mut report, &account.name, &client, &mut signer, game).await;
+            run_game(
+                &mut report,
+                &account.name,
+                &client,
+                captcha.as_ref(),
+                &mut signer,
+                game,
+            )
+            .await;
         }
     }
     report
@@ -157,6 +174,7 @@ async fn run_game(
     report: &mut RunReport,
     account: &str,
     client: &ChinaCheckinClient,
+    captcha: Option<&CaptchaClient>,
     signer: &mut DsSigner<SystemClock, ThreadRandom>,
     game: ChinaGame,
 ) {
@@ -228,13 +246,22 @@ async fn run_game(
                     TaskOutcome::AlreadyCompleted,
                     "接口返回今日已签到",
                 )),
-                Ok(SignState::CaptchaRequired { .. }) => report.push(record(
-                    account,
-                    "国内游戏签到",
-                    &subject,
-                    TaskOutcome::CaptchaRequired,
-                    "触发验证码，已停止重复请求",
-                )),
+                Ok(SignState::CaptchaRequired { gt, challenge }) => {
+                    solve_captcha_and_retry(
+                        report,
+                        account,
+                        &subject,
+                        client,
+                        captcha,
+                        signer,
+                        game,
+                        &role.region,
+                        &role.uid,
+                        &gt,
+                        &challenge,
+                    )
+                    .await;
+                }
                 Err(error) => push_error(report, account, &subject, error),
             },
             Err(error) => push_error(report, account, &subject, error),
@@ -323,5 +350,113 @@ mod tests {
     fn uid_mask_only_keeps_last_four_characters() {
         assert_eq!(mask_uid("123456789"), "***6789");
         assert_eq!(mask_uid("12"), "***12");
+    }
+
+    #[tokio::test]
+    async fn missing_captcha_endpoint_is_reported_without_retrying() {
+        let http = HttpClient::builder().build().unwrap();
+        let client = ChinaCheckinClient::new(
+            http,
+            SecretString::new("cookie_token=secret"),
+            "device-id",
+        );
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut report = RunReport::default();
+
+        solve_captcha_and_retry(
+            &mut report,
+            "account",
+            "原神 / ***0001",
+            &client,
+            None,
+            &mut signer,
+            ChinaGame::Genshin,
+            "cn_gf01",
+            "10001",
+            "gt",
+            "challenge",
+        )
+        .await;
+
+        assert_eq!(report.records.len(), 1);
+        assert_eq!(report.records[0].outcome, TaskOutcome::CaptchaRequired);
+        assert!(report.records[0].message.contains("captcha.endpoint"));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn solve_captcha_and_retry(
+    report: &mut RunReport,
+    account: &str,
+    subject: &str,
+    client: &ChinaCheckinClient,
+    captcha: Option<&CaptchaClient>,
+    signer: &mut DsSigner<SystemClock, ThreadRandom>,
+    game: ChinaGame,
+    region: &str,
+    uid: &str,
+    gt: &str,
+    challenge: &str,
+) {
+    let Some(captcha) = captcha else {
+        report.push(record(
+            account,
+            "国内游戏签到",
+            subject,
+            TaskOutcome::CaptchaRequired,
+            "触发验证码，但未配置 captcha.endpoint",
+        ));
+        return;
+    };
+
+    let solution = match captcha.solve(gt, challenge).await {
+        Ok(solution) => solution,
+        Err(error) => {
+            report.push(record(
+                account,
+                "国内游戏签到",
+                subject,
+                TaskOutcome::CaptchaRequired,
+                &format!("验证码平台求解失败：{error}"),
+            ));
+            return;
+        }
+    };
+    let headers = CaptchaHeaders {
+        challenge: &solution.challenge,
+        validate: &solution.validate,
+    };
+    match client
+        .sign_once(
+            game,
+            region,
+            uid,
+            &signer.sign_web().to_string(),
+            Some(&headers),
+        )
+        .await
+    {
+        Ok(SignState::Success) => report.push(record(
+            account,
+            "国内游戏签到",
+            subject,
+            TaskOutcome::Success,
+            "验证码通过，签到成功",
+        )),
+        Ok(SignState::AlreadySigned) => report.push(record(
+            account,
+            "国内游戏签到",
+            subject,
+            TaskOutcome::AlreadyCompleted,
+            "验证码通过，接口返回今日已签到",
+        )),
+        Ok(SignState::CaptchaRequired { .. }) => report.push(record(
+            account,
+            "国内游戏签到",
+            subject,
+            TaskOutcome::CaptchaRequired,
+            "验证码校验后仍被要求验证，已停止重试",
+        )),
+        Err(error) => push_error(report, account, subject, error),
     }
 }

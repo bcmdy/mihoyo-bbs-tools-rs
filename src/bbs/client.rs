@@ -45,6 +45,8 @@ pub struct BbsEndpoints {
     pub like: Url,
     pub share: Url,
     pub sign: Url,
+    pub create_verification: Url,
+    pub verify_verification: Url,
 }
 
 impl BbsEndpoints {
@@ -61,6 +63,8 @@ impl BbsEndpoints {
             like: base_url.join("apihub/sapi/upvotePost")?,
             share: base_url.join("apihub/api/getShareConf")?,
             sign: base_url.join("apihub/app/api/signIn")?,
+            create_verification: base_url.join("misc/api/createVerification")?,
+            verify_verification: base_url.join("misc/api/verifyVerification")?,
         })
     }
 }
@@ -199,6 +203,54 @@ impl BbsClient {
             )
             .await?;
         self.success(response)
+    }
+
+    pub async fn create_verification(&self, ds: &str) -> Result<Verification, BbsError> {
+        let response: ApiEnvelope<VerificationData> = self
+            .http
+            .get_json_with(
+                self.endpoints.create_verification.clone(),
+                self.app_headers(ds)?,
+                &[("is_high", "true".to_owned())],
+            )
+            .await?;
+        let data = self.data(response)?;
+        if data.gt.trim().is_empty() || data.challenge.trim().is_empty() {
+            return Err(BbsError::InvalidResponse(
+                "验证码创建响应缺少非空 gt 或 challenge".to_owned(),
+            ));
+        }
+        Ok(Verification {
+            gt: data.gt,
+            challenge: data.challenge,
+        })
+    }
+
+    pub async fn verify_verification(
+        &self,
+        challenge: &str,
+        validate: &str,
+        ds: &str,
+    ) -> Result<String, BbsError> {
+        let response: ApiEnvelope<VerifiedChallengeData> = self
+            .http
+            .post_json_once(
+                self.endpoints.verify_verification.clone(),
+                self.app_headers(ds)?,
+                &VerifyVerificationRequest {
+                    geetest_challenge: challenge,
+                    geetest_seccode: format!("{validate}|jordan"),
+                    geetest_validate: validate,
+                },
+            )
+            .await?;
+        let challenge = self.data(response)?.challenge;
+        if challenge.trim().is_empty() {
+            return Err(BbsError::InvalidResponse(
+                "验证码校验响应缺少非空 challenge".to_owned(),
+            ));
+        }
+        Ok(challenge)
     }
 
     /// 社区签到只发送一次 POST。DS 必须由实际发送的 `{"gids":"..."}` JSON 生成。
@@ -341,6 +393,30 @@ struct ApiEnvelope<T> {
     #[serde(default)]
     message: String,
     data: Option<T>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Verification {
+    pub gt: String,
+    pub challenge: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerificationData {
+    gt: String,
+    challenge: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifiedChallengeData {
+    challenge: String,
+}
+
+#[derive(Serialize)]
+struct VerifyVerificationRequest<'a> {
+    geetest_challenge: &'a str,
+    geetest_seccode: String,
+    geetest_validate: &'a str,
 }
 
 #[derive(Serialize)]
@@ -554,6 +630,84 @@ mod tests {
             .set_like_once("42", false, "ds", Some("passed-challenge"))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn creates_and_verifies_bbs_captcha_with_exact_contract() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/misc/api/createVerification"))
+            .and(query_param("is_high", "true"))
+            .and(header("ds", "create-ds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": {"gt": "gt-value", "challenge": "original-challenge"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/misc/api/verifyVerification"))
+            .and(header("ds", "verify-ds"))
+            .and(body_json(json!({
+                "geetest_challenge": "solver-challenge",
+                "geetest_seccode": "validate-value|jordan",
+                "geetest_validate": "validate-value"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": {"challenge": "passed-challenge"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client(&server);
+        assert_eq!(
+            client.create_verification("create-ds").await.unwrap(),
+            Verification {
+                gt: "gt-value".to_owned(),
+                challenge: "original-challenge".to_owned(),
+            }
+        );
+        assert_eq!(
+            client
+                .verify_verification("solver-challenge", "validate-value", "verify-ds")
+                .await
+                .unwrap(),
+            "passed-challenge"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_incomplete_bbs_captcha_responses() {
+        let create_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0, "message": "OK", "data": {"gt": "", "challenge": "challenge"}
+            })))
+            .mount(&create_server)
+            .await;
+        assert!(matches!(
+            client(&create_server).create_verification("ds").await,
+            Err(BbsError::InvalidResponse(_))
+        ));
+
+        let verify_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0, "message": "OK", "data": {"challenge": ""}
+            })))
+            .mount(&verify_server)
+            .await;
+        assert!(matches!(
+            client(&verify_server)
+                .verify_verification("challenge", "validate", "ds")
+                .await,
+            Err(BbsError::InvalidResponse(_))
+        ));
     }
 
     #[tokio::test]

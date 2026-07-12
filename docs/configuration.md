@@ -17,7 +17,7 @@ runtime:
   log_level: info
 
 captcha:
-  endpoint: null
+  endpoint: "${CAPTCHA_ENDPOINT}"
 
 accounts:
   - name: example
@@ -55,7 +55,22 @@ notifications:
     - type: telegram
       bot_token: "${TELEGRAM_BOT_TOKEN}"
       chat_id: "${TELEGRAM_CHAT_ID}"
+
+    - type: webhook
+      url: "${WEBHOOK_URL}"
+
+    - type: pushplus
+      token: "${PUSHPLUS_TOKEN}"
+      topic: null
 ```
+
+## 验证码与推送
+
+`captcha.endpoint` 是完整的 HTTP/HTTPS 求解地址，程序不会自动追加路径；服务需兼容 pass_nine 的 GET 协议，接收 `gt`、`challenge`、`use_v3_model=true`，并在顶层或 `data` 中返回 `validate` 和可选的 `challenge`。国内签到遇到验证码时会求解并携带验证参数重试一次；米游社社区签到、点赞和取消点赞按“创建验证 → 平台求解 → 服务端校验 → 重试原操作”的顺序执行，原操作最多重试一次。未配置端点、求解失败或重试后仍要求验证码时会在运行报告中明确标记，不会无限重试。
+
+通知当前支持 `telegram`、`webhook` 和 `pushplus`。所有账号任务结束后统一发送报告；单个渠道失败不会阻止其他渠道，也不会覆盖核心任务的退出码。Bot Token、PushPlus Token、Chat ID 和 Webhook URL 均按敏感信息处理，不会写入错误消息或日志。
+
+环境变量会在配置反序列化前统一展开，因此即使 `notifications.enabled` 为 `false`，配置文件中已经写入的 `${ENV_NAME}` 仍必须存在。不使用通知时应保留空的 `providers: []`，不要放置尚未配置 Secret 的渠道。
 
 ## 环境变量替换
 

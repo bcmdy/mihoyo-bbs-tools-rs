@@ -1,0 +1,624 @@
+use std::{future::Future, pin::Pin, time::Duration};
+
+use reqwest::{Url, header::HeaderMap};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    auth::SecretString,
+    config::{Config, NotificationProvider, NotificationsConfig},
+    http::{HttpClient, HttpError, RetryPolicy},
+    service::RunReport,
+};
+
+const TELEGRAM_API_URL: &str = "https://api.telegram.org";
+const PUSHPLUS_API_URL: &str = "https://www.pushplus.plus/send";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Notification {
+    pub title: String,
+    pub body: String,
+}
+
+impl Notification {
+    pub fn from_report(report: &RunReport) -> Self {
+        let title = match report.exit_code() {
+            0 => "「米游社工具」执行成功",
+            3 => "「米游社工具」认证失败",
+            4 => "「米游社工具」需要验证码",
+            5 => "「米游社工具」网络请求失败",
+            _ => "「米游社工具」执行失败",
+        };
+        let body = report.render_text();
+        Self {
+            title: title.to_owned(),
+            body: if body.is_empty() {
+                "本次运行没有任务记录。".to_owned()
+            } else {
+                body
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderKind {
+    Telegram,
+    Webhook,
+    Pushplus,
+}
+
+impl ProviderKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Telegram => "telegram",
+            Self::Webhook => "webhook",
+            Self::Pushplus => "pushplus",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeliveryStatus {
+    Sent,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeliveryResult {
+    pub provider: ProviderKind,
+    pub status: DeliveryStatus,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PushReport {
+    pub deliveries: Vec<DeliveryResult>,
+}
+
+impl PushReport {
+    pub fn all_succeeded(&self) -> bool {
+        self.deliveries
+            .iter()
+            .all(|delivery| delivery.status == DeliveryStatus::Sent)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum PushError {
+    #[error("推送接口地址无效")]
+    InvalidEndpoint,
+    #[error("推送请求超时")]
+    Timeout,
+    #[error("推送网络请求失败")]
+    Network,
+    #[error("推送服务返回 HTTP {0}")]
+    HttpStatus(u16),
+    #[error("推送服务响应无效")]
+    InvalidResponse,
+    #[error("推送服务拒绝请求（代码 {0}）")]
+    ServiceRejected(i64),
+}
+
+pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), PushError>> + Send + 'a>>;
+
+pub trait Provider: Send + Sync {
+    fn kind(&self) -> ProviderKind;
+
+    fn send<'a>(&'a self, notification: &'a Notification) -> SendFuture<'a>;
+}
+
+pub struct PushDispatcher {
+    providers: Vec<Box<dyn Provider>>,
+}
+
+impl std::fmt::Debug for PushDispatcher {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PushDispatcher")
+            .field("provider_count", &self.providers.len())
+            .finish()
+    }
+}
+
+impl PushDispatcher {
+    pub fn new(providers: Vec<Box<dyn Provider>>) -> Self {
+        Self { providers }
+    }
+
+    pub fn from_config(http: HttpClient, config: &NotificationsConfig) -> Self {
+        let providers = config
+            .providers
+            .iter()
+            .map(|provider| configured_provider(http.clone(), provider))
+            .collect();
+        Self::new(providers)
+    }
+
+    pub async fn dispatch(&self, notification: &Notification) -> PushReport {
+        let mut report = PushReport::default();
+        for provider in &self.providers {
+            let kind = provider.kind();
+            let result = provider.send(notification).await;
+            report.deliveries.push(match result {
+                Ok(()) => DeliveryResult {
+                    provider: kind,
+                    status: DeliveryStatus::Sent,
+                    message: "推送成功".to_owned(),
+                },
+                Err(error) => DeliveryResult {
+                    provider: kind,
+                    status: DeliveryStatus::Failed,
+                    message: error.to_string(),
+                },
+            });
+        }
+        report
+    }
+}
+
+/// 将任务报告发送到全部已配置渠道。未启用通知时返回空报告。
+///
+/// 单个渠道失败不会中断后续渠道；每个渠道的结果均记录在返回值中。
+pub async fn send_report(config: &Config, report: &RunReport) -> PushReport {
+    if !config.notifications.enabled {
+        return PushReport::default();
+    }
+
+    let http = HttpClient::builder()
+        .timeout(Duration::from_secs(
+            config.runtime.request_timeout_seconds,
+        ))
+        .retry(RetryPolicy {
+            attempts: config.runtime.retry_count as usize + 1,
+            base_delay: Duration::from_millis(500),
+        })
+        .build();
+
+    let http = match http {
+        Ok(http) => http,
+        Err(_) => {
+            return PushReport {
+                deliveries: config
+                    .notifications
+                    .providers
+                    .iter()
+                    .map(|provider| DeliveryResult {
+                        provider: configured_kind(provider),
+                        status: DeliveryStatus::Failed,
+                        message: "推送 HTTP 客户端初始化失败".to_owned(),
+                    })
+                    .collect(),
+            };
+        }
+    };
+
+    PushDispatcher::from_config(http, &config.notifications)
+        .dispatch(&Notification::from_report(report))
+        .await
+}
+
+fn configured_provider(http: HttpClient, provider: &NotificationProvider) -> Box<dyn Provider> {
+    match provider {
+        NotificationProvider::Telegram {
+            bot_token,
+            chat_id,
+            api_url,
+        } => Box::new(TelegramProvider::new(
+            http,
+            bot_token.clone(),
+            chat_id.clone(),
+            api_url
+                .clone()
+                .unwrap_or_else(|| Url::parse(TELEGRAM_API_URL).expect("valid Telegram URL")),
+        )),
+        NotificationProvider::Webhook { url } => {
+            Box::new(WebhookProvider::new(http, url.clone()))
+        }
+        NotificationProvider::Pushplus { token, topic } => Box::new(PushplusProvider::new(
+            http,
+            token.clone(),
+            topic.clone(),
+        )),
+    }
+}
+
+fn configured_kind(provider: &NotificationProvider) -> ProviderKind {
+    match provider {
+        NotificationProvider::Telegram { .. } => ProviderKind::Telegram,
+        NotificationProvider::Webhook { .. } => ProviderKind::Webhook,
+        NotificationProvider::Pushplus { .. } => ProviderKind::Pushplus,
+    }
+}
+
+#[derive(Clone)]
+pub struct TelegramProvider {
+    http: HttpClient,
+    bot_token: SecretString,
+    chat_id: String,
+    api_url: Url,
+}
+
+impl std::fmt::Debug for TelegramProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TelegramProvider")
+            .field("bot_token", &"[REDACTED]")
+            .field("chat_id", &"[REDACTED]")
+            .field("api_url", &self.api_url)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TelegramProvider {
+    pub fn new(
+        http: HttpClient,
+        bot_token: SecretString,
+        chat_id: String,
+        api_url: Url,
+    ) -> Self {
+        Self {
+            http,
+            bot_token,
+            chat_id,
+            api_url,
+        }
+    }
+
+    fn endpoint(&self) -> Result<Url, PushError> {
+        let raw = format!(
+            "{}/bot{}/sendMessage",
+            self.api_url.as_str().trim_end_matches('/'),
+            self.bot_token.expose_secret()
+        );
+        Url::parse(&raw).map_err(|_| PushError::InvalidEndpoint)
+    }
+}
+
+#[derive(Serialize)]
+struct TelegramRequest<'a> {
+    chat_id: &'a str,
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct TelegramResponse {
+    ok: bool,
+    #[serde(default)]
+    error_code: Option<i64>,
+}
+
+impl Provider for TelegramProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Telegram
+    }
+
+    fn send<'a>(&'a self, notification: &'a Notification) -> SendFuture<'a> {
+        Box::pin(async move {
+            let response: TelegramResponse = self
+                .http
+                .post_json_once(
+                    self.endpoint()?,
+                    HeaderMap::new(),
+                    &TelegramRequest {
+                        chat_id: &self.chat_id,
+                        text: format!("{}\n{}", notification.title, notification.body),
+                    },
+                )
+                .await
+                .map_err(redact_http_error)?;
+            if response.ok {
+                Ok(())
+            } else {
+                Err(PushError::ServiceRejected(
+                    response.error_code.unwrap_or(-1),
+                ))
+            }
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct WebhookProvider {
+    http: HttpClient,
+    url: SecretString,
+}
+
+impl std::fmt::Debug for WebhookProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebhookProvider")
+            .field("url", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+impl WebhookProvider {
+    pub fn new(http: HttpClient, url: SecretString) -> Self {
+        Self { http, url }
+    }
+}
+
+#[derive(Serialize)]
+struct WebhookRequest<'a> {
+    title: &'a str,
+    message: &'a str,
+}
+
+impl Provider for WebhookProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Webhook
+    }
+
+    fn send<'a>(&'a self, notification: &'a Notification) -> SendFuture<'a> {
+        Box::pin(async move {
+            let url = Url::parse(self.url.expose_secret())
+                .map_err(|_| PushError::InvalidEndpoint)?;
+            self.http
+                .post_json_once_without_response(
+                    url,
+                    HeaderMap::new(),
+                    &WebhookRequest {
+                        title: &notification.title,
+                        message: &notification.body,
+                    },
+                )
+                .await
+                .map_err(redact_http_error)
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct PushplusProvider {
+    http: HttpClient,
+    token: SecretString,
+    topic: Option<String>,
+    api_url: Url,
+}
+
+impl std::fmt::Debug for PushplusProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PushplusProvider")
+            .field("token", &"[REDACTED]")
+            .field("topic", &self.topic)
+            .field("api_url", &self.api_url)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PushplusProvider {
+    pub fn new(http: HttpClient, token: SecretString, topic: Option<String>) -> Self {
+        Self::with_endpoint(
+            http,
+            token,
+            topic,
+            Url::parse(PUSHPLUS_API_URL).expect("valid PushPlus URL"),
+        )
+    }
+
+    pub fn with_endpoint(
+        http: HttpClient,
+        token: SecretString,
+        topic: Option<String>,
+        api_url: Url,
+    ) -> Self {
+        Self {
+            http,
+            token,
+            topic,
+            api_url,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct PushplusRequest<'a> {
+    token: &'a str,
+    title: &'a str,
+    content: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct PushplusResponse {
+    code: i64,
+}
+
+impl Provider for PushplusProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Pushplus
+    }
+
+    fn send<'a>(&'a self, notification: &'a Notification) -> SendFuture<'a> {
+        Box::pin(async move {
+            let response: PushplusResponse = self
+                .http
+                .post_json_once(
+                    self.api_url.clone(),
+                    HeaderMap::new(),
+                    &PushplusRequest {
+                        token: self.token.expose_secret(),
+                        title: &notification.title,
+                        content: &notification.body,
+                        topic: self.topic.as_deref(),
+                    },
+                )
+                .await
+                .map_err(redact_http_error)?;
+            if response.code == 200 {
+                Ok(())
+            } else {
+                Err(PushError::ServiceRejected(response.code))
+            }
+        })
+    }
+}
+
+fn redact_http_error(error: HttpError) -> PushError {
+    match error {
+        HttpError::InvalidUrl(_) => PushError::InvalidEndpoint,
+        HttpError::Timeout => PushError::Timeout,
+        HttpError::Status(status) => PushError::HttpStatus(status.as_u16()),
+        HttpError::Decode(_) => PushError::InvalidResponse,
+        HttpError::InvalidProxy(_)
+        | HttpError::Connect(_)
+        | HttpError::Build(_) => PushError::Network,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{body_json, header, method, path},
+    };
+
+    fn http() -> HttpClient {
+        HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 1,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap()
+    }
+
+    fn notification() -> Notification {
+        Notification {
+            title: "执行结果".to_owned(),
+            body: "签到成功".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn telegram_uses_configured_url_and_expected_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/bot123:secret/sendMessage"))
+            .and(header("content-type", "application/json"))
+            .and(body_json(json!({
+                "chat_id": "987654",
+                "text": "执行结果\n签到成功"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "ok": true })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = TelegramProvider::new(
+            http(),
+            SecretString::new("123:secret"),
+            "987654".to_owned(),
+            Url::parse(&server.uri()).unwrap(),
+        );
+        assert_eq!(provider.send(&notification()).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn webhook_accepts_empty_success_response_and_expected_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/private-hook"))
+            .and(header("content-type", "application/json"))
+            .and(body_json(json!({
+                "title": "执行结果",
+                "message": "签到成功"
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = WebhookProvider::new(
+            http(),
+            SecretString::new(format!("{}/private-hook", server.uri())),
+        );
+        assert_eq!(provider.send(&notification()).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn pushplus_uses_expected_url_headers_and_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/send"))
+            .and(header("content-type", "application/json"))
+            .and(body_json(json!({
+                "token": "pushplus-secret",
+                "title": "执行结果",
+                "content": "签到成功",
+                "topic": "daily"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "code": 200 })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = PushplusProvider::with_endpoint(
+            http(),
+            SecretString::new("pushplus-secret"),
+            Some("daily".to_owned()),
+            Url::parse(&format!("{}/send", server.uri())).unwrap(),
+        );
+        assert_eq!(provider.send(&notification()).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_continues_after_provider_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/failed"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/succeeded"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dispatcher = PushDispatcher::new(vec![
+            Box::new(WebhookProvider::new(
+                http(),
+                SecretString::new(format!("{}/failed", server.uri())),
+            )),
+            Box::new(WebhookProvider::new(
+                http(),
+                SecretString::new(format!("{}/succeeded", server.uri())),
+            )),
+        ]);
+        let report = dispatcher.dispatch(&notification()).await;
+
+        assert_eq!(report.deliveries.len(), 2);
+        assert_eq!(report.deliveries[0].status, DeliveryStatus::Failed);
+        assert_eq!(report.deliveries[1].status, DeliveryStatus::Sent);
+        assert!(!report.all_succeeded());
+    }
+
+    #[tokio::test]
+    async fn errors_and_debug_output_do_not_expose_secrets() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let token = "telegram-super-secret";
+        let provider = TelegramProvider::new(
+            http(),
+            SecretString::new(token),
+            "sensitive-chat-id".to_owned(),
+            Url::parse(&server.uri()).unwrap(),
+        );
+
+        let error = provider.send(&notification()).await.unwrap_err();
+        assert!(!format!("{error}").contains(token));
+        let debug = format!("{provider:?}");
+        assert!(!debug.contains(token));
+        assert!(!debug.contains("sensitive-chat-id"));
+    }
+}
