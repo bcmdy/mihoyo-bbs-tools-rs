@@ -280,9 +280,7 @@ fn push_hoyolab_error(
             TaskOutcome::AuthenticationFailed,
             "Cookie 无效或已过期".to_owned(),
         ),
-        HoyolabCheckinError::Http(_) => {
-            (TaskOutcome::NetworkFailed, "网络请求失败".to_owned())
-        }
+        HoyolabCheckinError::Http(_) => (TaskOutcome::NetworkFailed, "网络请求失败".to_owned()),
         other => (TaskOutcome::Failed, other.to_string()),
     };
     report.push(record(account, "HoYoLAB 签到", subject, outcome, &message));
