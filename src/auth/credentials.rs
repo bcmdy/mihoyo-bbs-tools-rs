@@ -261,10 +261,8 @@ mod tests {
 
     #[test]
     fn token_replacement_is_cookie_aware() {
-        let mut credentials = Credentials::new(
-            "cookie_token=old; token_copy=old; account_id=123",
-            "token",
-        );
+        let mut credentials =
+            Credentials::new("cookie_token=old; token_copy=old; account_id=123", "token");
         credentials.replace_cookie_token("new").unwrap();
 
         assert_eq!(

@@ -268,7 +268,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             errors.push(format!("账号名称 {trimmed:?} 重复"));
         }
         if let Some(proxy) = &account.proxy.url {
-            validate_proxy(proxy.expose_secret(), &format!("{path}.proxy.url"), &mut errors);
+            validate_proxy(
+                proxy.expose_secret(),
+                &format!("{path}.proxy.url"),
+                &mut errors,
+            );
         }
         if account.enabled && account.tasks.any_enabled() && account.credentials.cookie.is_empty() {
             errors.push(format!("{path} 启用了任务但 credentials.cookie 为空"));
@@ -310,7 +314,11 @@ fn validate_proxy(raw: &str, path: &str, errors: &mut Vec<String>) {
 fn validate_provider(provider: &NotificationProvider, index: usize, errors: &mut Vec<String>) {
     let path = format!("notifications.providers[{index}]");
     match provider {
-        NotificationProvider::Telegram { bot_token, chat_id, api_url } => {
+        NotificationProvider::Telegram {
+            bot_token,
+            chat_id,
+            api_url,
+        } => {
             if bot_token.is_empty() {
                 errors.push(format!("{path}.bot_token 不能为空"));
             }
@@ -323,12 +331,10 @@ fn validate_provider(provider: &NotificationProvider, index: usize, errors: &mut
                 }
             }
         }
-        NotificationProvider::Webhook { url } => {
-            match Url::parse(url.expose_secret()) {
-                Ok(url) if matches!(url.scheme(), "http" | "https") => {}
-                _ => errors.push(format!("{path}.url 必须是 http 或 https URL")),
-            }
-        }
+        NotificationProvider::Webhook { url } => match Url::parse(url.expose_secret()) {
+            Ok(url) if matches!(url.scheme(), "http" | "https") => {}
+            _ => errors.push(format!("{path}.url 必须是 http 或 https URL")),
+        },
         NotificationProvider::Pushplus { token, .. } => {
             if token.is_empty() {
                 errors.push(format!("{path}.token 不能为空"));
@@ -374,14 +380,19 @@ fn expand_environment(
     Ok(())
 }
 
-fn expand_string(text: &str, resolver: &impl Fn(&str) -> Option<String>) -> Result<String, ConfigError> {
+fn expand_string(
+    text: &str,
+    resolver: &impl Fn(&str) -> Option<String>,
+) -> Result<String, ConfigError> {
     let mut output = String::with_capacity(text.len());
     let mut remaining = text;
     while let Some(start) = remaining.find("${") {
         output.push_str(&remaining[..start]);
         let after = &remaining[start + 2..];
         let Some(end) = after.find('}') else {
-            return Err(ConfigError::InvalidEnvironmentPlaceholder(remaining[start..].to_owned()));
+            return Err(ConfigError::InvalidEnvironmentPlaceholder(
+                remaining[start..].to_owned(),
+            ));
         };
         let name = &after[..end];
         let valid_first = name
@@ -389,9 +400,14 @@ fn expand_string(text: &str, resolver: &impl Fn(&str) -> Option<String>) -> Resu
             .next()
             .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_');
         if !valid_first || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-            return Err(ConfigError::InvalidEnvironmentPlaceholder(format!("${{{name}}}")));
+            return Err(ConfigError::InvalidEnvironmentPlaceholder(format!(
+                "${{{name}}}"
+            )));
         }
-        output.push_str(&resolver(name).ok_or_else(|| ConfigError::MissingEnvironmentVariable(name.to_owned()))?);
+        output.push_str(
+            &resolver(name)
+                .ok_or_else(|| ConfigError::MissingEnvironmentVariable(name.to_owned()))?,
+        );
         remaining = &after[end + 1..];
     }
     output.push_str(remaining);
@@ -470,13 +486,22 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
             );
             if let Some(Value::Sequence(providers)) = get(notifications, "providers") {
                 for (index, provider) in providers.iter().enumerate() {
-                    let allowed = match provider.as_mapping().and_then(|m| get(m, "type")).and_then(Value::as_str) {
+                    let allowed = match provider
+                        .as_mapping()
+                        .and_then(|m| get(m, "type"))
+                        .and_then(Value::as_str)
+                    {
                         Some("telegram") => &["type", "bot_token", "chat_id", "api_url"][..],
                         Some("webhook") => &["type", "url"][..],
                         Some("pushplus") => &["type", "token", "topic"][..],
                         _ => &["type"][..],
                     };
-                    inspect_mapping(provider, &format!("notifications.providers[{index}]"), allowed, &mut warnings);
+                    inspect_mapping(
+                        provider,
+                        &format!("notifications.providers[{index}]"),
+                        allowed,
+                        &mut warnings,
+                    );
                 }
             }
         }
@@ -501,7 +526,9 @@ fn inspect_named_child(
 }
 
 fn inspect_mapping(value: &Value, path: &str, allowed: &[&str], warnings: &mut Vec<String>) {
-    let Some(map) = value.as_mapping() else { return; };
+    let Some(map) = value.as_mapping() else {
+        return;
+    };
     for key in map.keys().filter_map(Value::as_str) {
         if !allowed.contains(&key) {
             let full = if path.is_empty() {
@@ -537,8 +564,12 @@ fn valid_timezone(value: &str) -> bool {
         let mut parts = value.split('/');
         let first = parts.next().unwrap_or_default();
         let second = parts.next().unwrap_or_default();
-        !first.is_empty() && !second.is_empty() && parts.next().is_none()
-            && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-' | b'+'))
+        !first.is_empty()
+            && !second.is_empty()
+            && parts.next().is_none()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-' | b'+'))
     }
 }
 
@@ -592,42 +623,63 @@ accounts:
         let loaded = parse(MINIMAL).unwrap();
         assert_eq!(loaded.config.runtime.request_timeout_seconds, 30);
         assert_eq!(loaded.config.runtime.timezone, "Asia/Shanghai");
-        assert_eq!(loaded.config.accounts[0].credentials.cookie.expose_secret(), "account_id=123; cookie_token=secret");
+        assert_eq!(
+            loaded.config.accounts[0].credentials.cookie.expose_secret(),
+            "account_id=123; cookie_token=secret"
+        );
         assert!(loaded.warnings.is_empty());
     }
 
     #[test]
     fn missing_environment_variable_is_explicit_and_redacted() {
         let error = parse(&MINIMAL.replace("${COOKIE}", "${MISSING_SECRET}")).unwrap_err();
-        assert!(matches!(error, ConfigError::MissingEnvironmentVariable(ref name) if name == "MISSING_SECRET"));
+        assert!(
+            matches!(error, ConfigError::MissingEnvironmentVariable(ref name) if name == "MISSING_SECRET")
+        );
         assert!(!error.to_string().contains("cookie_token"));
     }
 
     #[test]
     fn warns_about_unknown_fields_at_nested_paths() {
-        let source = MINIMAL.replace("    tasks:", "    unexpected: true\n    tasks:")
+        let source = MINIMAL
+            .replace("    tasks:", "    unexpected: true\n    tasks:")
             .replace("      bbs: true", "      bbs: true\n      typo: true");
         let loaded = parse(&source).unwrap();
-        assert_eq!(loaded.warnings, vec!["未知配置字段 accounts[0].unexpected", "未知配置字段 accounts[0].tasks.typo"]);
+        assert_eq!(
+            loaded.warnings,
+            vec![
+                "未知配置字段 accounts[0].unexpected",
+                "未知配置字段 accounts[0].tasks.typo"
+            ]
+        );
     }
 
     #[test]
     fn rejects_duplicate_account_names() {
-        let source = format!("{MINIMAL}\n  - name: first\n    credentials:\n      cookie: x\n      stoken: y\n");
-        assert!(matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|e| e.contains("重复"))));
+        let source = format!(
+            "{MINIMAL}\n  - name: first\n    credentials:\n      cookie: x\n      stoken: y\n"
+        );
+        assert!(
+            matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|e| e.contains("重复")))
+        );
     }
 
     #[test]
     fn rejects_unsafe_protocols_and_timeout() {
         let source = MINIMAL.replace("accounts:", "runtime:\n  request_timeout_seconds: 0\ncaptcha:\n  endpoint: file:///tmp/captcha\naccounts:")
             .replace("    credentials:", "    proxy:\n      url: ftp://example.com\n    credentials:");
-        assert!(matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.len() == 3));
+        assert!(
+            matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.len() == 3)
+        );
     }
 
     #[test]
     fn unknown_versions_are_not_silently_accepted() {
         let source = MINIMAL.replace("version: 1", "version: 99");
-        assert!(matches!(parse(&source), Err(ConfigError::UnsupportedVersion(99))));
+        assert!(matches!(
+            parse(&source),
+            Err(ConfigError::UnsupportedVersion(99))
+        ));
     }
 
     #[test]

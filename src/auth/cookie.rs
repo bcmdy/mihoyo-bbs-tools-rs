@@ -42,11 +42,12 @@ impl CookieJar {
             if segment.is_empty() {
                 continue;
             }
-            let (name, value) = segment.split_once('=').ok_or_else(|| {
-                CookieError::MissingEquals {
-                    segment: segment.to_owned(),
-                }
-            })?;
+            let (name, value) =
+                segment
+                    .split_once('=')
+                    .ok_or_else(|| CookieError::MissingEquals {
+                        segment: segment.to_owned(),
+                    })?;
             jar.insert(name.trim(), value.trim())?;
         }
         Ok(jar)
@@ -122,7 +123,6 @@ impl CookieJar {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-
 }
 
 impl fmt::Display for CookieJar {

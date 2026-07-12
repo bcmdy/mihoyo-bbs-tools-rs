@@ -23,7 +23,8 @@ use super::{
 
 const ROLE_BASE: &str = "https://api-takumi.mihoyo.com";
 const ROLE_PATH: &str = "/binding/api/getUserGameRolesByCookie";
-const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0";
+const DEFAULT_USER_AGENT: &str =
+    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0";
 
 #[derive(Debug, Error)]
 pub enum CheckinError {
@@ -188,11 +189,7 @@ impl ChinaCheckinClient {
         insert_header(&mut headers, "x-rpc-app_version", "2.109.0")?;
         insert_header(&mut headers, "x-rpc-client_type", "5")?;
         insert_header(&mut headers, "x-rpc-device_id", &self.device_id)?;
-        insert_header(
-            &mut headers,
-            "x-requested-with",
-            "com.mihoyo.hyperion",
-        )?;
+        insert_header(&mut headers, "x-requested-with", "com.mihoyo.hyperion")?;
         if let Some(sign_game) = spec.sign_game {
             insert_header(&mut headers, "x-rpc-signgame", sign_game)?;
         }
@@ -276,12 +273,8 @@ mod tests {
             })
             .build()
             .unwrap();
-        ChinaCheckinClient::new(
-            http,
-            SecretString::new("cookie_token=secret"),
-            "device-id",
-        )
-        .endpoint_override(Url::parse(&server.uri()).unwrap())
+        ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id")
+            .endpoint_override(Url::parse(&server.uri()).unwrap())
     }
 
     #[tokio::test]

@@ -8,8 +8,7 @@ use crate::http::{HttpClient, HttpError};
 
 use super::{AuthError, CookieJar, Credentials, SecretString};
 
-const MULTI_TOKEN_URL: &str =
-    "https://api-takumi.mihoyo.com/auth/api/getMultiTokenByLoginTicket";
+const MULTI_TOKEN_URL: &str = "https://api-takumi.mihoyo.com/auth/api/getMultiTokenByLoginTicket";
 const COOKIE_TOKEN_URL: &str =
     "https://api-takumi.mihoyo.com/auth/api/getCookieAccountInfoBySToken";
 
@@ -31,8 +30,7 @@ impl AuthEndpoints {
     pub fn production() -> Self {
         Self {
             multi_token: Url::parse(MULTI_TOKEN_URL).expect("固定的 multi-token URL 应当有效"),
-            cookie_token: Url::parse(COOKIE_TOKEN_URL)
-                .expect("固定的 cookie-token URL 应当有效"),
+            cookie_token: Url::parse(COOKIE_TOKEN_URL).expect("固定的 cookie-token URL 应当有效"),
         }
     }
 
@@ -292,10 +290,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/auth/api/getCookieAccountInfoBySToken"))
-            .and(header(
-                "cookie",
-                "stuid=123;stoken=v2_secret;mid=mid-value",
-            ))
+            .and(header("cookie", "stuid=123;stoken=v2_secret;mid=mid-value"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "retcode": 0,
                 "message": "OK",

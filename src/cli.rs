@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "mihoyo-bbs-tools", version, about = "米游社与 HoYoLAB 自动任务工具")]
+#[command(
+    name = "mihoyo-bbs-tools",
+    version,
+    about = "米游社与 HoYoLAB 自动任务工具"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

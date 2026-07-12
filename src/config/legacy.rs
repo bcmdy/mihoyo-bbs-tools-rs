@@ -4,8 +4,8 @@ use serde_yaml_ng::{Mapping, Value};
 use url::Url;
 
 use super::{
-    AccountConfig, CaptchaConfig, Config, ConfigError, CredentialConfig, Game, LoadedConfig,
-    NotificationsConfig, ProxyConfig, RuntimeConfig, TaskConfig, CURRENT_CONFIG_VERSION,
+    AccountConfig, CURRENT_CONFIG_VERSION, CaptchaConfig, Config, ConfigError, CredentialConfig,
+    Game, LoadedConfig, NotificationsConfig, ProxyConfig, RuntimeConfig, TaskConfig,
 };
 use crate::auth::SecretString;
 
@@ -242,10 +242,12 @@ mod tests {
         assert_eq!(account.games, vec![Game::Genshin, Game::StarRail]);
         assert_eq!(migrated.config.runtime.retry_count, 4);
         assert!(!format!("{:?}", migrated.config).contains("fixture-cookie-token"));
-        assert!(migrated
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("device")));
+        assert!(
+            migrated
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("device"))
+        );
     }
 
     #[test]
@@ -258,10 +260,12 @@ mod tests {
             assert_eq!(migrated.config.version, CURRENT_CONFIG_VERSION);
             assert_eq!(migrated.config.accounts[0].name, format!("v{version}"));
             if version < 15 {
-                assert!(migrated
-                    .warnings
-                    .iter()
-                    .any(|warning| warning.contains("安全默认值")));
+                assert!(
+                    migrated
+                        .warnings
+                        .iter()
+                        .any(|warning| warning.contains("安全默认值"))
+                );
             }
         }
     }
@@ -272,9 +276,11 @@ mod tests {
             serde_yaml_ng::from_str(include_str!("fixtures/legacy_v11.yaml")).unwrap();
         let migrated = migrate_value(&value, "v11").unwrap();
         assert!(migrated.config.accounts[0].tasks.china_cloud_game);
-        assert!(migrated
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("云游戏 Token")));
+        assert!(
+            migrated
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("云游戏 Token"))
+        );
     }
 }
