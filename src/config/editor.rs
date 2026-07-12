@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    io::{self, BufRead},
+    io::{self, BufRead, Write},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -9,7 +9,7 @@ use serde_yaml_ng::{Mapping, Value};
 
 use crate::auth::CookieJar;
 
-use super::{ConfigError, load};
+use super::{ConfigError, load, open_secure_new};
 
 pub fn edit_file(path: &Path) -> Result<(), ConfigError> {
     let original = fs::read_to_string(path).map_err(|source| ConfigError::Read {
@@ -17,7 +17,7 @@ pub fn edit_file(path: &Path) -> Result<(), ConfigError> {
         source,
     })?;
     let temporary = temporary_path(path);
-    fs::write(&temporary, &original).map_err(|source| write_error(&temporary, source))?;
+    secure_write_new(&temporary, &original)?;
     let editor = env::var_os("VISUAL")
         .or_else(|| env::var_os("EDITOR"))
         .unwrap_or_else(|| {
@@ -60,8 +60,7 @@ pub fn add_account_from_stdin(path: &Path, name: Option<&str>) -> Result<String,
     let cookie = cookie.trim();
     let jar =
         CookieJar::parse(cookie).map_err(|_| ConfigError::Edit("Cookie 格式无效".to_owned()))?;
-    let stoken = jar
-        .get("stoken")
+    jar.get("stoken")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             ConfigError::Edit("Cookie 中缺少 stoken，请重新获取完整 Cookie".to_owned())
@@ -70,7 +69,7 @@ pub fn add_account_from_stdin(path: &Path, name: Option<&str>) -> Result<String,
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-        .or_else(|| jar.uid().map(|uid| format!("账号-{uid}")))
+        .or_else(|| jar.uid().map(|uid| format!("账号-{}", uid_suffix(uid))))
         .ok_or_else(|| ConfigError::Edit("未提供备注且 Cookie 中缺少 UID".to_owned()))?;
 
     mutate_raw(path, |root| {
@@ -85,7 +84,6 @@ pub fn add_account_from_stdin(path: &Path, name: Option<&str>) -> Result<String,
         }
         let mut credentials = Mapping::new();
         credentials.insert(key("cookie"), Value::String(cookie.to_owned()));
-        credentials.insert(key("stoken"), Value::String(stoken.to_owned()));
         let mut account = Mapping::new();
         account.insert(key("name"), Value::String(account_name.clone()));
         account.insert(key("enabled"), Value::Bool(true));
@@ -93,7 +91,7 @@ pub fn add_account_from_stdin(path: &Path, name: Option<&str>) -> Result<String,
         account.insert(key("device"), Value::Mapping(Mapping::new()));
         account.insert(key("proxy"), Value::Mapping(Mapping::new()));
         account.insert(key("tasks"), default_tasks());
-        account.insert(key("games"), Value::Sequence(Vec::new()));
+        account.insert(key("games"), default_games());
         accounts.push(Value::Mapping(account));
         Ok(())
     })?;
@@ -127,7 +125,7 @@ fn mutate_raw(
     mutate(&mut value)?;
     let updated = serde_yaml_ng::to_string(&value).map_err(ConfigError::Serialize)?;
     let temporary = temporary_path(path);
-    fs::write(&temporary, &updated).map_err(|source| write_error(&temporary, source))?;
+    secure_write_new(&temporary, &updated)?;
     load(&temporary).map_err(|error| {
         let _ = fs::remove_file(&temporary);
         ConfigError::Edit(format!("修改后配置未通过校验，原配置未修改：{error}"))
@@ -163,11 +161,38 @@ fn default_tasks() -> Value {
     Value::Mapping(tasks)
 }
 
+fn default_games() -> Value {
+    Value::Sequence(
+        [
+            "genshin",
+            "honkai2",
+            "honkai3rd",
+            "tears_of_themis",
+            "star_rail",
+            "zenless_zone_zero",
+        ]
+        .into_iter()
+        .map(|game| Value::String(game.to_owned()))
+        .collect(),
+    )
+}
+
+fn uid_suffix(uid: &str) -> String {
+    let suffix = uid.chars().rev().take(4).collect::<Vec<_>>();
+    suffix.into_iter().rev().collect()
+}
+
 fn key(value: &str) -> Value {
     Value::String(value.to_owned())
 }
 fn temporary_path(path: &Path) -> PathBuf {
-    path.with_extension("yaml.editing")
+    path.with_extension(format!("yaml.{}.editing", std::process::id()))
+}
+
+fn secure_write_new(path: &Path, content: &str) -> Result<(), ConfigError> {
+    let mut file = open_secure_new(path).map_err(|source| write_error(path, source))?;
+    file.write_all(content.as_bytes())
+        .map_err(|source| write_error(path, source))
 }
 fn write_error(path: &Path, source: std::io::Error) -> ConfigError {
     ConfigError::Write {
