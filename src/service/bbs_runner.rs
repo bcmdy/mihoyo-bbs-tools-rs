@@ -4,9 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::{Credentials, SecretString},
-    bbs::{
-        BbsClient, BbsError, CoinSummary, ForumSignRequest, MissionKind, PostRef,
-    },
+    bbs::{BbsClient, BbsError, CoinSummary, ForumSignRequest, MissionKind, PostRef},
     config::{AccountConfig, Config},
     http::{HttpClient, RetryPolicy},
     signing::{DsSigner, SystemClock, ThreadRandom},
@@ -140,12 +138,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
                     "签到请求成功",
                 )),
                 Err(BbsError::CaptchaRequired) => {
-                    push_error(
-                        report,
-                        &account.name,
-                        forum.name,
-                        BbsError::CaptchaRequired,
-                    );
+                    push_error(report, &account.name, forum.name, BbsError::CaptchaRequired);
                     high_risk_blocked = true;
                     break;
                 }
@@ -165,10 +158,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
         Vec::new()
     } else {
         let ds = signer.sign_app().to_string();
-        match client
-            .posts(DEFAULT_FORUMS[0].forum_id, 20, &ds)
-            .await
-        {
+        match client.posts(DEFAULT_FORUMS[0].forum_id, 20, &ds).await {
             Ok(posts) => client.select_posts(&posts, required_posts),
             Err(error) => {
                 push_error(report, &account.name, "帖子列表", error);
@@ -199,10 +189,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
 
     for post in selected.iter().take(plan.like as usize) {
         let ds = signer.sign_app().to_string();
-        match client
-            .set_like_once(&post.post_id, false, &ds, None)
-            .await
-        {
+        match client.set_like_once(&post.post_id, false, &ds, None).await {
             Ok(()) => report.push(post_record(
                 &account.name,
                 "点赞",
@@ -211,7 +198,12 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
                 "点赞成功",
             )),
             Err(BbsError::CaptchaRequired) => {
-                push_error(report, &account.name, &post.subject, BbsError::CaptchaRequired);
+                push_error(
+                    report,
+                    &account.name,
+                    &post.subject,
+                    BbsError::CaptchaRequired,
+                );
                 high_risk_blocked = true;
                 break;
             }
@@ -226,10 +218,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
         }
 
         let ds = signer.sign_app().to_string();
-        match client
-            .set_like_once(&post.post_id, true, &ds, None)
-            .await
-        {
+        match client.set_like_once(&post.post_id, true, &ds, None).await {
             Ok(()) => report.push(post_record(
                 &account.name,
                 "取消点赞",
@@ -238,7 +227,12 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
                 "已恢复点赞状态",
             )),
             Err(BbsError::CaptchaRequired) => {
-                push_error(report, &account.name, &post.subject, BbsError::CaptchaRequired);
+                push_error(
+                    report,
+                    &account.name,
+                    &post.subject,
+                    BbsError::CaptchaRequired,
+                );
                 high_risk_blocked = true;
                 break;
             }
@@ -432,13 +426,7 @@ fn push_error(report: &mut RunReport, account: &str, subject: &str, error: BbsEr
         BbsError::Http(_) => (TaskOutcome::NetworkFailed, "网络请求失败".to_owned()),
         other => (TaskOutcome::Failed, other.to_string()),
     };
-    report.push(record(
-        account,
-        "米游社任务",
-        subject,
-        outcome,
-        &message,
-    ));
+    report.push(record(account, "米游社任务", subject, outcome, &message));
 }
 
 fn post_record(
@@ -527,12 +515,7 @@ mod tests {
     #[test]
     fn captcha_report_has_priority_and_marks_high_risk_actions_skipped() {
         let mut report = RunReport::default();
-        push_error(
-            &mut report,
-            "account",
-            "原神",
-            BbsError::CaptchaRequired,
-        );
+        push_error(&mut report, "account", "原神", BbsError::CaptchaRequired);
         push_blocked_actions(
             &mut report,
             "account",
@@ -564,9 +547,6 @@ mod tests {
         let header = sign_ds2_with(BODY_SALT, 1_700_000_000, 123_456, "", &body);
         let independently_serialized = serde_json::to_vec(&request).unwrap();
         assert_eq!(body, independently_serialized);
-        assert_eq!(
-            header.checksum,
-            "b4ec3312d474ed70fcfcb5e6f25b04a4"
-        );
+        assert_eq!(header.checksum, "b4ec3312d474ed70fcfcb5e6f25b04a4");
     }
 }
