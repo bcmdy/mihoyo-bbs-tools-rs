@@ -56,6 +56,8 @@ accounts:
 
 notifications:
   enabled: true
+  error_only: false
+  block_keywords: []
   providers:
     - type: telegram
       bot_token: "${TELEGRAM_BOT_TOKEN}"
@@ -68,6 +70,8 @@ notifications:
       token: "${PUSHPLUS_TOKEN}"
       topic: null
 ```
+
+除 Telegram、Webhook、PushPlus 外，通知还支持：`ftqq`、`pushme`、`cqhttp`、`wecom`、`wecomrobot`、`pushdeer`、`dingrobot`、`feishubot`、`bark`、`gotify`、`ifttt`、`qmsg`、`discord`、`wxpusher`、`serverchan3`。各渠道使用与服务商对应的 `token`、`sendkey`、`webhook`、`api_url` 等字段；所有凭据均建议使用环境变量注入。`error_only: true` 时仅在核心任务非成功时推送，`block_keywords` 会在发送前将正文中的指定关键词替换为等长星号。
 
 ## 验证码与推送
 

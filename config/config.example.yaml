@@ -42,4 +42,6 @@ accounts:
 
 notifications:
   enabled: false
+  error_only: false
+  block_keywords: []
   providers: []

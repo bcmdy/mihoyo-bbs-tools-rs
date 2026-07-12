@@ -224,6 +224,10 @@ pub struct NotificationsConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
+    pub error_only: bool,
+    #[serde(default)]
+    pub block_keywords: Vec<String>,
+    #[serde(default)]
     pub providers: Vec<NotificationProvider>,
 }
 
@@ -256,6 +260,175 @@ pub enum NotificationProvider {
         #[serde(default)]
         topic: Option<String>,
     },
+    Ftqq {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        sendkey: SecretString,
+        #[serde(default)]
+        api_url: Option<Url>,
+    },
+    Pushme {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        token: SecretString,
+        #[serde(default)]
+        api_url: Option<Url>,
+    },
+    Cqhttp {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        url: SecretString,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_optional_secret",
+            serialize_with = "serialize_optional_secret"
+        )]
+        qq: Option<SecretString>,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_optional_secret",
+            serialize_with = "serialize_optional_secret"
+        )]
+        group: Option<SecretString>,
+    },
+    Wecom {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        corp_id: SecretString,
+        agent_id: String,
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        secret: SecretString,
+        #[serde(default = "default_wecom_to_user")]
+        to_user: String,
+        #[serde(default)]
+        api_url: Option<Url>,
+    },
+    Wecomrobot {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        url: SecretString,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_optional_secret",
+            serialize_with = "serialize_optional_secret"
+        )]
+        mobile: Option<SecretString>,
+    },
+    Pushdeer {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        token: SecretString,
+        #[serde(default)]
+        api_url: Option<Url>,
+    },
+    Dingrobot {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        webhook: SecretString,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_optional_secret",
+            serialize_with = "serialize_optional_secret"
+        )]
+        secret: Option<SecretString>,
+    },
+    Feishubot {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        webhook: SecretString,
+    },
+    Bark {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        token: SecretString,
+        #[serde(default)]
+        api_url: Option<Url>,
+        #[serde(default)]
+        icon: Option<String>,
+    },
+    Gotify {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        token: SecretString,
+        api_url: Url,
+        #[serde(default)]
+        priority: i64,
+    },
+    Ifttt {
+        event: String,
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        key: SecretString,
+        #[serde(default)]
+        api_url: Option<Url>,
+    },
+    Qmsg {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        key: SecretString,
+        #[serde(default)]
+        api_url: Option<Url>,
+    },
+    Discord {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        webhook: SecretString,
+    },
+    Wxpusher {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        app_token: SecretString,
+        #[serde(default)]
+        uids: Vec<String>,
+        #[serde(default)]
+        topic_ids: Vec<i64>,
+        #[serde(default)]
+        api_url: Option<Url>,
+    },
+    Serverchan3 {
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        sendkey: SecretString,
+        #[serde(default)]
+        tags: Option<String>,
+    },
+}
+
+fn default_wecom_to_user() -> String {
+    "@all".to_owned()
 }
 
 pub fn load(path: &Path) -> Result<LoadedConfig, ConfigError> {
@@ -483,6 +656,123 @@ fn validate_provider(provider: &NotificationProvider, index: usize, errors: &mut
                 errors.push(format!("{path}.token 不能为空"));
             }
         }
+        NotificationProvider::Ftqq { sendkey, api_url } => {
+            validate_required_secret(sendkey, &format!("{path}.sendkey"), errors);
+            validate_optional_http_url(api_url.as_ref(), &format!("{path}.api_url"), errors);
+        }
+        NotificationProvider::Pushme { token, api_url }
+        | NotificationProvider::Pushdeer { token, api_url }
+        | NotificationProvider::Bark { token, api_url, .. } => {
+            validate_required_secret(token, &format!("{path}.token"), errors);
+            validate_optional_http_url(api_url.as_ref(), &format!("{path}.api_url"), errors);
+        }
+        NotificationProvider::Cqhttp { url, qq, group } => {
+            validate_secret_http_url(url, &format!("{path}.url"), errors);
+            match (qq, group) {
+                (Some(_), Some(_)) => errors.push(format!("{path}.qq 与 group 只能配置一个")),
+                (None, None) => errors.push(format!("{path}.qq 与 group 必须配置一个")),
+                (Some(value), None) => {
+                    validate_required_secret(value, &format!("{path}.qq"), errors)
+                }
+                (None, Some(value)) => {
+                    validate_required_secret(value, &format!("{path}.group"), errors)
+                }
+            }
+        }
+        NotificationProvider::Wecom {
+            corp_id,
+            agent_id,
+            secret,
+            to_user,
+            api_url,
+        } => {
+            validate_required_secret(corp_id, &format!("{path}.corp_id"), errors);
+            if agent_id.trim().is_empty() {
+                errors.push(format!("{path}.agent_id 不能为空"));
+            }
+            validate_required_secret(secret, &format!("{path}.secret"), errors);
+            if to_user.trim().is_empty() {
+                errors.push(format!("{path}.to_user 不能为空"));
+            }
+            validate_optional_http_url(api_url.as_ref(), &format!("{path}.api_url"), errors);
+        }
+        NotificationProvider::Wecomrobot { url, mobile } => {
+            validate_secret_http_url(url, &format!("{path}.url"), errors);
+            if let Some(mobile) = mobile {
+                validate_required_secret(mobile, &format!("{path}.mobile"), errors);
+            }
+        }
+        NotificationProvider::Dingrobot { webhook, secret } => {
+            validate_secret_http_url(webhook, &format!("{path}.webhook"), errors);
+            if let Some(secret) = secret {
+                validate_required_secret(secret, &format!("{path}.secret"), errors);
+            }
+        }
+        NotificationProvider::Feishubot { webhook } | NotificationProvider::Discord { webhook } => {
+            validate_secret_http_url(webhook, &format!("{path}.webhook"), errors);
+        }
+        NotificationProvider::Gotify { token, api_url, .. } => {
+            validate_required_secret(token, &format!("{path}.token"), errors);
+            validate_http_url(api_url, &format!("{path}.api_url"), errors);
+        }
+        NotificationProvider::Ifttt {
+            event,
+            key,
+            api_url,
+        } => {
+            if event.trim().is_empty() {
+                errors.push(format!("{path}.event 不能为空"));
+            }
+            validate_required_secret(key, &format!("{path}.key"), errors);
+            validate_optional_http_url(api_url.as_ref(), &format!("{path}.api_url"), errors);
+        }
+        NotificationProvider::Qmsg { key, api_url } => {
+            validate_required_secret(key, &format!("{path}.key"), errors);
+            validate_optional_http_url(api_url.as_ref(), &format!("{path}.api_url"), errors);
+        }
+        NotificationProvider::Wxpusher {
+            app_token,
+            uids,
+            topic_ids,
+            api_url,
+        } => {
+            validate_required_secret(app_token, &format!("{path}.app_token"), errors);
+            if uids.is_empty() && topic_ids.is_empty() {
+                errors.push(format!("{path}.uids 与 topic_ids 至少配置一个接收目标"));
+            }
+            if uids.iter().any(|uid| uid.trim().is_empty()) {
+                errors.push(format!("{path}.uids 不能包含空值"));
+            }
+            validate_optional_http_url(api_url.as_ref(), &format!("{path}.api_url"), errors);
+        }
+        NotificationProvider::Serverchan3 { sendkey, .. } => {
+            validate_required_secret(sendkey, &format!("{path}.sendkey"), errors);
+        }
+    }
+}
+
+fn validate_required_secret(secret: &SecretString, path: &str, errors: &mut Vec<String>) {
+    if secret.expose_secret().trim().is_empty() {
+        errors.push(format!("{path} 不能为空"));
+    }
+}
+
+fn validate_secret_http_url(secret: &SecretString, path: &str, errors: &mut Vec<String>) {
+    match Url::parse(secret.expose_secret()) {
+        Ok(url) => validate_http_url(&url, path, errors),
+        Err(_) => errors.push(format!("{path} 必须是 http 或 https URL")),
+    }
+}
+
+fn validate_optional_http_url(url: Option<&Url>, path: &str, errors: &mut Vec<String>) {
+    if let Some(url) = url {
+        validate_http_url(url, path, errors);
+    }
+}
+
+fn validate_http_url(url: &Url, path: &str, errors: &mut Vec<String>) {
+    if !matches!(url.scheme(), "http" | "https") {
+        errors.push(format!("{path} 仅支持 http 或 https"));
     }
 }
 
@@ -639,7 +929,7 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
             inspect_mapping(
                 &Value::Mapping(notifications.clone()),
                 "notifications",
-                &["enabled", "providers"],
+                &["enabled", "error_only", "block_keywords", "providers"],
                 &mut warnings,
             );
             if let Some(Value::Sequence(providers)) = get(notifications, "providers") {
@@ -652,6 +942,25 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                         Some("telegram") => &["type", "bot_token", "chat_id", "api_url"][..],
                         Some("webhook") => &["type", "url"][..],
                         Some("pushplus") => &["type", "token", "topic"][..],
+                        Some("ftqq") => &["type", "sendkey", "api_url"][..],
+                        Some("pushme") => &["type", "token", "api_url"][..],
+                        Some("cqhttp") => &["type", "url", "qq", "group"][..],
+                        Some("wecom") => &[
+                            "type", "corp_id", "agent_id", "secret", "to_user", "api_url",
+                        ][..],
+                        Some("wecomrobot") => &["type", "url", "mobile"][..],
+                        Some("pushdeer") => &["type", "token", "api_url"][..],
+                        Some("dingrobot") => &["type", "webhook", "secret"][..],
+                        Some("feishubot") => &["type", "webhook"][..],
+                        Some("bark") => &["type", "token", "api_url", "icon"][..],
+                        Some("gotify") => &["type", "token", "api_url", "priority"][..],
+                        Some("ifttt") => &["type", "event", "key", "api_url"][..],
+                        Some("qmsg") => &["type", "key", "api_url"][..],
+                        Some("discord") => &["type", "webhook"][..],
+                        Some("wxpusher") => {
+                            &["type", "app_token", "uids", "topic_ids", "api_url"][..]
+                        }
+                        Some("serverchan3") => &["type", "sendkey", "tags"][..],
                         _ => &["type"][..],
                     };
                     inspect_mapping(

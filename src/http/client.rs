@@ -205,6 +205,32 @@ impl HttpClient {
             Err(error) => Err(HttpError::Connect(error.to_string())),
         }
     }
+
+    pub async fn post_form_once_without_response<B: Serialize + ?Sized>(
+        &self,
+        url: Url,
+        body: &B,
+    ) -> Result<(), HttpError> {
+        match self.inner.post(url).form(body).send().await {
+            Ok(response) if response.status().is_success() => Ok(()),
+            Ok(response) => Err(HttpError::Status(response.status())),
+            Err(error) if error.is_timeout() => Err(HttpError::Timeout),
+            Err(error) => Err(HttpError::Connect(error.to_string())),
+        }
+    }
+
+    pub async fn get_once_without_response(
+        &self,
+        url: Url,
+        query: &[(&str, String)],
+    ) -> Result<(), HttpError> {
+        match self.inner.get(url).query(query).send().await {
+            Ok(response) if response.status().is_success() => Ok(()),
+            Ok(response) => Err(HttpError::Status(response.status())),
+            Err(error) if error.is_timeout() => Err(HttpError::Timeout),
+            Err(error) => Err(HttpError::Connect(error.to_string())),
+        }
+    }
 }
 
 fn normalize_proxy_url(raw: &str) -> Result<Url, HttpError> {

@@ -45,6 +45,7 @@ pub enum ProviderKind {
     Telegram,
     Webhook,
     Pushplus,
+    Other,
 }
 
 impl ProviderKind {
@@ -53,6 +54,7 @@ impl ProviderKind {
             Self::Telegram => "telegram",
             Self::Webhook => "webhook",
             Self::Pushplus => "pushplus",
+            Self::Other => "other",
         }
     }
 }
@@ -160,7 +162,8 @@ impl PushDispatcher {
 ///
 /// 单个渠道失败不会中断后续渠道；每个渠道的结果均记录在返回值中。
 pub async fn send_report(config: &Config, report: &RunReport) -> PushReport {
-    if !config.notifications.enabled {
+    if !config.notifications.enabled || (config.notifications.error_only && report.exit_code() == 0)
+    {
         return PushReport::default();
     }
 
@@ -190,8 +193,16 @@ pub async fn send_report(config: &Config, report: &RunReport) -> PushReport {
         }
     };
 
+    let mut notification = Notification::from_report(report);
+    for keyword in &config.notifications.block_keywords {
+        if !keyword.is_empty() {
+            notification.body = notification
+                .body
+                .replace(keyword, &"*".repeat(keyword.chars().count()));
+        }
+    }
     PushDispatcher::from_config(http, &config.notifications)
-        .dispatch(&Notification::from_report(report))
+        .dispatch(&notification)
         .await
 }
 
@@ -213,6 +224,10 @@ fn configured_provider(http: HttpClient, provider: &NotificationProvider) -> Box
         NotificationProvider::Pushplus { token, topic } => {
             Box::new(PushplusProvider::new(http, token.clone(), topic.clone()))
         }
+        other => Box::new(CompatProvider {
+            http,
+            config: other.clone(),
+        }),
     }
 }
 
@@ -221,7 +236,142 @@ fn configured_kind(provider: &NotificationProvider) -> ProviderKind {
         NotificationProvider::Telegram { .. } => ProviderKind::Telegram,
         NotificationProvider::Webhook { .. } => ProviderKind::Webhook,
         NotificationProvider::Pushplus { .. } => ProviderKind::Pushplus,
+        _ => ProviderKind::Other,
     }
+}
+
+#[derive(Clone)]
+struct CompatProvider {
+    http: HttpClient,
+    config: NotificationProvider,
+}
+
+impl std::fmt::Debug for CompatProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompatProvider").finish_non_exhaustive()
+    }
+}
+
+impl Provider for CompatProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Other
+    }
+    fn send<'a>(&'a self, n: &'a Notification) -> SendFuture<'a> {
+        Box::pin(async move { self.send_inner(n).await })
+    }
+}
+
+impl CompatProvider {
+    async fn send_inner(&self, n: &Notification) -> Result<(), PushError> {
+        use NotificationProvider::*;
+        let text = format!("{}\n{}", n.title, n.body);
+        match &self.config {
+            Ftqq { sendkey, api_url } => {
+                let base = api_url.clone().unwrap_or_else(|| Url::parse("https://sctapi.ftqq.com/").unwrap());
+                let url = base.join(&format!("{}.send", sendkey.expose_secret())).map_err(|_| PushError::InvalidEndpoint)?;
+                self.form(url, &[("title", n.title.clone()), ("desp", n.body.clone())]).await
+            }
+            Pushme { token, api_url } => {
+                let url = api_url.clone().unwrap_or_else(|| Url::parse("https://push.i-i.me/").unwrap());
+                self.form(url, &[("push_key", token.expose_secret().to_owned()), ("title", n.title.clone()), ("content", n.body.clone()), ("type", "text".into())]).await
+            }
+            Cqhttp { url, qq, group } => {
+                let mut body = serde_json::json!({"message": text});
+                if let Some(v)=qq { body["user_id"] = serde_json::Value::String(v.expose_secret().into()); }
+                if let Some(v)=group { body["group_id"] = serde_json::Value::String(v.expose_secret().into()); }
+                self.json(secret_url(url)?, &body).await
+            }
+            Wecomrobot { url, mobile } => self.json(secret_url(url)?, &serde_json::json!({"msgtype":"text","text":{"content":text,"mentioned_mobile_list":mobile.as_ref().map(|v| vec![v.expose_secret()]).unwrap_or_default()}})).await,
+            Pushdeer { token, api_url } => {
+                let base=api_url.clone().unwrap_or_else(||Url::parse("https://api2.pushdeer.com/").unwrap());
+                let url=base.join("message/push").map_err(|_|PushError::InvalidEndpoint)?;
+                self.http.get_once_without_response(url,&[("pushkey",token.expose_secret().into()),("text",n.title.clone()),("desp",n.body.clone()),("type","markdown".into())]).await.map_err(redact_http_error)
+            }
+            Dingrobot { webhook, secret } => {
+                let mut url=secret_url(webhook)?;
+                if let Some(secret)=secret { sign_ding(&mut url, secret.expose_secret())?; }
+                self.json(url,&serde_json::json!({"msgtype":"text","text":{"content":text}})).await
+            }
+            Feishubot { webhook } => self.json(secret_url(webhook)?,&serde_json::json!({"msg_type":"text","content":{"text":text}})).await,
+            Bark { token, api_url, icon } => {
+                let base=api_url.clone().unwrap_or_else(||Url::parse("https://api.day.app/").unwrap());
+                let mut url=base.join(&format!("{}/{}/{}",token.expose_secret(),encode_path(&n.title),encode_path(&n.body))).map_err(|_|PushError::InvalidEndpoint)?;
+                if let Some(icon)=icon { url.query_pairs_mut().append_pair("icon",icon); }
+                self.http.get_once_without_response(url,&[]).await.map_err(redact_http_error)
+            }
+            Gotify { token, api_url, priority } => {
+                let mut url=api_url.join("message").map_err(|_|PushError::InvalidEndpoint)?; url.query_pairs_mut().append_pair("token",token.expose_secret());
+                self.json(url,&serde_json::json!({"title":n.title,"message":n.body,"priority":priority})).await
+            }
+            Ifttt { event, key, api_url } => {
+                let base=api_url.clone().unwrap_or_else(||Url::parse("https://maker.ifttt.com/").unwrap());
+                let url=base.join(&format!("trigger/{event}/with/key/{}",key.expose_secret())).map_err(|_|PushError::InvalidEndpoint)?;
+                self.json(url,&serde_json::json!({"value1":n.title,"value2":n.body})).await
+            }
+            Qmsg { key, api_url } => {
+                let base=api_url.clone().unwrap_or_else(||Url::parse("https://qmsg.zendee.cn/").unwrap());
+                let url=base.join(&format!("send/{}",key.expose_secret())).map_err(|_|PushError::InvalidEndpoint)?;
+                self.form(url,&[("msg",text)]).await
+            }
+            Discord { webhook } => self.json(secret_url(webhook)?,&serde_json::json!({"username":"MihoyoBBSTools","embeds":[{"title":n.title,"description":n.body,"color":5763719}]})).await,
+            Wxpusher { app_token, uids, topic_ids, api_url } => {
+                let url=api_url.clone().unwrap_or_else(||Url::parse("https://wxpusher.zjiecode.com/api/send/message").unwrap());
+                self.json(url,&serde_json::json!({"appToken":app_token.expose_secret(),"content":text,"contentType":1,"uids":uids,"topicIds":topic_ids})).await
+            }
+            Serverchan3 { sendkey, tags } => {
+                let raw=sendkey.expose_secret(); let number=raw.strip_prefix("sctp").and_then(|v|v.split('t').next()).filter(|v|v.bytes().all(|b|b.is_ascii_digit())).ok_or(PushError::InvalidEndpoint)?;
+                let url=Url::parse(&format!("https://{number}.push.ft07.com/send/{raw}.send")).map_err(|_|PushError::InvalidEndpoint)?;
+                self.json(url,&serde_json::json!({"title":n.title,"desp":n.body,"tags":tags})).await
+            }
+            Wecom { corp_id, agent_id, secret, to_user, api_url } => {
+                #[derive(Deserialize)] struct Token { access_token:String, #[serde(default)] errcode:i64 }
+                let base=api_url.clone().unwrap_or_else(||Url::parse("https://qyapi.weixin.qq.com/").unwrap());
+                let token_url=base.join("cgi-bin/gettoken").map_err(|_|PushError::InvalidEndpoint)?;
+                let token:Token=self.http.get_json_with(token_url,HeaderMap::new(),&[("corpid",corp_id.expose_secret().into()),("corpsecret",secret.expose_secret().into())]).await.map_err(redact_http_error)?;
+                if token.errcode!=0 { return Err(PushError::ServiceRejected(token.errcode)); }
+                let mut send=base.join("cgi-bin/message/send").map_err(|_|PushError::InvalidEndpoint)?; send.query_pairs_mut().append_pair("access_token",&token.access_token);
+                self.json(send,&serde_json::json!({"touser":to_user,"msgtype":"text","agentid":agent_id,"text":{"content":text},"safe":0})).await
+            }
+            Telegram{..}|Webhook{..}|Pushplus{..} => unreachable!(),
+        }
+    }
+    async fn json(&self, url: Url, body: &serde_json::Value) -> Result<(), PushError> {
+        self.http
+            .post_json_once_without_response(url, HeaderMap::new(), body)
+            .await
+            .map_err(redact_http_error)
+    }
+    async fn form(&self, url: Url, body: &[(&str, String)]) -> Result<(), PushError> {
+        self.http
+            .post_form_once_without_response(url, body)
+            .await
+            .map_err(redact_http_error)
+    }
+}
+
+fn secret_url(value: &SecretString) -> Result<Url, PushError> {
+    Url::parse(value.expose_secret()).map_err(|_| PushError::InvalidEndpoint)
+}
+fn encode_path(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+fn sign_ding(url: &mut Url, secret: &str) -> Result<(), PushError> {
+    use base64::Engine;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| PushError::InvalidEndpoint)?
+        .as_millis()
+        .to_string();
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .map_err(|_| PushError::InvalidEndpoint)?;
+    mac.update(format!("{timestamp}\n{secret}").as_bytes());
+    let sign = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+    url.query_pairs_mut()
+        .append_pair("timestamp", &timestamp)
+        .append_pair("sign", &sign);
+    Ok(())
 }
 
 #[derive(Clone)]
