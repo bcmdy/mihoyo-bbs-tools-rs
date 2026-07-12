@@ -1,10 +1,12 @@
 use std::{
     collections::HashSet,
     env, fs,
+    fs::{File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_yaml_ng::{Mapping, Value};
 use thiserror::Error;
 use url::Url;
@@ -32,17 +34,31 @@ pub enum ConfigError {
     },
     #[error("YAML 配置无效: {0}")]
     Yaml(#[from] serde_yaml_ng::Error),
+    #[error("无法序列化配置: {0}")]
+    Serialize(serde_yaml_ng::Error),
     #[error("环境变量 {0} 未设置")]
     MissingEnvironmentVariable(String),
     #[error("环境变量占位符无效: {0}")]
     InvalidEnvironmentPlaceholder(String),
     #[error("不支持配置版本 {0}，当前仅支持 version {CURRENT_CONFIG_VERSION}")]
     UnsupportedVersion(u64),
+    #[error("迁移输出路径不能与输入配置相同: {0}")]
+    OutputMatchesInput(PathBuf),
+    #[error("迁移输出文件已存在，拒绝覆盖: {0}")]
+    OutputAlreadyExists(PathBuf),
+    #[error("迁移输出路径无效: {0}")]
+    InvalidOutputPath(PathBuf),
+    #[error("无法写入迁移配置 {path}: {source}")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("配置校验失败:\n- {}", .0.join("\n- "))]
     Validation(Vec<String>),
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
     pub version: u64,
     #[serde(default)]
@@ -54,7 +70,7 @@ pub struct Config {
     pub notifications: NotificationsConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RuntimeConfig {
     #[serde(default = "default_timezone")]
     pub timezone: String,
@@ -80,7 +96,7 @@ impl Default for RuntimeConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Trace,
@@ -91,13 +107,13 @@ pub enum LogLevel {
     Error,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct CaptchaConfig {
     #[serde(default)]
     pub endpoint: Option<Url>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AccountConfig {
     pub name: String,
     #[serde(default = "default_true")]
@@ -111,21 +127,31 @@ pub struct AccountConfig {
     pub games: Vec<Game>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CredentialConfig {
-    #[serde(deserialize_with = "deserialize_secret")]
+    #[serde(
+        deserialize_with = "deserialize_secret",
+        serialize_with = "serialize_secret"
+    )]
     pub cookie: SecretString,
-    #[serde(deserialize_with = "deserialize_secret")]
+    #[serde(
+        deserialize_with = "deserialize_secret",
+        serialize_with = "serialize_secret"
+    )]
     pub stoken: SecretString,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProxyConfig {
-    #[serde(default, deserialize_with = "deserialize_optional_secret")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_secret",
+        serialize_with = "serialize_optional_secret"
+    )]
     pub url: Option<SecretString>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct TaskConfig {
     #[serde(default)]
     pub china_game_checkin: bool,
@@ -152,7 +178,7 @@ impl TaskConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Game {
     Genshin,
@@ -163,7 +189,7 @@ pub enum Game {
     ZenlessZoneZero,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NotificationsConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -171,22 +197,31 @@ pub struct NotificationsConfig {
     pub providers: Vec<NotificationProvider>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NotificationProvider {
     Telegram {
-        #[serde(deserialize_with = "deserialize_secret")]
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
         bot_token: SecretString,
         chat_id: String,
         #[serde(default)]
         api_url: Option<Url>,
     },
     Webhook {
-        #[serde(deserialize_with = "deserialize_secret")]
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
         url: SecretString,
     },
     Pushplus {
-        #[serde(deserialize_with = "deserialize_secret")]
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
         token: SecretString,
         #[serde(default)]
         topic: Option<String>,
@@ -199,6 +234,80 @@ pub fn load(path: &Path) -> Result<LoadedConfig, ConfigError> {
 
 pub fn migrate_config(path: &Path) -> Result<LoadedConfig, ConfigError> {
     load_with_mode(path, true)
+}
+
+/// 将配置序列化为 YAML。返回内容可能包含明文凭据，调用方不得写入日志。
+pub fn to_yaml(config: &Config) -> Result<String, ConfigError> {
+    serde_yaml_ng::to_string(config).map_err(ConfigError::Serialize)
+}
+
+/// 迁移配置并安全地新建输出文件。此函数拒绝覆盖输入文件或任何已有文件。
+pub fn write_migrated_config(
+    input: &Path,
+    output: &Path,
+) -> Result<LoadedConfig, ConfigError> {
+    ensure_distinct_new_output(input, output)?;
+    let loaded = migrate_config(input)?;
+    let yaml = to_yaml(&loaded.config)?;
+    let mut file = open_secure_new(output).map_err(|source| {
+        if source.kind() == std::io::ErrorKind::AlreadyExists {
+            ConfigError::OutputAlreadyExists(output.to_path_buf())
+        } else {
+            ConfigError::Write {
+                path: output.to_path_buf(),
+                source,
+            }
+        }
+    })?;
+    if let Err(source) = file.write_all(yaml.as_bytes()).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(output);
+        return Err(ConfigError::Write {
+            path: output.to_path_buf(),
+            source,
+        });
+    }
+    Ok(loaded)
+}
+
+fn ensure_distinct_new_output(input: &Path, output: &Path) -> Result<(), ConfigError> {
+    let input = fs::canonicalize(input).map_err(|source| ConfigError::Read {
+        path: input.to_path_buf(),
+        source,
+    })?;
+    if output.exists() {
+        let existing = fs::canonicalize(output).map_err(|source| ConfigError::Write {
+            path: output.to_path_buf(),
+            source,
+        })?;
+        if existing == input {
+            return Err(ConfigError::OutputMatchesInput(output.to_path_buf()));
+        }
+        return Err(ConfigError::OutputAlreadyExists(output.to_path_buf()));
+    }
+    let file_name = output
+        .file_name()
+        .ok_or_else(|| ConfigError::InvalidOutputPath(output.to_path_buf()))?;
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let parent = fs::canonicalize(parent).map_err(|source| ConfigError::Write {
+        path: output.to_path_buf(),
+        source,
+    })?;
+    if parent.join(file_name) == input {
+        return Err(ConfigError::OutputMatchesInput(output.to_path_buf()));
+    }
+    Ok(())
+}
+
+fn open_secure_new(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 fn load_with_mode(path: &Path, migration_requested: bool) -> Result<LoadedConfig, ConfigError> {
@@ -559,6 +668,26 @@ where
     Option::<String>::deserialize(deserializer).map(|value| value.map(SecretString::new))
 }
 
+fn serialize_secret<S>(secret: &SecretString, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(secret.expose_secret())
+}
+
+fn serialize_optional_secret<S>(
+    secret: &Option<SecretString>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match secret {
+        Some(secret) => serializer.serialize_some(secret.expose_secret()),
+        None => serializer.serialize_none(),
+    }
+}
+
 fn valid_timezone(value: &str) -> bool {
     value == "UTC" || value == "Etc/UTC" || {
         let mut parts = value.split('/');
@@ -706,5 +835,52 @@ accounts:
         let migrated = migrate_config(&path).unwrap();
         assert_eq!(migrated.config.accounts[0].name, "fixture-account");
         assert_eq!(migrated.config.version, CURRENT_CONFIG_VERSION);
+    }
+
+    #[test]
+    fn yaml_serialization_preserves_secrets_without_exposing_them_in_debug() {
+        let loaded = parse(MINIMAL).unwrap();
+        let yaml = to_yaml(&loaded.config).unwrap();
+        assert!(yaml.contains("cookie_token=secret"));
+        assert!(yaml.contains("v2_secret"));
+        let debug = format!("{:?}", loaded.config);
+        assert!(!debug.contains("cookie_token=secret"));
+        assert!(!debug.contains("v2_secret"));
+    }
+
+    #[test]
+    fn writes_migrated_config_without_overwriting_existing_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("legacy.yaml");
+        let output = directory.path().join("migrated.yaml");
+        std::fs::write(&input, include_str!("fixtures/legacy_v15.yaml")).unwrap();
+
+        let migrated = write_migrated_config(&input, &output).unwrap();
+        assert_eq!(migrated.config.version, CURRENT_CONFIG_VERSION);
+        let text = std::fs::read_to_string(&output).unwrap();
+        assert!(text.contains("fixture-cookie-token"));
+        let reloaded = load(&output).unwrap();
+        assert_eq!(reloaded.config.accounts[0].name, "legacy");
+        assert!(matches!(
+            write_migrated_config(&input, &output),
+            Err(ConfigError::OutputAlreadyExists(_))
+        ));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&output).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn refuses_to_overwrite_input_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("legacy.yaml");
+        std::fs::write(&input, include_str!("fixtures/legacy_v15.yaml")).unwrap();
+        assert!(matches!(
+            write_migrated_config(&input, &input),
+            Err(ConfigError::OutputMatchesInput(_))
+        ));
     }
 }

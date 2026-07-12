@@ -1,4 +1,4 @@
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, de::DeserializeOwned};
 use serde_json::Value;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -37,6 +37,38 @@ pub enum RoleState {
 pub(crate) struct RoleListData {
     #[serde(default)]
     pub list: Vec<GameRole>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct Reward {
+    #[serde(default)]
+    pub icon: String,
+    pub name: String,
+    #[serde(deserialize_with = "deserialize_count")]
+    pub cnt: u32,
+}
+
+fn deserialize_count<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Number(number) => number
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| serde::de::Error::custom("奖励数量超出 u32 范围")),
+        Value::String(value) => value
+            .parse()
+            .map_err(|_| serde::de::Error::custom("奖励数量不是有效整数")),
+        _ => Err(serde::de::Error::custom("奖励数量必须是整数或整数字符串")),
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct RewardListData {
+    #[serde(default)]
+    pub awards: Vec<Reward>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
