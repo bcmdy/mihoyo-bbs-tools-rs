@@ -27,6 +27,11 @@ pub enum Command {
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
     },
+    /// 执行游戏签到与米游社任务
+    Run {
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+    },
     /// 将 Python v11-v15 配置迁移到新版 YAML
     MigrateConfig {
         #[arg(short, long)]

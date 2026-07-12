@@ -204,7 +204,7 @@ impl BbsClient {
     /// 社区签到只发送一次 POST。DS 必须由实际发送的 `{"gids":"..."}` JSON 生成。
     pub async fn sign_forum_once(
         &self,
-        gids: &str,
+        request: &ForumSignRequest<'_>,
         ds: &str,
         captcha_challenge: Option<&str>,
     ) -> Result<(), BbsError> {
@@ -213,7 +213,7 @@ impl BbsClient {
             .post_json_once(
                 self.endpoints.sign.clone(),
                 self.app_headers_with_challenge(ds, captcha_challenge)?,
-                &ForumSignRequest { gids },
+                request,
             )
             .await?;
         self.success(response)
@@ -349,9 +349,15 @@ struct LikeRequest<'a> {
     is_cancel: bool,
 }
 
-#[derive(Serialize)]
-struct ForumSignRequest<'a> {
-    gids: &'a str,
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct ForumSignRequest<'a> {
+    pub gids: &'a str,
+}
+
+impl<'a> ForumSignRequest<'a> {
+    pub const fn new(gids: &'a str) -> Self {
+        Self { gids }
+    }
 }
 
 fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), BbsError> {
@@ -382,6 +388,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::bbs::MissionKind;
     use crate::http::RetryPolicy;
 
     fn client(server: &MockServer) -> BbsClient {
@@ -564,7 +571,7 @@ mod tests {
             .await;
 
         client(&server)
-            .sign_forum_once("2", "body-ds", None)
+            .sign_forum_once(&ForumSignRequest::new("2"), "body-ds", None)
             .await
             .unwrap();
     }

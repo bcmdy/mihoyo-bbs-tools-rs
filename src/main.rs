@@ -41,6 +41,17 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             print!("{}", report.render_text());
             return Ok(report.exit_code());
         }
+        Command::Run { config: path } => {
+            let loaded = config::load(&path)?;
+            for warning in &loaded.warnings {
+                tracing::warn!("{warning}");
+            }
+            let mut report = service::run_china_checkin(&loaded.config).await;
+            report.extend(service::run_hoyolab_checkin(&loaded.config).await);
+            report.extend(service::run_bbs(&loaded.config).await);
+            print!("{}", report.render_text());
+            return Ok(report.exit_code());
+        }
         Command::MigrateConfig { input, output } => {
             let loaded = config::write_migrated_config(&input, &output)?;
             for warning in &loaded.warnings {
