@@ -159,12 +159,12 @@ impl Default for DeviceConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CredentialConfig {
     #[serde(
-        default,
         deserialize_with = "deserialize_secret",
         serialize_with = "serialize_secret"
     )]
     pub cookie: SecretString,
     #[serde(
+        default,
         deserialize_with = "deserialize_secret",
         serialize_with = "serialize_secret"
     )]
