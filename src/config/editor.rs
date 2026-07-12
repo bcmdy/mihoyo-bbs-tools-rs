@@ -422,8 +422,10 @@ fn account_name_of(value: &Value) -> Option<&str> {
 
 fn default_tasks() -> Value {
     let mut bbs = Mapping::new();
-    for field in ["enabled", "sign", "read", "like", "cancel_like", "share"] {
-        bbs.insert(key(field), Value::Bool(true));
+    bbs.insert(key("enabled"), Value::Bool(true));
+    bbs.insert(key("sign"), Value::Bool(true));
+    for field in ["read", "like", "cancel_like", "share"] {
+        bbs.insert(key(field), Value::Bool(false));
     }
     let mut tasks = Mapping::new();
     tasks.insert(key("china_game_checkin"), Value::Bool(true));
@@ -436,19 +438,7 @@ fn default_tasks() -> Value {
 }
 
 fn default_games() -> Value {
-    Value::Sequence(
-        [
-            "genshin",
-            "honkai2",
-            "honkai3rd",
-            "tears_of_themis",
-            "star_rail",
-            "zenless_zone_zero",
-        ]
-        .into_iter()
-        .map(|game| Value::String(game.to_owned()))
-        .collect(),
-    )
+    Value::Sequence(vec![Value::String("genshin".to_owned())])
 }
 
 fn uid_suffix(uid: &str) -> String {
@@ -489,9 +479,18 @@ mod tests {
             "account_id=123; account_mid_v2=mid; stoken=v2_secret",
         )
         .unwrap();
-        assert_eq!(name, "测试账号");
+        assert_eq!(name, "测试昵称");
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.config.accounts.len(), 1);
+        assert_eq!(
+            loaded.config.accounts[0].remark.as_deref(),
+            Some("测试账号")
+        );
+        assert_eq!(
+            loaded.config.accounts[0].games,
+            vec![super::super::Game::Genshin]
+        );
+        assert!(!loaded.config.accounts[0].tasks.bbs.read);
         assert!(!fs::read_to_string(path).unwrap().contains("MIHOYO_COOKIE"));
     }
 

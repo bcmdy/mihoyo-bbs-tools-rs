@@ -46,6 +46,8 @@ mihoyo-bbs-tools config setup
 
 配置格式和环境变量规则见 [配置说明](docs/configuration.md)，凭据保护与日志要求见 [安全说明](docs/security.md)。
 
+新建账号默认仅执行原神游戏签到和米游社社区签到；阅读、点赞、取消点赞与分享默认关闭。文件日志默认写入 `logs` 目录并按天滚动，可通过 `runtime.logging` 修改或关闭。
+
 `run --task` 可以临时缩小本次运行范围，可选值为 `china-checkin`、`hoyolab-checkin` 和 `bbs`；不提供时仍按原顺序尝试全部已实现任务。`checkin --region` 可选择 `china`、`hoyolab` 或 `all`，默认值为 `all`。这些命令行选项不会绕过配置文件中的账号、任务或游戏禁用状态。
 
 首次使用时可以直接运行 `config add-account`。即使默认的 `config/config.yaml` 及其父目录尚不存在，程序也会在 Cookie 和账号信息校验成功后创建只包含该账号的新配置。`config setup` 提供显式进入的数字设置菜单；普通运行命令不会自动进入交互界面，因此不会阻塞 CI、Docker 或计划任务。

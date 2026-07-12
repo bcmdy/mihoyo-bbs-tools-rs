@@ -15,6 +15,10 @@ runtime:
   retry_count: 3
   random_delay_seconds: 10
   log_level: info
+  logging:
+    enabled: true
+    directory: logs
+    file_prefix: mihoyo-bbs-tools.log
 
 captcha:
   endpoint: "${CAPTCHA_ENDPOINT}"

@@ -6,16 +6,22 @@ runtime:
   retry_count: 3
   random_delay_seconds: 10
   log_level: info
+  logging:
+    enabled: true
+    directory: logs
+    file_prefix: mihoyo-bbs-tools.log
 
 captcha:
   endpoint: null
 
 accounts:
   - name: "账号一"
+    remark: null
     enabled: true
     credentials:
       # 完整 Cookie 中需包含 stoken；程序会自动提取，无需单独填写。
       cookie: "${MIHOYO_COOKIE_1}"
+      stoken: ""
     device:
       name: "Xiaomi MI 6"
       model: "Mi 6"
@@ -29,17 +35,15 @@ accounts:
       bbs:
         enabled: true
         sign: true
-        read: true
-        like: true
-        cancel_like: true
-        share: true
+        read: false
+        like: false
+        cancel_like: false
+        share: false
       china_cloud_game: false
       overseas_cloud_game: false
       web_activity: false
     games:
       - genshin
-      - star_rail
-      - zenless_zone_zero
 
   # 添加更多账号时复制完整账号块。保持注释可避免未设置的环境变量影响校验。
   # - name: "账号二"

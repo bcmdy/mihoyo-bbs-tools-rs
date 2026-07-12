@@ -91,6 +91,8 @@ pub struct RuntimeConfig {
     pub random_delay_seconds: u64,
     #[serde(default)]
     pub log_level: LogLevel,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 impl Default for RuntimeConfig {
@@ -101,8 +103,34 @@ impl Default for RuntimeConfig {
             retry_count: default_retry_count(),
             random_delay_seconds: default_random_delay(),
             log_level: LogLevel::default(),
+            logging: LoggingConfig::default(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LoggingConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_log_directory")]
+    pub directory: PathBuf,
+    #[serde(default = "default_log_prefix")]
+    pub file_prefix: String,
+}
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            directory: PathBuf::from("logs"),
+            file_prefix: default_log_prefix(),
+        }
+    }
+}
+fn default_log_directory() -> PathBuf {
+    PathBuf::from("logs")
+}
+fn default_log_prefix() -> String {
+    "mihoyo-bbs-tools.log".to_owned()
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -571,6 +599,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     if !valid_timezone(&config.runtime.timezone) {
         errors.push("runtime.timezone 不是有效的时区名称".to_owned());
     }
+    if config.runtime.logging.file_prefix.trim().is_empty() {
+        errors.push("runtime.logging.file_prefix 不能为空".to_owned());
+    }
+    if config.runtime.logging.directory.as_os_str().is_empty() {
+        errors.push("runtime.logging.directory 不能为空".to_owned());
+    }
     if let Some(endpoint) = &config.captcha.endpoint {
         if !matches!(endpoint.scheme(), "http" | "https") {
             errors.push("captcha.endpoint 仅支持 http 或 https".to_owned());
@@ -875,9 +909,19 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                 "retry_count",
                 "random_delay_seconds",
                 "log_level",
+                "logging",
             ],
             &mut warnings,
         );
+        if let Some(Value::Mapping(runtime)) = get(map, "runtime") {
+            inspect_named_child(
+                runtime,
+                "logging",
+                "runtime.logging",
+                &["enabled", "directory", "file_prefix"],
+                &mut warnings,
+            );
+        }
         inspect_child(map, "captcha", &["endpoint"], &mut warnings);
         if let Some(Value::Sequence(accounts)) = get(map, "accounts") {
             for (index, account) in accounts.iter().enumerate() {
