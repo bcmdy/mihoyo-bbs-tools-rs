@@ -355,11 +355,8 @@ mod tests {
     #[tokio::test]
     async fn missing_captcha_endpoint_is_reported_without_retrying() {
         let http = HttpClient::builder().build().unwrap();
-        let client = ChinaCheckinClient::new(
-            http,
-            SecretString::new("cookie_token=secret"),
-            "device-id",
-        );
+        let client =
+            ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id");
         let mut signer = DsSigner::new(SystemClock, ThreadRandom);
         let mut report = RunReport::default();
 

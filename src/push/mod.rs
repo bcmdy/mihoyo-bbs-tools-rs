@@ -165,9 +165,7 @@ pub async fn send_report(config: &Config, report: &RunReport) -> PushReport {
     }
 
     let http = HttpClient::builder()
-        .timeout(Duration::from_secs(
-            config.runtime.request_timeout_seconds,
-        ))
+        .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
         .retry(RetryPolicy {
             attempts: config.runtime.retry_count as usize + 1,
             base_delay: Duration::from_millis(500),
@@ -211,14 +209,10 @@ fn configured_provider(http: HttpClient, provider: &NotificationProvider) -> Box
                 .clone()
                 .unwrap_or_else(|| Url::parse(TELEGRAM_API_URL).expect("valid Telegram URL")),
         )),
-        NotificationProvider::Webhook { url } => {
-            Box::new(WebhookProvider::new(http, url.clone()))
+        NotificationProvider::Webhook { url } => Box::new(WebhookProvider::new(http, url.clone())),
+        NotificationProvider::Pushplus { token, topic } => {
+            Box::new(PushplusProvider::new(http, token.clone(), topic.clone()))
         }
-        NotificationProvider::Pushplus { token, topic } => Box::new(PushplusProvider::new(
-            http,
-            token.clone(),
-            topic.clone(),
-        )),
     }
 }
 
@@ -250,12 +244,7 @@ impl std::fmt::Debug for TelegramProvider {
 }
 
 impl TelegramProvider {
-    pub fn new(
-        http: HttpClient,
-        bot_token: SecretString,
-        chat_id: String,
-        api_url: Url,
-    ) -> Self {
+    pub fn new(http: HttpClient, bot_token: SecretString, chat_id: String, api_url: Url) -> Self {
         Self {
             http,
             bot_token,
@@ -351,8 +340,8 @@ impl Provider for WebhookProvider {
 
     fn send<'a>(&'a self, notification: &'a Notification) -> SendFuture<'a> {
         Box::pin(async move {
-            let url = Url::parse(self.url.expose_secret())
-                .map_err(|_| PushError::InvalidEndpoint)?;
+            let url =
+                Url::parse(self.url.expose_secret()).map_err(|_| PushError::InvalidEndpoint)?;
             self.http
                 .post_json_once_without_response(
                     url,
@@ -462,9 +451,9 @@ fn redact_http_error(error: HttpError) -> PushError {
         HttpError::Timeout => PushError::Timeout,
         HttpError::Status(status) => PushError::HttpStatus(status.as_u16()),
         HttpError::Decode(_) => PushError::InvalidResponse,
-        HttpError::InvalidProxy(_)
-        | HttpError::Connect(_)
-        | HttpError::Build(_) => PushError::Network,
+        HttpError::InvalidProxy(_) | HttpError::Connect(_) | HttpError::Build(_) => {
+            PushError::Network
+        }
     }
 }
 

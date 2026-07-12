@@ -395,13 +395,7 @@ mod tests {
         assert_eq!(
             client(&server)
                 .await
-                .sign_once(
-                    ChinaGame::Genshin,
-                    "cn_gf01",
-                    "10001",
-                    "ds",
-                    Some(&headers),
-                )
+                .sign_once(ChinaGame::Genshin, "cn_gf01", "10001", "ds", Some(&headers),)
                 .await
                 .unwrap(),
             SignState::Success

@@ -195,14 +195,8 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
     }
 
     for post in selected.iter().take(plan.like as usize) {
-        match set_like_with_captcha(
-            &client,
-            captcha.as_ref(),
-            &mut signer,
-            &post.post_id,
-            false,
-        )
-        .await
+        match set_like_with_captcha(&client, captcha.as_ref(), &mut signer, &post.post_id, false)
+            .await
         {
             Ok(solved) => report.push(post_record(
                 &account.name,
@@ -230,14 +224,8 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
             }
         }
 
-        match set_like_with_captcha(
-            &client,
-            captcha.as_ref(),
-            &mut signer,
-            &post.post_id,
-            true,
-        )
-        .await
+        match set_like_with_captcha(&client, captcha.as_ref(), &mut signer, &post.post_id, true)
+            .await
         {
             Ok(solved) => report.push(post_record(
                 &account.name,
@@ -369,10 +357,7 @@ async fn sign_forum_with_captcha(
         Err(BbsError::CaptchaRequired) => {
             let challenge = solve_bbs_captcha(client, captcha, signer).await?;
             let ds = signer.sign_body("", &body).to_string();
-            match client
-                .sign_forum_once(request, &ds, Some(&challenge))
-                .await
-            {
+            match client.sign_forum_once(request, &ds, Some(&challenge)).await {
                 Ok(()) => Ok(true),
                 Err(BbsError::CaptchaRequired) => Err(ActionError::Captcha(
                     "验证码校验通过，但原签到动作重试后仍要求验证码".to_owned(),
@@ -420,13 +405,13 @@ async fn solve_bbs_captcha(
     captcha: Option<&CaptchaClient>,
     signer: &mut DsSigner<SystemClock, ThreadRandom>,
 ) -> Result<String, ActionError> {
-    let captcha = captcha.ok_or_else(|| {
-        ActionError::Captcha("触发验证码，但未配置 captcha.endpoint".to_owned())
-    })?;
+    let captcha = captcha
+        .ok_or_else(|| ActionError::Captcha("触发验证码，但未配置 captcha.endpoint".to_owned()))?;
     let ds = signer.sign_app().to_string();
-    let verification = client.create_verification(&ds).await.map_err(|error| {
-        ActionError::Captcha(format!("创建米游社验证码失败：{error}"))
-    })?;
+    let verification = client
+        .create_verification(&ds)
+        .await
+        .map_err(|error| ActionError::Captcha(format!("创建米游社验证码失败：{error}")))?;
     let solution = captcha
         .solve(&verification.gt, &verification.challenge)
         .await

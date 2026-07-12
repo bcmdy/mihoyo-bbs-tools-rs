@@ -64,11 +64,7 @@ impl CaptchaClient {
     ///
     /// 平台可以把 `validate` 和可选的 `challenge` 放在顶层或 `data` 对象内。
     /// 响应未提供新 challenge 时沿用米哈游接口返回的原始 challenge。
-    pub async fn solve(
-        &self,
-        gt: &str,
-        challenge: &str,
-    ) -> Result<CaptchaSolution, CaptchaError> {
+    pub async fn solve(&self, gt: &str, challenge: &str) -> Result<CaptchaSolution, CaptchaError> {
         let request = CaptchaRequest {
             gt,
             challenge,
@@ -225,9 +221,7 @@ mod tests {
             .mount(&invalid_server)
             .await;
         assert!(matches!(
-            client(&invalid_server)
-                .solve("gt", "challenge")
-                .await,
+            client(&invalid_server).solve("gt", "challenge").await,
             Err(CaptchaError::InvalidResponse(_))
         ));
     }
