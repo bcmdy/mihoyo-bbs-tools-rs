@@ -131,12 +131,12 @@ pub struct AccountConfig {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DeviceConfig {
-    #[serde(default)]
-    pub id: String,
     #[serde(default = "default_device_name")]
     pub name: String,
     #[serde(default = "default_device_model")]
     pub model: String,
+    #[serde(default)]
+    pub id: String,
     #[serde(default)]
     pub fp: String,
 }
@@ -144,9 +144,9 @@ pub struct DeviceConfig {
 impl Default for DeviceConfig {
     fn default() -> Self {
         Self {
-            id: String::new(),
             name: default_device_name(),
             model: default_device_model(),
+            id: String::new(),
             fp: String::new(),
         }
     }
@@ -810,19 +810,26 @@ accounts:
     fn device_config_serializes_and_round_trips() {
         let source = MINIMAL.replace(
             "    tasks:",
-            "    device:\n      id: configured-id\n      name: Configured Name\n      model: Configured Model\n      fp: configured-fp\n    tasks:",
+            "    device:\n      name: Configured Name\n      model: Configured Model\n      id: configured-id\n      fp: configured-fp\n    tasks:",
         );
         let loaded = parse(&source).unwrap();
         let expected = DeviceConfig {
-            id: "configured-id".to_owned(),
             name: "Configured Name".to_owned(),
             model: "Configured Model".to_owned(),
+            id: "configured-id".to_owned(),
             fp: "configured-fp".to_owned(),
         };
         assert_eq!(loaded.config.accounts[0].device, expected);
         assert!(loaded.warnings.is_empty());
 
         let yaml = to_yaml(&loaded.config).unwrap();
+        let name_position = yaml.find("name: Configured Name").unwrap();
+        let model_position = yaml.find("model: Configured Model").unwrap();
+        let id_position = yaml.find("id: configured-id").unwrap();
+        let fp_position = yaml.find("fp: configured-fp").unwrap();
+        assert!(name_position < model_position);
+        assert!(model_position < id_position);
+        assert!(id_position < fp_position);
         let round_tripped: Config = serde_yaml_ng::from_str(&yaml).unwrap();
         assert_eq!(round_tripped.accounts[0].device, expected);
     }

@@ -17,9 +17,9 @@ accounts:
       cookie: "${MIHOYO_COOKIE}"
       stoken: "${MIHOYO_STOKEN}"
     device:
-      id: ""
       name: "Xiaomi MI 6"
       model: "Mi 6"
+      id: ""
       fp: ""
     proxy:
       url: null

@@ -28,9 +28,9 @@ accounts:
       stoken: "${MIHOYO_STOKEN}"
 
     device:
-      id: ""
       name: "Xiaomi MI 6"
       model: "Mi 6"
+      id: ""
       fp: ""
 
     proxy:
@@ -95,15 +95,15 @@ notifications:
 accounts:
   - name: example
     device:
-      id: ""
       name: "Xiaomi MI 6"
       model: "Mi 6"
+      id: ""
       fp: ""
 ```
 
-- `id` 是接口使用的设备标识。留空时，程序会根据该账号的 Cookie 确定性地自动生成；Cookie 改变时，自动生成的设备标识也会改变。如需保持设备身份稳定，应显式填写旧配置中的设备 ID 或一个固定值。
 - `name` 是设备名称，省略时默认为 `Xiaomi MI 6`。
 - `model` 是设备型号，省略时默认为 `Mi 6`。
+- `id` 是接口使用的设备标识。留空时，程序会根据该账号的 Cookie 使用 UUID v3 确定性地自动生成；Cookie 改变时，自动生成的设备标识也会改变。如需保持设备身份稳定，应显式填写旧配置中的设备 ID 或一个固定值。
 - `fp` 是设备指纹。当前版本会读取、校验、序列化并在旧配置迁移时保留该值，但尚未将其用于请求头或接口参数；留空不会影响当前已实现任务。
 
 整个 `device` 块可以省略，此时使用上述默认值和自动生成规则。设备 ID 和指纹不应随意复制到其他账号。
@@ -119,7 +119,7 @@ accounts:
 兼容层负责读取经过支持的 Python 版单账号和多账号 YAML，并转换为统一内部模型。兼容过程遵循以下规则：
 
 - 缺失字段使用经过文档确认的安全默认值。
-- 旧版顶层 `device` 会迁移到对应账号的 `device`，保留 `id`、`name`、`model` 和 `fp`。
+- 旧版顶层 `device` 会迁移到对应账号的 `device`，保留 `name`、`model`、`id` 和 `fp`。
 - 无法迁移的字段产生明确警告。
 - 旧格式解析完成后，业务代码只使用新版内部模型。
 - `migrate-config` 输出新版 YAML，输出内容不得包含额外日志或未脱敏 Secret。

@@ -50,15 +50,15 @@ pub(super) fn migrate_value(
     let legacy_device = mapping(root, "device");
     let device_defaults = DeviceConfig::default();
     let device = DeviceConfig {
-        id: legacy_device
-            .and_then(|map| scalar_string(map, "id"))
-            .unwrap_or_default(),
         name: legacy_device
             .and_then(|map| scalar_string(map, "name"))
             .unwrap_or(device_defaults.name),
         model: legacy_device
             .and_then(|map| scalar_string(map, "model"))
             .unwrap_or(device_defaults.model),
+        id: legacy_device
+            .and_then(|map| scalar_string(map, "id"))
+            .unwrap_or_default(),
         fp: legacy_device
             .and_then(|map| scalar_string(map, "fp"))
             .unwrap_or_default(),

@@ -39,6 +39,20 @@ mihoyo-bbs-tools run
 
 配置格式和环境变量规则见 [配置说明](docs/configuration.md)，凭据保护与日志要求见 [安全说明](docs/security.md)。
 
+## 设备配置
+
+设备信息按账号配置，字段顺序建议使用 `name`、`model`、`id`、`fp`：
+
+```yaml
+device:
+  name: "Xiaomi MI 6"
+  model: "Mi 6"
+  id: ""
+  fp: ""
+```
+
+`id` 留空时会根据该账号的 Cookie 使用 UUID v3 确定性生成，因此 Cookie 变化会导致自动生成的设备 ID 改变；需要稳定设备身份时请填写固定值。`fp` 当前仅保存并在旧配置迁移时保留，尚未用于请求头或接口参数。完整规则见 [配置说明](docs/configuration.md#设备信息)。
+
 ## 开发与验证
 
 本项目以 GitHub Actions 作为唯一的 Rust 编译与验证环境。开发机器只负责编辑文件和 Git 操作，不要求安装 Rust、MSVC、Windows SDK 或 Docker，也不在本地执行 Cargo 命令。
