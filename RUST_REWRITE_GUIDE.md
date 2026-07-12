@@ -285,7 +285,13 @@ accounts:
     tasks:
       china_game_checkin: true
       hoyolab_checkin: false
-      bbs: true
+      bbs:
+        enabled: true
+        sign: true
+        read: true
+        like: true
+        cancel_like: true
+        share: true
       china_cloud_game: false
       overseas_cloud_game: false
       web_activity: false

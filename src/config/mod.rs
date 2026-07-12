@@ -11,9 +11,11 @@ use serde_yaml_ng::{Mapping, Value};
 use thiserror::Error;
 use url::Url;
 
-use crate::auth::SecretString;
+use crate::auth::{CookieJar, SecretString};
 
+mod editor;
 mod legacy;
+pub use editor::{add_account_from_stdin, edit_file, remove_account};
 
 pub const CURRENT_CONFIG_VERSION: u64 = 1;
 pub const EXAMPLE_CONFIG: &str = include_str!("../../config/config.example.yaml");
@@ -56,6 +58,8 @@ pub enum ConfigError {
     },
     #[error("配置校验失败:\n- {}", .0.join("\n- "))]
     Validation(Vec<String>),
+    #[error("配置编辑失败：{0}")]
+    Edit(String),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -155,6 +159,7 @@ impl Default for DeviceConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CredentialConfig {
     #[serde(
+        default,
         deserialize_with = "deserialize_secret",
         serialize_with = "serialize_secret"
     )]
@@ -183,7 +188,7 @@ pub struct TaskConfig {
     #[serde(default)]
     pub hoyolab_checkin: bool,
     #[serde(default)]
-    pub bbs: bool,
+    pub bbs: BbsTaskConfig,
     #[serde(default)]
     pub china_cloud_game: bool,
     #[serde(default)]
@@ -196,7 +201,7 @@ impl TaskConfig {
     fn any_enabled(&self) -> bool {
         self.china_game_checkin
             || self.hoyolab_checkin
-            || self.bbs
+            || self.bbs.is_enabled()
             || self.china_cloud_game
             || self.overseas_cloud_game
             || self.web_activity
@@ -354,7 +359,8 @@ fn load_with_mode(path: &Path, migration_requested: bool) -> Result<LoadedConfig
     }
     reject_unsupported_version(&value)?;
     let warnings = collect_unknown_field_warnings(&value);
-    let config: Config = serde_yaml_ng::from_value(value)?;
+    let mut config: Config = serde_yaml_ng::from_value(value)?;
+    hydrate_stokens_from_cookies(&mut config);
     validate(&config)?;
     let mut loaded = LoadedConfig { config, warnings };
     if migration_requested {
@@ -411,7 +417,10 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         if account.enabled && account.tasks.any_enabled() && account.credentials.cookie.is_empty() {
             errors.push(format!("{path} 启用了任务但 credentials.cookie 为空"));
         }
-        if account.enabled && account.tasks.bbs && account.credentials.stoken.is_empty() {
+        if account.enabled
+            && account.tasks.bbs.is_enabled()
+            && account.credentials.stoken.is_empty()
+        {
             errors.push(format!("{path} 启用了 BBS 任务但 credentials.stoken 为空"));
         }
     }
@@ -754,6 +763,97 @@ const fn default_retry_count() -> u32 {
 const fn default_random_delay() -> u64 {
     10
 }
+
+fn hydrate_stokens_from_cookies(config: &mut Config) {
+    for account in &mut config.accounts {
+        if !account.credentials.stoken.is_empty() {
+            continue;
+        }
+        if let Ok(jar) = CookieJar::parse(account.credentials.cookie.expose_secret()) {
+            if let Some(stoken) = jar.get("stoken").filter(|value| !value.is_empty()) {
+                account.credentials.stoken = SecretString::new(stoken);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BbsTaskConfig {
+    pub enabled: bool,
+    pub sign: bool,
+    pub read: bool,
+    pub like: bool,
+    pub cancel_like: bool,
+    pub share: bool,
+}
+
+impl Default for BbsTaskConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sign: true,
+            read: true,
+            like: true,
+            cancel_like: true,
+            share: true,
+        }
+    }
+}
+
+impl BbsTaskConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled && self.any_action_enabled()
+    }
+
+    pub fn any_action_enabled(&self) -> bool {
+        self.sign || self.read || self.like || self.share
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BbsTaskConfigInput {
+    Bool(bool),
+    Detail(BbsTaskConfigDetail),
+}
+
+#[derive(Deserialize)]
+struct BbsTaskConfigDetail {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default = "default_true")]
+    sign: bool,
+    #[serde(default = "default_true")]
+    read: bool,
+    #[serde(default = "default_true")]
+    like: bool,
+    #[serde(default = "default_true")]
+    cancel_like: bool,
+    #[serde(default = "default_true")]
+    share: bool,
+}
+
+impl<'de> Deserialize<'de> for BbsTaskConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match BbsTaskConfigInput::deserialize(deserializer)? {
+            BbsTaskConfigInput::Bool(enabled) => Self {
+                enabled,
+                ..Self::default()
+            },
+            BbsTaskConfigInput::Detail(detail) => Self {
+                enabled: detail.enabled,
+                sign: detail.sign,
+                read: detail.read,
+                like: detail.like,
+                cancel_like: detail.cancel_like,
+                share: detail.share,
+            },
+        })
+    }
+}
 fn default_device_name() -> String {
     "Xiaomi MI 6".to_owned()
 }
@@ -804,6 +904,40 @@ accounts:
         );
         assert_eq!(loaded.config.accounts[0].device, DeviceConfig::default());
         assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn bbs_boolean_and_detailed_switches_are_compatible() {
+        let legacy = parse(MINIMAL).unwrap();
+        let legacy_bbs = &legacy.config.accounts[0].tasks.bbs;
+        assert!(legacy_bbs.enabled && legacy_bbs.sign && legacy_bbs.read);
+
+        let detailed = parse(&MINIMAL.replace(
+            "      bbs: true",
+            "      bbs:\n        enabled: true\n        sign: false\n        read: true\n        like: false\n        cancel_like: false\n        share: false",
+        ))
+        .unwrap();
+        let bbs = &detailed.config.accounts[0].tasks.bbs;
+        assert!(bbs.enabled && bbs.read);
+        assert!(!bbs.sign && !bbs.like && !bbs.cancel_like && !bbs.share);
+    }
+
+    #[test]
+    fn missing_stoken_is_hydrated_from_cookie() {
+        let mut config: Config = serde_yaml_ng::from_str(
+            &MINIMAL
+                .replace(
+                    "${COOKIE}",
+                    "account_id=123; stoken=v2_from_cookie; account_mid_v2=mid",
+                )
+                .replace("      stoken: \"${STOKEN}\"\n", ""),
+        )
+        .unwrap();
+        hydrate_stokens_from_cookies(&mut config);
+        assert_eq!(
+            config.accounts[0].credentials.stoken.expose_secret(),
+            "v2_from_cookie"
+        );
     }
 
     #[test]

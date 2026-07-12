@@ -25,7 +25,6 @@ accounts:
 
     credentials:
       cookie: "${MIHOYO_COOKIE}"
-      stoken: "${MIHOYO_STOKEN}"
 
     device:
       name: "Xiaomi MI 6"
@@ -39,7 +38,13 @@ accounts:
     tasks:
       china_game_checkin: true
       hoyolab_checkin: false
-      bbs: true
+      bbs:
+        enabled: true
+        sign: true
+        read: true
+        like: true
+        cancel_like: true
+        share: true
       china_cloud_game: false
       overseas_cloud_game: false
       web_activity: false
@@ -71,6 +76,18 @@ notifications:
 通知当前支持 `telegram`、`webhook` 和 `pushplus`。所有账号任务结束后统一发送报告；单个渠道失败不会阻止其他渠道，也不会覆盖核心任务的退出码。Bot Token、PushPlus Token、Chat ID 和 Webhook URL 均按敏感信息处理，不会写入错误消息或日志。
 
 环境变量会在配置反序列化前统一展开，因此即使 `notifications.enabled` 为 `false`，配置文件中已经写入的 `${ENV_NAME}` 仍必须存在。不使用通知时应保留空的 `providers: []`，不要放置尚未配置 Secret 的渠道。
+
+## 配置编辑与账号管理
+
+```text
+mihoyo-bbs-tools config edit --config config/config.yaml
+mihoyo-bbs-tools config add-account --config config/config.yaml --name "备注"
+mihoyo-bbs-tools config remove-account --config config/config.yaml "备注"
+```
+
+`config edit` 使用 `VISUAL` 或 `EDITOR` 指定的编辑器（Windows 默认记事本）修改完整 YAML，并在覆盖原文件前校验。`add-account` 从标准输入读取完整 Cookie，避免 Cookie 出现在命令行历史和进程列表；备注可省略，此时使用 Cookie 中的 UID 生成名称。程序会从 Cookie 的 `stoken` 字段自动提取 SToken，因此配置中的 `credentials.stoken` 可以省略。Cookie 缺少 `stoken` 时会拒绝添加，以免社区任务在运行时才认证失败。
+
+米游社总开关是 `tasks.bbs.enabled`，`sign`、`read`、`like`、`cancel_like`、`share` 分别控制社区签到、阅读、点赞、点赞后恢复状态和分享。旧写法 `bbs: true`/`false` 仍兼容；程序只执行已开启且服务端显示尚未完成的任务。
 
 ## 环境变量替换
 

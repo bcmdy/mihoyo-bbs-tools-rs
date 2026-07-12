@@ -140,7 +140,16 @@ pub(super) fn migrate_value(
             tasks: TaskConfig {
                 china_game_checkin: cn_enabled,
                 hoyolab_checkin: overseas_enabled,
-                bbs: bbs_enabled,
+                bbs: super::BbsTaskConfig {
+                    enabled: bbs_enabled,
+                    sign: bbs.and_then(|map| boolean(map, "checkin")).unwrap_or(true),
+                    read: bbs.and_then(|map| boolean(map, "read")).unwrap_or(true),
+                    like: bbs.and_then(|map| boolean(map, "like")).unwrap_or(true),
+                    cancel_like: bbs
+                        .and_then(|map| boolean(map, "cancel_like"))
+                        .unwrap_or(true),
+                    share: bbs.and_then(|map| boolean(map, "share")).unwrap_or(true),
+                },
                 china_cloud_game: cloud_cn_enabled,
                 overseas_cloud_game: cloud_os_enabled,
                 web_activity: web_activity_enabled,
@@ -252,7 +261,7 @@ mod tests {
         let account = &migrated.config.accounts[0];
         assert_eq!(account.name, "legacy-v15");
         assert!(account.tasks.china_game_checkin);
-        assert!(account.tasks.bbs);
+        assert!(account.tasks.bbs.enabled);
         assert_eq!(account.games, vec![Game::Genshin, Game::StarRail]);
         assert_eq!(account.device.id, "fixture-device-id");
         assert_eq!(account.device.name, "Fixture Device");

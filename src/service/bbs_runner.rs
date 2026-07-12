@@ -38,7 +38,7 @@ const DEFAULT_FORUMS: [Forum; 2] = [
 pub async fn run_bbs(config: &Config) -> RunReport {
     let mut report = RunReport::default();
     for account in &config.accounts {
-        if account.enabled && account.tasks.bbs {
+        if account.enabled && account.tasks.bbs.is_enabled() {
             run_account(&mut report, config, account).await;
         }
     }
@@ -109,7 +109,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
             return;
         }
     };
-    let plan = BbsPlan::from_summary(&summary);
+    let plan = BbsPlan::from_summary(&summary).filtered(&account.tasks.bbs);
     report.push(record(
         &account.name,
         "米游币",
@@ -224,6 +224,9 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
             }
         }
 
+        if !account.tasks.bbs.cancel_like {
+            continue;
+        }
         match set_like_with_captcha(&client, captcha.as_ref(), &mut signer, &post.post_id, true)
             .await
         {
@@ -442,6 +445,22 @@ impl BbsPlan {
             like: remaining(summary, MissionKind::Like, LIKE_TARGET),
             share: pending_once(summary, MissionKind::Share),
         }
+    }
+
+    fn filtered(mut self, switches: &crate::config::BbsTaskConfig) -> Self {
+        if !switches.sign {
+            self.sign = false;
+        }
+        if !switches.read {
+            self.read = 0;
+        }
+        if !switches.like {
+            self.like = 0;
+        }
+        if !switches.share {
+            self.share = false;
+        }
+        self
     }
 
     fn is_complete(self) -> bool {

@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use mihoyo_bbs_tools::{
-    cli::{Cli, Command},
+    cli::{Cli, Command, ConfigCommand},
     config,
     error::AppError,
     push::{self, DeliveryStatus},
@@ -59,6 +59,20 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             println!("配置已迁移到 {}", output.display());
         }
         Command::PrintExampleConfig => print!("{}", config::EXAMPLE_CONFIG),
+        Command::Config { command } => match command {
+            ConfigCommand::Edit { config: path } => {
+                config::edit_file(&path)?;
+                println!("配置已更新：{}", path.display());
+            }
+            ConfigCommand::AddAccount { config: path, name } => {
+                let added = config::add_account_from_stdin(&path, name.as_deref())?;
+                println!("已添加账号：{added}");
+            }
+            ConfigCommand::RemoveAccount { config: path, name } => {
+                config::remove_account(&path, &name)?;
+                println!("已删除账号：{name}");
+            }
+        },
     }
     Ok(0)
 }

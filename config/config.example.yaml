@@ -15,7 +15,6 @@ accounts:
     enabled: true
     credentials:
       cookie: "${MIHOYO_COOKIE}"
-      stoken: "${MIHOYO_STOKEN}"
     device:
       name: "Xiaomi MI 6"
       model: "Mi 6"
@@ -26,7 +25,13 @@ accounts:
     tasks:
       china_game_checkin: true
       hoyolab_checkin: false
-      bbs: true
+      bbs:
+        enabled: true
+        sign: true
+        read: true
+        like: true
+        cancel_like: true
+        share: true
       china_cloud_game: false
       overseas_cloud_game: false
       web_activity: false

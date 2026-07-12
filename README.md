@@ -35,6 +35,9 @@ mihoyo-bbs-tools print-example-config
 mihoyo-bbs-tools checkin
 mihoyo-bbs-tools migrate-config
 mihoyo-bbs-tools run
+mihoyo-bbs-tools config edit
+mihoyo-bbs-tools config add-account --name "备注"
+mihoyo-bbs-tools config remove-account "备注"
 ```
 
 配置格式和环境变量规则见 [配置说明](docs/configuration.md)，凭据保护与日志要求见 [安全说明](docs/security.md)。
