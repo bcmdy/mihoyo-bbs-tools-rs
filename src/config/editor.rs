@@ -9,9 +9,7 @@ use serde_yaml_ng::{Mapping, Value};
 
 use crate::auth::CookieJar;
 #[cfg(not(test))]
-use crate::http::HttpClient;
-#[cfg(not(test))]
-use reqwest::header::{COOKIE, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::header::{COOKIE, USER_AGENT};
 #[cfg(not(test))]
 use serde::Deserialize;
 #[cfg(not(test))]
@@ -154,52 +152,35 @@ struct ProfileInfo {
 
 #[cfg(test)]
 fn fetch_nickname(_cookie: &str, _uid: &str) -> Result<String, ConfigError> {
-    Ok("测试昵称".to_owned())
+    if _cookie.is_empty() {
+        Err(ConfigError::Edit("Cookie 不能为空".to_owned()))
+    } else {
+        Ok("测试昵称".to_owned())
+    }
 }
 
 #[cfg(not(test))]
 fn fetch_nickname(cookie: &str, uid: &str) -> Result<String, ConfigError> {
-    let cookie = cookie.to_owned();
-    let uid = uid.to_owned();
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|_| ConfigError::Edit("无法初始化昵称查询".to_owned()))?;
-        runtime.block_on(async move {
-            let http = HttpClient::builder()
-                .build()
-                .map_err(|_| ConfigError::Edit("无法初始化昵称查询客户端".to_owned()))?;
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                COOKIE,
-                HeaderValue::from_str(&cookie)
-                    .map_err(|_| ConfigError::Edit("Cookie 格式无效".to_owned()))?,
-            );
-            headers.insert(
-                USER_AGENT,
-                HeaderValue::from_static("Mozilla/5.0 miHoYoBBS/2.84.1"),
-            );
-            let response: ProfileEnvelope = http
-                .get_json_with(
-                    Url::parse("https://bbs-api.miyoushe.com/user/wapi/getUserFullInfo").unwrap(),
-                    headers,
-                    &[("gids", "2".to_owned()), ("uid", uid)],
-                )
-                .await
-                .map_err(|_| {
-                    ConfigError::Edit("无法获取米游社昵称，请检查 Cookie 和网络".to_owned())
-                })?;
-            let nickname = response
-                .data
-                .map(|v| v.user_info.nickname)
-                .filter(|v| !v.trim().is_empty())
-                .ok_or_else(|| {
-                    ConfigError::Edit(format!("米游社昵称查询失败（代码 {}）", response.retcode))
-                })?;
-            Ok(nickname)
-        })
-    })
-    .join()
-    .map_err(|_| ConfigError::Edit("昵称查询线程异常".to_owned()))?
+    let mut url = Url::parse("https://bbs-api.miyoushe.com/user/wapi/getUserFullInfo").unwrap();
+    url.query_pairs_mut()
+        .append_pair("gids", "2")
+        .append_pair("uid", uid);
+    let response: ProfileEnvelope = reqwest::blocking::Client::new()
+        .get(url)
+        .header(COOKIE, cookie)
+        .header(USER_AGENT, "Mozilla/5.0 miHoYoBBS/2.84.1")
+        .send()
+        .and_then(|v| v.error_for_status())
+        .and_then(|v| v.json())
+        .map_err(|_| ConfigError::Edit("无法获取米游社昵称，请检查 Cookie 和网络".to_owned()))?;
+    let nickname = response
+        .data
+        .map(|v| v.user_info.nickname)
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| {
+            ConfigError::Edit(format!("米游社昵称查询失败（代码 {}）", response.retcode))
+        })?;
+    Ok(nickname)
 }
 
 pub fn remove_account(path: &Path, name: &str) -> Result<(), ConfigError> {
