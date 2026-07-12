@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use mihoyo_bbs_tools::{
-    cli::{Cli, Command, ConfigCommand},
+    cli::{CheckinRegion, Cli, Command, ConfigCommand, RunTask},
     config,
     error::AppError,
     push::{self, DeliveryStatus},
@@ -32,26 +32,48 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             }
             println!("配置有效：{} 个账号", loaded.config.accounts.len());
         }
-        Command::Checkin { config: path } => {
+        Command::Checkin {
+            config: path,
+            region,
+        } => {
             let loaded = config::load(&path)?;
             for warning in &loaded.warnings {
                 tracing::warn!("{warning}");
             }
-            let mut report = service::run_china_checkin(&loaded.config).await;
-            report.extend(service::run_hoyolab_checkin(&loaded.config).await);
+            let mut report = service::RunReport::default();
+            if matches!(region, CheckinRegion::China | CheckinRegion::All) {
+                report.extend(service::run_china_checkin(&loaded.config).await);
+            }
+            if matches!(region, CheckinRegion::Hoyolab | CheckinRegion::All) {
+                report.extend(service::run_hoyolab_checkin(&loaded.config).await);
+            }
             return Ok(finish_report(&loaded.config, &report).await);
         }
-        Command::Run { config: path } => {
+        Command::Run {
+            config: path,
+            tasks,
+        } => {
             let loaded = config::load(&path)?;
             for warning in &loaded.warnings {
                 tracing::warn!("{warning}");
             }
-            let mut report = service::run_china_checkin(&loaded.config).await;
-            report.extend(service::run_hoyolab_checkin(&loaded.config).await);
-            report.extend(service::run_bbs(&loaded.config).await);
+            let all = tasks.is_empty();
+            let mut report = service::RunReport::default();
+            if all || tasks.contains(&RunTask::ChinaCheckin) {
+                report.extend(service::run_china_checkin(&loaded.config).await);
+            }
+            if all || tasks.contains(&RunTask::HoyolabCheckin) {
+                report.extend(service::run_hoyolab_checkin(&loaded.config).await);
+            }
+            if all || tasks.contains(&RunTask::Bbs) {
+                report.extend(service::run_bbs(&loaded.config).await);
+            }
             return Ok(finish_report(&loaded.config, &report).await);
         }
-        Command::MigrateConfig { input, output } => {
+        Command::MigrateConfig(args) => {
+            let resolved = args.resolve().map_err(AppError::Task)?;
+            let input = resolved.input;
+            let output = resolved.output;
             let loaded = config::write_migrated_config(&input, &output)?;
             for warning in &loaded.warnings {
                 tracing::warn!("{warning}");
@@ -60,6 +82,7 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
         }
         Command::PrintExampleConfig => print!("{}", config::EXAMPLE_CONFIG),
         Command::Config { command } => match command {
+            ConfigCommand::Setup { config: path } => config::interactive_setup(&path)?,
             ConfigCommand::Edit { config: path } => {
                 config::edit_file(&path)?;
                 println!("配置已更新：{}", path.display());

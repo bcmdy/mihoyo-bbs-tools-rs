@@ -1,6 +1,6 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -15,33 +15,25 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// 输出版本、提交与目标平台信息
     Version,
-    /// 校验配置，不访问远程接口
     ValidateConfig {
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
     },
-    /// 执行国内游戏签到
     Checkin {
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
+        #[arg(long, value_enum, default_value_t = CheckinRegion::All)]
+        region: CheckinRegion,
     },
-    /// 执行游戏签到与米游社任务
     Run {
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
+        #[arg(long = "task", value_enum, value_delimiter = ',')]
+        tasks: Vec<RunTask>,
     },
-    /// 将 Python v11-v15 配置迁移到新版 YAML
-    MigrateConfig {
-        #[arg(short, long)]
-        input: PathBuf,
-        #[arg(short, long)]
-        output: PathBuf,
-    },
-    /// 输出脱敏的新版配置示例
+    MigrateConfig(MigrationArgs),
     PrintExampleConfig,
-    /// 编辑、添加或删除配置账号
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -50,25 +42,84 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
-    /// 使用系统编辑器修改完整 YAML，保存前自动校验
+    Setup {
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+    },
     Edit {
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
     },
-    /// 从标准输入安全读取 Cookie 并添加账号
     AddAccount {
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
-        /// 可选备注；省略时使用 Cookie 中的 UID
-        #[arg(short, long)]
+        #[arg(short, long, alias = "remark")]
         name: Option<String>,
     },
-    /// 按备注/账号名称删除账号
     RemoveAccount {
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
         name: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum CheckinRegion {
+    China,
+    Hoyolab,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ValueEnum)]
+pub enum RunTask {
+    ChinaCheckin,
+    HoyolabCheckin,
+    Bbs,
+}
+
+#[derive(Debug, Args)]
+pub struct MigrationArgs {
+    #[arg(value_name = "SOURCE", conflicts_with = "input")]
+    source: Option<PathBuf>,
+    #[arg(value_name = "TARGET", requires = "source", conflicts_with = "output")]
+    target: Option<PathBuf>,
+    #[arg(short, long, value_name = "SOURCE", conflicts_with_all = ["source", "target"])]
+    input: Option<PathBuf>,
+    #[arg(short, long, value_name = "TARGET", requires = "input", conflicts_with_all = ["source", "target"])]
+    output: Option<PathBuf>,
+}
+
+pub struct ResolvedMigrationArgs {
+    pub input: PathBuf,
+    pub output: PathBuf,
+}
+
+impl MigrationArgs {
+    pub fn resolve(self) -> Result<ResolvedMigrationArgs, String> {
+        let input = self
+            .source
+            .or(self.input)
+            .ok_or_else(|| "必须提供迁移源配置".to_owned())?;
+        let output = self
+            .target
+            .or(self.output)
+            .unwrap_or_else(|| default_migration_output(&input));
+        Ok(ResolvedMigrationArgs { input, output })
+    }
+}
+
+fn default_migration_output(input: &Path) -> PathBuf {
+    let parent = input.parent().unwrap_or_else(|| Path::new(""));
+    let stem = input
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .unwrap_or("config");
+    let ext = input
+        .extension()
+        .and_then(|v| v.to_str())
+        .filter(|v| matches!(*v, "yaml" | "yml"))
+        .unwrap_or("yaml");
+    parent.join(format!("{stem}.migrated.{ext}"))
 }
 
 pub fn version_text() -> String {

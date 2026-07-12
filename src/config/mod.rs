@@ -14,8 +14,12 @@ use url::Url;
 use crate::auth::{CookieJar, SecretString};
 
 mod editor;
+mod interactive;
 mod legacy;
-pub use editor::{add_account_from_stdin, edit_file, remove_account};
+pub use editor::{
+    add_account_from_stdin, edit_file, remove_account, set_account_games, set_account_tasks,
+};
+pub use interactive::setup as interactive_setup;
 
 pub const CURRENT_CONFIG_VERSION: u64 = 1;
 pub const EXAMPLE_CONFIG: &str = include_str!("../../config/config.example.yaml");
@@ -491,7 +495,10 @@ fn ensure_distinct_new_output(input: &Path, output: &Path) -> Result<(), ConfigE
     let file_name = output
         .file_name()
         .ok_or_else(|| ConfigError::InvalidOutputPath(output.to_path_buf()))?;
-    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let parent = fs::canonicalize(parent).map_err(|source| ConfigError::Write {
         path: output.to_path_buf(),
         source,

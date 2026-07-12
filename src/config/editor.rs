@@ -9,7 +9,10 @@ use serde_yaml_ng::{Mapping, Value};
 
 use crate::auth::CookieJar;
 
-use super::{ConfigError, load, open_secure_new};
+use super::{
+    CURRENT_CONFIG_VERSION, Config, ConfigError, hydrate_stokens_from_cookies, load,
+    open_secure_new, validate,
+};
 
 pub fn edit_file(path: &Path) -> Result<(), ConfigError> {
     let original = fs::read_to_string(path).map_err(|source| ConfigError::Read {
@@ -45,9 +48,8 @@ pub fn edit_file(path: &Path) -> Result<(), ConfigError> {
         path: temporary.clone(),
         source,
     })?;
-    fs::write(path, updated).map_err(|source| write_error(path, source))?;
     let _ = fs::remove_file(temporary);
-    Ok(())
+    replace_validated(path, &updated)
 }
 
 pub fn add_account_from_stdin(path: &Path, name: Option<&str>) -> Result<String, ConfigError> {
@@ -57,7 +59,10 @@ pub fn add_account_from_stdin(path: &Path, name: Option<&str>) -> Result<String,
         .lock()
         .read_line(&mut cookie)
         .map_err(|_| ConfigError::Edit("无法从标准输入读取 Cookie".to_owned()))?;
-    let cookie = cookie.trim();
+    add_account(path, name, cookie.trim())
+}
+
+pub fn add_account(path: &Path, name: Option<&str>, cookie: &str) -> Result<String, ConfigError> {
     let jar =
         CookieJar::parse(cookie).map_err(|_| ConfigError::Edit("Cookie 格式无效".to_owned()))?;
     jar.get("stoken")
@@ -72,8 +77,14 @@ pub fn add_account_from_stdin(path: &Path, name: Option<&str>) -> Result<String,
         .or_else(|| jar.uid().map(|uid| format!("账号-{}", uid_suffix(uid))))
         .ok_or_else(|| ConfigError::Edit("未提供备注且 Cookie 中缺少 UID".to_owned()))?;
 
-    mutate_raw(path, |root| {
-        let accounts = accounts_mut(root)?;
+    let existed = path.exists();
+    let mut root = if existed {
+        read_raw(path)?
+    } else {
+        empty_config_value()
+    };
+    {
+        let accounts = accounts_mut(&mut root)?;
         if accounts
             .iter()
             .any(|account| account_name_of(account) == Some(account_name.as_str()))
@@ -93,8 +104,18 @@ pub fn add_account_from_stdin(path: &Path, name: Option<&str>) -> Result<String,
         account.insert(key("tasks"), default_tasks());
         account.insert(key("games"), default_games());
         accounts.push(Value::Mapping(account));
-        Ok(())
-    })?;
+    }
+    let updated = validate_and_serialize(&root)?;
+    if existed {
+        replace_validated(path, &updated)?;
+    } else {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent).map_err(|source| write_error(path, source))?;
+        }
+        let mut file = open_secure_new(path).map_err(|source| write_error(path, source))?;
+        file.write_all(updated.as_bytes())
+            .map_err(|source| write_error(path, source))?;
+    }
     Ok(account_name)
 }
 
@@ -113,26 +134,124 @@ pub fn remove_account(path: &Path, name: &str) -> Result<(), ConfigError> {
     })
 }
 
+pub fn set_account_tasks(
+    path: &Path,
+    name: &str,
+    selected: &[u8],
+    bbs: &[u8],
+) -> Result<(), ConfigError> {
+    mutate_raw(path, |root| {
+        let account = find_account_mut(root, name)?;
+        let tasks = account
+            .entry(key("tasks"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("tasks 必须是对象".to_owned()))?;
+        tasks.insert(
+            key("china_game_checkin"),
+            Value::Bool(selected.contains(&1)),
+        );
+        tasks.insert(key("hoyolab_checkin"), Value::Bool(selected.contains(&2)));
+        let mut detail = Mapping::new();
+        detail.insert(key("enabled"), Value::Bool(selected.contains(&3)));
+        for (number, field) in [
+            (1, "sign"),
+            (2, "read"),
+            (3, "like"),
+            (4, "cancel_like"),
+            (5, "share"),
+        ] {
+            detail.insert(key(field), Value::Bool(bbs.contains(&number)));
+        }
+        tasks.insert(key("bbs"), Value::Mapping(detail));
+        Ok(())
+    })
+}
+
+pub fn set_account_games(path: &Path, name: &str, games: &[u8]) -> Result<(), ConfigError> {
+    const NAMES: [&str; 6] = [
+        "genshin",
+        "honkai2",
+        "honkai3rd",
+        "tears_of_themis",
+        "star_rail",
+        "zenless_zone_zero",
+    ];
+    mutate_raw(path, |root| {
+        let account = find_account_mut(root, name)?;
+        account.insert(
+            key("games"),
+            Value::Sequence(
+                games
+                    .iter()
+                    .filter_map(|n| NAMES.get((*n as usize).saturating_sub(1)))
+                    .map(|v| Value::String((*v).to_owned()))
+                    .collect(),
+            ),
+        );
+        Ok(())
+    })
+}
+
+fn find_account_mut<'a>(root: &'a mut Value, name: &str) -> Result<&'a mut Mapping, ConfigError> {
+    accounts_mut(root)?
+        .iter_mut()
+        .find(|value| account_name_of(value) == Some(name))
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| ConfigError::Edit(format!("未找到账号 {name:?}")))
+}
+
 fn mutate_raw(
     path: &Path,
     mutate: impl FnOnce(&mut Value) -> Result<(), ConfigError>,
 ) -> Result<(), ConfigError> {
-    let source = fs::read_to_string(path).map_err(|source| ConfigError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let mut value: Value = serde_yaml_ng::from_str(&source)?;
+    let mut value = read_raw(path)?;
     mutate(&mut value)?;
-    let updated = serde_yaml_ng::to_string(&value).map_err(ConfigError::Serialize)?;
+    let updated = validate_and_serialize(&value)?;
+    replace_validated(path, &updated)
+}
+
+fn replace_validated(path: &Path, updated: &str) -> Result<(), ConfigError> {
     let temporary = temporary_path(path);
-    secure_write_new(&temporary, &updated)?;
+    secure_write_new(&temporary, updated)?;
     load(&temporary).map_err(|error| {
         let _ = fs::remove_file(&temporary);
         ConfigError::Edit(format!("修改后配置未通过校验，原配置未修改：{error}"))
     })?;
-    fs::write(path, updated).map_err(|source| write_error(path, source))?;
-    let _ = fs::remove_file(temporary);
+    let backup = path.with_extension(format!("yaml.{}.backup", std::process::id()));
+    fs::rename(path, &backup).map_err(|source| write_error(path, source))?;
+    if let Err(source) = fs::rename(&temporary, path) {
+        let _ = fs::rename(&backup, path);
+        let _ = fs::remove_file(&temporary);
+        return Err(write_error(path, source));
+    }
+    let _ = fs::remove_file(backup);
     Ok(())
+}
+
+fn read_raw(path: &Path) -> Result<Value, ConfigError> {
+    let source = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    serde_yaml_ng::from_str(&source).map_err(ConfigError::Yaml)
+}
+
+fn validate_and_serialize(value: &Value) -> Result<String, ConfigError> {
+    let mut config: Config = serde_yaml_ng::from_value(value.clone())?;
+    hydrate_stokens_from_cookies(&mut config);
+    validate(&config)?;
+    serde_yaml_ng::to_string(value).map_err(ConfigError::Serialize)
+}
+
+fn empty_config_value() -> Value {
+    let mut root = Mapping::new();
+    root.insert(key("version"), Value::Number(CURRENT_CONFIG_VERSION.into()));
+    root.insert(key("runtime"), Value::Mapping(Mapping::new()));
+    root.insert(key("captcha"), Value::Mapping(Mapping::new()));
+    root.insert(key("accounts"), Value::Sequence(Vec::new()));
+    root.insert(key("notifications"), Value::Mapping(Mapping::new()));
+    Value::Mapping(root)
 }
 
 fn accounts_mut(root: &mut Value) -> Result<&mut Vec<Value>, ConfigError> {
@@ -198,5 +317,34 @@ fn write_error(path: &Path, source: std::io::Error) -> ConfigError {
     ConfigError::Write {
         path: path.to_path_buf(),
         source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_account_creates_missing_parent_and_valid_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("nested/config.yaml");
+        let name = add_account(
+            &path,
+            Some("测试账号"),
+            "account_id=123; account_mid_v2=mid; stoken=v2_secret",
+        )
+        .unwrap();
+        assert_eq!(name, "测试账号");
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.config.accounts.len(), 1);
+        assert!(!fs::read_to_string(path).unwrap().contains("MIHOYO_COOKIE"));
+    }
+
+    #[test]
+    fn invalid_cookie_does_not_create_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("missing/config.yaml");
+        assert!(add_account(&path, None, "invalid").is_err());
+        assert!(!path.parent().unwrap().exists());
     }
 }

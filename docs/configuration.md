@@ -87,11 +87,36 @@ notifications:
 mihoyo-bbs-tools config edit --config config/config.yaml
 mihoyo-bbs-tools config add-account --config config/config.yaml --name "备注"
 mihoyo-bbs-tools config remove-account --config config/config.yaml "备注"
+mihoyo-bbs-tools config setup --config config/config.yaml
 ```
 
 `config edit` 使用 `VISUAL` 或 `EDITOR` 指定的编辑器（Windows 默认记事本）修改完整 YAML，并在覆盖原文件前校验。`add-account` 从标准输入读取完整 Cookie，避免 Cookie 出现在命令行历史和进程列表；备注可省略，此时使用 Cookie 中的 UID 生成名称。程序会从 Cookie 的 `stoken` 字段自动提取 SToken，因此配置中的 `credentials.stoken` 可以省略。Cookie 缺少 `stoken` 时会拒绝添加，以免社区任务在运行时才认证失败。
 
+当 `add-account` 指向的配置文件不存在时，它会在账号名称和 Cookie 全部校验成功后创建父目录及新配置。新文件只包含本次添加的账号，不会复制示例账号或 `${MIHOYO_COOKIE}` 等占位符。空文件、损坏的 YAML、目标为目录或其他读取错误不会触发自动重建；`edit`、`remove-account`、`run`、`checkin` 和 `validate-config` 仍要求配置文件已经存在。新建配置不会覆盖并发创建或已经存在的文件，Unix 下使用 `0600` 权限。
+
 米游社总开关是 `tasks.bbs.enabled`，`sign`、`read`、`like`、`cancel_like`、`share` 分别控制社区签到、阅读、点赞、点赞后恢复状态和分享。旧写法 `bbs: true`/`false` 仍兼容；程序只执行已开启且服务端显示尚未完成的任务。
+
+### 交互式设置
+
+`config setup` 显式进入数字菜单，可以添加或删除账号、设置指定账号的任务与游戏，或调用完整配置编辑器。任务菜单可继续设置米游社签到、阅读、点赞、点赞后取消和分享开关。
+
+多选支持连续数字（如 `123`）或逗号分隔（如 `1,2,3`），重复编号会自动去重；`0` 取消当前操作且不写配置。无效、越界或空输入会提示重新输入，EOF 会安全退出。该命令只适用于交互终端；标准输入不可用或不是交互终端时会明确失败，不会无限等待。菜单和错误信息不会显示 Cookie、SToken、通知 Token 或代理认证信息。
+
+## 临时运行范围
+
+可以在不修改 YAML 的情况下缩小本次运行范围：
+
+```text
+mihoyo-bbs-tools run --task china-checkin,hoyolab-checkin,bbs
+mihoyo-bbs-tools run --task bbs
+mihoyo-bbs-tools checkin --region china
+mihoyo-bbs-tools checkin --region hoyolab
+mihoyo-bbs-tools checkin --region all
+```
+
+`run --task` 可选择 `china-checkin`、`hoyolab-checkin`、`bbs`，支持重复使用参数或逗号分隔多值。尚未实现运行器的云游戏和 Web 活动不会作为可选值暴露。省略 `--task` 时保持原有行为和执行顺序：国内签到、HoYoLAB 签到、米游社任务。
+
+`checkin --region` 的可选值为 `china`、`hoyolab`、`all`，默认 `all`。CLI 筛选只会缩小本次执行范围，并继续与账号 `enabled`、任务开关和游戏列表取交集，不能通过命令行重新启用 YAML 中已禁用的内容；未选择的任务也不会作为失败项写入报告。
 
 ## 环境变量替换
 

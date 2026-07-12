@@ -33,14 +33,24 @@ mihoyo-bbs-tools version
 mihoyo-bbs-tools validate-config
 mihoyo-bbs-tools print-example-config
 mihoyo-bbs-tools checkin
-mihoyo-bbs-tools migrate-config
+mihoyo-bbs-tools checkin --region china|hoyolab|all
+mihoyo-bbs-tools migrate-config SOURCE [TARGET]
+mihoyo-bbs-tools migrate-config --input SOURCE [--output TARGET]
 mihoyo-bbs-tools run
+mihoyo-bbs-tools run --task china-checkin,hoyolab-checkin,bbs
 mihoyo-bbs-tools config edit
 mihoyo-bbs-tools config add-account --name "备注"
 mihoyo-bbs-tools config remove-account "备注"
+mihoyo-bbs-tools config setup
 ```
 
 配置格式和环境变量规则见 [配置说明](docs/configuration.md)，凭据保护与日志要求见 [安全说明](docs/security.md)。
+
+`run --task` 可以临时缩小本次运行范围，可选值为 `china-checkin`、`hoyolab-checkin` 和 `bbs`；不提供时仍按原顺序尝试全部已实现任务。`checkin --region` 可选择 `china`、`hoyolab` 或 `all`，默认值为 `all`。这些命令行选项不会绕过配置文件中的账号、任务或游戏禁用状态。
+
+首次使用时可以直接运行 `config add-account`。即使默认的 `config/config.yaml` 及其父目录尚不存在，程序也会在 Cookie 和账号信息校验成功后创建只包含该账号的新配置。`config setup` 提供显式进入的数字设置菜单；普通运行命令不会自动进入交互界面，因此不会阻塞 CI、Docker 或计划任务。
+
+配置迁移同时支持位置参数和原有的 `-i/--input`、`-o/--output` 选项。省略输出路径时，会在输入文件同目录生成 `.migrated.yaml` 或 `.migrated.yml` 文件；详细命名和不覆盖规则见 [配置迁移说明](docs/config-migration.md)。
 
 ## 设备配置
 
