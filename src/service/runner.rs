@@ -342,45 +342,6 @@ fn mask_uid(uid: &str) -> String {
     format!("***{suffix}")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uid_mask_only_keeps_last_four_characters() {
-        assert_eq!(mask_uid("123456789"), "***6789");
-        assert_eq!(mask_uid("12"), "***12");
-    }
-
-    #[tokio::test]
-    async fn missing_captcha_endpoint_is_reported_without_retrying() {
-        let http = HttpClient::builder().build().unwrap();
-        let client =
-            ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id");
-        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
-        let mut report = RunReport::default();
-
-        solve_captcha_and_retry(
-            &mut report,
-            "account",
-            "原神 / ***0001",
-            &client,
-            None,
-            &mut signer,
-            ChinaGame::Genshin,
-            "cn_gf01",
-            "10001",
-            "gt",
-            "challenge",
-        )
-        .await;
-
-        assert_eq!(report.records.len(), 1);
-        assert_eq!(report.records[0].outcome, TaskOutcome::CaptchaRequired);
-        assert!(report.records[0].message.contains("captcha.endpoint"));
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn solve_captcha_and_retry(
     report: &mut RunReport,
@@ -455,5 +416,44 @@ async fn solve_captcha_and_retry(
             "验证码校验后仍被要求验证，已停止重试",
         )),
         Err(error) => push_error(report, account, subject, error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uid_mask_only_keeps_last_four_characters() {
+        assert_eq!(mask_uid("123456789"), "***6789");
+        assert_eq!(mask_uid("12"), "***12");
+    }
+
+    #[tokio::test]
+    async fn missing_captcha_endpoint_is_reported_without_retrying() {
+        let http = HttpClient::builder().build().unwrap();
+        let client =
+            ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id");
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut report = RunReport::default();
+
+        solve_captcha_and_retry(
+            &mut report,
+            "account",
+            "原神 / ***0001",
+            &client,
+            None,
+            &mut signer,
+            ChinaGame::Genshin,
+            "cn_gf01",
+            "10001",
+            "gt",
+            "challenge",
+        )
+        .await;
+
+        assert_eq!(report.records.len(), 1);
+        assert_eq!(report.records[0].outcome, TaskOutcome::CaptchaRequired);
+        assert!(report.records[0].message.contains("captcha.endpoint"));
     }
 }
