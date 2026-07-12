@@ -1,6 +1,6 @@
 mod ds;
 
 pub use ds::{
-    sign_ds2_with, sign_ds_with, Clock, DsHeader, DsRandom, DsSigner, FixedClock, FixedRandom,
-    SystemClock, ThreadRandom, APP_SALT, BODY_SALT, WEB_SALT,
+    APP_SALT, BODY_SALT, Clock, DsHeader, DsRandom, DsSigner, FixedClock, FixedRandom, SystemClock,
+    ThreadRandom, WEB_SALT, sign_ds_with, sign_ds2_with,
 };

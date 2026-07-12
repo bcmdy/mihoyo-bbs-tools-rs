@@ -4,9 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::SecretString,
-    checkin::{
-        CheckinError, CheckinState, ChinaCheckinClient, ChinaGame, RoleState, SignState,
-    },
+    checkin::{CheckinError, CheckinState, ChinaCheckinClient, ChinaGame, RoleState, SignState},
     config::{Config, Game},
     http::{HttpClient, RetryPolicy},
     signing::{DsSigner, SystemClock, ThreadRandom},
@@ -27,7 +25,8 @@ pub async fn run_china_checkin(config: &Config) -> RunReport {
                 attempts: usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
                 base_delay: Duration::from_millis(500),
             });
-        let builder = match builder.proxy(account.proxy.url.as_ref().map(|url| url.expose_secret())) {
+        let builder = match builder.proxy(account.proxy.url.as_ref().map(|url| url.expose_secret()))
+        {
             Ok(builder) => builder,
             Err(error) => {
                 report.push(record(
@@ -56,7 +55,11 @@ pub async fn run_china_checkin(config: &Config) -> RunReport {
 
         let cookie = account.credentials.cookie.clone();
         let device_id = Uuid::new_v3(&Uuid::NAMESPACE_URL, cookie.expose_secret().as_bytes());
-        let client = ChinaCheckinClient::new(http, SecretString::new(cookie.expose_secret()), device_id.to_string());
+        let client = ChinaCheckinClient::new(
+            http,
+            SecretString::new(cookie.expose_secret()),
+            device_id.to_string(),
+        );
         let mut signer = DsSigner::new(SystemClock, ThreadRandom);
 
         for game in account.games.iter().filter_map(config_game_to_china) {
@@ -175,13 +178,7 @@ fn push_error(report: &mut RunReport, account: &str, subject: &str, error: Check
         CheckinError::Http(_) => (TaskOutcome::NetworkFailed, "网络请求失败".to_owned()),
         other => (TaskOutcome::Failed, other.to_string()),
     };
-    report.push(record(
-        account,
-        "国内游戏签到",
-        subject,
-        outcome,
-        &message,
-    ));
+    report.push(record(account, "国内游戏签到", subject, outcome, &message));
 }
 
 fn record(

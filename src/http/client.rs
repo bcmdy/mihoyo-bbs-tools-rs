@@ -86,7 +86,8 @@ impl HttpClientBuilder {
             .user_agent(self.user_agent);
         if let Some(proxy) = self.proxy {
             builder = builder.proxy(
-                Proxy::all(proxy.as_str()).map_err(|error| HttpError::InvalidProxy(error.to_string()))?,
+                Proxy::all(proxy.as_str())
+                    .map_err(|error| HttpError::InvalidProxy(error.to_string()))?,
             );
         }
         let inner = builder
@@ -136,7 +137,8 @@ impl HttpClient {
                         .await
                         .map_err(|error| HttpError::Decode(error.to_string()));
                 }
-                Ok(response) if should_retry_status(response.status()) && attempt + 1 < attempts => {}
+                Ok(response)
+                    if should_retry_status(response.status()) && attempt + 1 < attempts => {}
                 Ok(response) => return Err(HttpError::Status(response.status())),
                 Err(error) if is_retryable(&error) && attempt + 1 < attempts => {}
                 Err(error) if error.is_timeout() => return Err(HttpError::Timeout),
