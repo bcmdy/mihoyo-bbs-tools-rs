@@ -242,10 +242,7 @@ pub fn to_yaml(config: &Config) -> Result<String, ConfigError> {
 }
 
 /// 迁移配置并安全地新建输出文件。此函数拒绝覆盖输入文件或任何已有文件。
-pub fn write_migrated_config(
-    input: &Path,
-    output: &Path,
-) -> Result<LoadedConfig, ConfigError> {
+pub fn write_migrated_config(input: &Path, output: &Path) -> Result<LoadedConfig, ConfigError> {
     ensure_distinct_new_output(input, output)?;
     let loaded = migrate_config(input)?;
     let yaml = to_yaml(&loaded.config)?;
@@ -259,7 +256,10 @@ pub fn write_migrated_config(
             }
         }
     })?;
-    if let Err(source) = file.write_all(yaml.as_bytes()).and_then(|()| file.sync_all()) {
+    if let Err(source) = file
+        .write_all(yaml.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
         drop(file);
         let _ = fs::remove_file(output);
         return Err(ConfigError::Write {
@@ -869,7 +869,10 @@ accounts:
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&output).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
     }
 

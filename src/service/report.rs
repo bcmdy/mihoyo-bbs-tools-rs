@@ -30,6 +30,10 @@ impl RunReport {
         self.records.push(record);
     }
 
+    pub fn extend(&mut self, other: Self) {
+        self.records.extend(other.records);
+    }
+
     pub fn exit_code(&self) -> u8 {
         if self
             .records

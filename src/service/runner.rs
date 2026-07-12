@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::{
     auth::SecretString,
     checkin::{CheckinError, CheckinState, ChinaCheckinClient, ChinaGame, RoleState, SignState},
+    checkin::{HoyolabCheckinClient, HoyolabCheckinError, HoyolabGame},
     config::{Config, Game},
     http::{HttpClient, RetryPolicy},
     signing::{DsSigner, SystemClock, ThreadRandom},
@@ -64,6 +65,94 @@ pub async fn run_china_checkin(config: &Config) -> RunReport {
 
         for game in account.games.iter().filter_map(config_game_to_china) {
             run_game(&mut report, &account.name, &client, &mut signer, game).await;
+        }
+    }
+    report
+}
+
+pub async fn run_hoyolab_checkin(config: &Config) -> RunReport {
+    let mut report = RunReport::default();
+    for account in &config.accounts {
+        if !account.enabled || !account.tasks.hoyolab_checkin {
+            continue;
+        }
+        let builder = HttpClient::builder()
+            .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
+            .retry(RetryPolicy {
+                attempts: usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
+                base_delay: Duration::from_millis(500),
+            });
+        let builder = match builder.proxy(account.proxy.url.as_ref().map(|url| url.expose_secret()))
+        {
+            Ok(builder) => builder,
+            Err(error) => {
+                report.push(record(
+                    &account.name,
+                    "HoYoLAB 签到",
+                    "代理",
+                    TaskOutcome::NetworkFailed,
+                    &error.to_string(),
+                ));
+                continue;
+            }
+        };
+        let http = match builder.build() {
+            Ok(http) => http,
+            Err(error) => {
+                report.push(record(
+                    &account.name,
+                    "HoYoLAB 签到",
+                    "HTTP 客户端",
+                    TaskOutcome::NetworkFailed,
+                    &error.to_string(),
+                ));
+                continue;
+            }
+        };
+        let client = HoyolabCheckinClient::new(http, account.credentials.cookie.clone());
+        for game in account.games.iter().filter_map(config_game_to_hoyolab) {
+            let subject = game.spec().display_name;
+            match client.info(game).await {
+                Ok(CheckinState::FirstBind) => report.push(record(
+                    &account.name,
+                    "HoYoLAB 签到",
+                    subject,
+                    TaskOutcome::Skipped,
+                    "首次绑定，请先手动签到一次",
+                )),
+                Ok(CheckinState::AlreadySigned { total_sign_day }) => report.push(record(
+                    &account.name,
+                    "HoYoLAB 签到",
+                    subject,
+                    TaskOutcome::AlreadyCompleted,
+                    &format!("今日已签到，累计 {total_sign_day} 天"),
+                )),
+                Ok(CheckinState::Pending { .. }) => match client.sign_once(game).await {
+                    Ok(SignState::Success) => report.push(record(
+                        &account.name,
+                        "HoYoLAB 签到",
+                        subject,
+                        TaskOutcome::Success,
+                        "签到成功",
+                    )),
+                    Ok(SignState::AlreadySigned) => report.push(record(
+                        &account.name,
+                        "HoYoLAB 签到",
+                        subject,
+                        TaskOutcome::AlreadyCompleted,
+                        "接口返回今日已签到",
+                    )),
+                    Ok(SignState::CaptchaRequired { .. }) => report.push(record(
+                        &account.name,
+                        "HoYoLAB 签到",
+                        subject,
+                        TaskOutcome::CaptchaRequired,
+                        "触发验证码，已停止重复请求",
+                    )),
+                    Err(error) => push_hoyolab_error(&mut report, &account.name, subject, error),
+                },
+                Err(error) => push_hoyolab_error(&mut report, &account.name, subject, error),
+            }
         }
     }
     report
@@ -167,6 +256,36 @@ fn config_game_to_china(game: &Game) -> Option<ChinaGame> {
         Game::StarRail => Some(ChinaGame::StarRail),
         Game::ZenlessZoneZero => Some(ChinaGame::ZenlessZoneZero),
     }
+}
+
+fn config_game_to_hoyolab(game: &Game) -> Option<HoyolabGame> {
+    match game {
+        Game::Genshin => Some(HoyolabGame::Genshin),
+        Game::Honkai2 => None,
+        Game::Honkai3rd => Some(HoyolabGame::Honkai3rd),
+        Game::TearsOfThemis => Some(HoyolabGame::TearsOfThemis),
+        Game::StarRail => Some(HoyolabGame::StarRail),
+        Game::ZenlessZoneZero => Some(HoyolabGame::ZenlessZoneZero),
+    }
+}
+
+fn push_hoyolab_error(
+    report: &mut RunReport,
+    account: &str,
+    subject: &str,
+    error: HoyolabCheckinError,
+) {
+    let (outcome, message) = match error {
+        HoyolabCheckinError::CookieInvalid => (
+            TaskOutcome::AuthenticationFailed,
+            "Cookie 无效或已过期".to_owned(),
+        ),
+        HoyolabCheckinError::Http(_) => {
+            (TaskOutcome::NetworkFailed, "网络请求失败".to_owned())
+        }
+        other => (TaskOutcome::Failed, other.to_string()),
+    };
+    report.push(record(account, "HoYoLAB 签到", subject, outcome, &message));
 }
 
 fn push_error(report: &mut RunReport, account: &str, subject: &str, error: CheckinError) {

@@ -24,7 +24,8 @@ use super::{
 const HOYOLAB_ORIGIN: &str = "https://act.hoyolab.com";
 const HOYOLAB_REFERER: &str = "https://act.hoyolab.com/";
 const DEFAULT_LANGUAGE: &str = "en-us";
-const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36";
+const DEFAULT_USER_AGENT: &str =
+    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36";
 
 #[derive(Debug, Error)]
 pub enum HoyolabCheckinError {
@@ -149,10 +150,7 @@ impl HoyolabCheckinClient {
             ACCEPT,
             HeaderValue::from_static("application/json, text/plain, */*"),
         );
-        headers.insert(
-            ACCEPT_LANGUAGE,
-            HeaderValue::from_static("en-US,en;q=0.8"),
-        );
+        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.8"));
         insert_typed_header(&mut headers, COOKIE, self.cookie.expose_secret(), "Cookie")?;
         insert_typed_header(&mut headers, USER_AGENT, &self.user_agent, "User-Agent")?;
         insert_typed_header(&mut headers, ORIGIN, HOYOLAB_ORIGIN, "Origin")?;
@@ -245,10 +243,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/info"))
             .and(query_param("lang", "en-us"))
-            .and(query_param(
-                "act_id",
-                HoyolabGame::Genshin.spec().act_id,
-            ))
+            .and(query_param("act_id", HoyolabGame::Genshin.spec().act_id))
             .and(header("referer", HOYOLAB_REFERER))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "retcode": 0,

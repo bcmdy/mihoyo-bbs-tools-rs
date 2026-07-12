@@ -27,6 +27,13 @@ pub enum Command {
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
     },
+    /// 将 Python v11-v15 配置迁移到新版 YAML
+    MigrateConfig {
+        #[arg(short, long)]
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
     /// 输出脱敏的新版配置示例
     PrintExampleConfig,
 }

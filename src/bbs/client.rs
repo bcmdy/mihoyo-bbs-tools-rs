@@ -354,11 +354,7 @@ struct ForumSignRequest<'a> {
     gids: &'a str,
 }
 
-fn insert_header(
-    headers: &mut HeaderMap,
-    name: &'static str,
-    value: &str,
-) -> Result<(), BbsError> {
+fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<(), BbsError> {
     insert_typed_header(headers, HeaderName::from_static(name), value, name)
 }
 
@@ -431,7 +427,10 @@ mod tests {
 
         let summary = client(&server).missions().await.unwrap();
         assert_eq!(summary.can_get_points, 30);
-        assert_eq!(summary.mission(MissionKind::Read).unwrap().happened_times, 2);
+        assert_eq!(
+            summary.mission(MissionKind::Read).unwrap().happened_times,
+            2
+        );
         assert!(summary.mission(MissionKind::Like).unwrap().award_received);
 
         let expired = MockServer::start().await;
@@ -512,9 +511,7 @@ mod tests {
             .await;
 
         assert!(matches!(
-            client(&server)
-                .set_like_once("42", false, "ds", None)
-                .await,
+            client(&server).set_like_once("42", false, "ds", None).await,
             Err(BbsError::Http(HttpError::Status(
                 StatusCode::INTERNAL_SERVER_ERROR
             )))

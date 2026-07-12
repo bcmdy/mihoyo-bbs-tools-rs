@@ -302,9 +302,6 @@ mod tests {
             assert!(spec.event_base.starts_with("https://"));
             assert!(spec.event_base.contains("hoyolab.com"));
         }
-        assert_eq!(
-            HoyolabGame::ZenlessZoneZero.spec().sign_game,
-            Some("zzz")
-        );
+        assert_eq!(HoyolabGame::ZenlessZoneZero.spec().sign_game, Some("zzz"));
     }
 }
