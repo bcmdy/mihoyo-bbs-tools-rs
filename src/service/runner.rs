@@ -35,7 +35,7 @@ pub async fn run_china_checkin(config: &Config) -> RunReport {
                     "网络初始化",
                     "代理",
                     TaskOutcome::NetworkFailed,
-                    error.to_string(),
+                    &error.to_string(),
                 ));
                 continue;
             }
@@ -48,7 +48,7 @@ pub async fn run_china_checkin(config: &Config) -> RunReport {
                     "网络初始化",
                     "HTTP 客户端",
                     TaskOutcome::NetworkFailed,
-                    error.to_string(),
+                    &error.to_string(),
                 ));
                 continue;
             }
