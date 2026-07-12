@@ -130,6 +130,7 @@ pub(super) fn migrate_value(
         },
         accounts: vec![AccountConfig {
             name: account_name.trim().to_owned(),
+            remark: None,
             enabled: boolean(root, "enable").unwrap_or(true),
             credentials: CredentialConfig {
                 cookie: SecretString::new(cookie),

@@ -18,6 +18,7 @@ mod interactive;
 mod legacy;
 pub use editor::{
     add_account_from_stdin, edit_file, remove_account, set_account_games, set_account_tasks,
+    set_captcha_endpoint, set_notification_options, set_runtime,
 };
 pub use interactive::setup as interactive_setup;
 
@@ -124,6 +125,8 @@ pub struct CaptchaConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AccountConfig {
     pub name: String,
+    #[serde(default)]
+    pub remark: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub credentials: CredentialConfig,
@@ -884,6 +887,7 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                     &base,
                     &[
                         "name",
+                        "remark",
                         "enabled",
                         "credentials",
                         "device",
