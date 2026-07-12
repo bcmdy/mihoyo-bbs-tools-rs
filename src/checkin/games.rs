@@ -116,6 +116,7 @@ impl ChinaGame {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 const fn common_spec(
     game: ChinaGame,
     config_name: &'static str,

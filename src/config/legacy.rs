@@ -223,7 +223,7 @@ fn scalar_string(map: &Mapping, key: &str) -> Option<String> {
 }
 
 fn get<'a>(map: &'a Mapping, key: &str) -> Option<&'a Value> {
-    map.get(&Value::String(key.to_owned()))
+    map.get(Value::String(key.to_owned()))
 }
 
 #[cfg(test)]

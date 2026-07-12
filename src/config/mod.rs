@@ -354,7 +354,7 @@ fn reject_unsupported_version(value: &Value) -> Result<(), ConfigError> {
 fn config_version(value: &Value) -> Option<u64> {
     value
         .as_mapping()
-        .and_then(|map| map.get(&Value::String("version".to_owned())))
+        .and_then(|map| map.get(Value::String("version".to_owned())))
         .and_then(Value::as_u64)
 }
 
@@ -542,7 +542,7 @@ fn inspect_mapping(value: &Value, path: &str, allowed: &[&str], warnings: &mut V
 }
 
 fn get<'a>(map: &'a Mapping, key: &str) -> Option<&'a Value> {
-    map.get(&Value::String(key.to_owned()))
+    map.get(Value::String(key.to_owned()))
 }
 
 fn deserialize_secret<'de, D>(deserializer: D) -> Result<SecretString, D::Error>
