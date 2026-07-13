@@ -2,6 +2,11 @@ name: Rust CI
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 构建版本号，例如 1.0.1（可不含 v）
+        required: true
+        type: string
   push:
     branches:
       - main
@@ -48,6 +53,20 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      - name: 确定构建版本
+        shell: bash
+        run: |
+          raw_version='${{ inputs.version }}'
+          if [[ -z "$raw_version" ]]; then
+            raw_version="ci-${GITHUB_RUN_NUMBER}"
+          fi
+          version="${raw_version#v}"
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "版本号只能包含字母、数字、点、下划线和连字符" >&2
+            exit 1
+          fi
+          echo "MIHOYO_BBS_TOOLS_VERSION=$version" >> "$GITHUB_ENV"
+
       - name: 安装 Rust
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
@@ -90,6 +109,41 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      - name: 确定 Linux 构建版本
+        id: version_linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          raw_version='${{ inputs.version }}'
+          if [[ -z "$raw_version" ]]; then
+            raw_version="ci-${GITHUB_RUN_NUMBER}"
+          fi
+          version="${raw_version#v}"
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "版本号只能包含字母、数字、点、下划线和连字符" >&2
+            exit 1
+          fi
+          echo "MIHOYO_BBS_TOOLS_VERSION=$version" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=MihoyoBBSToolsRS-$version-linux-x86_64" >> "$GITHUB_ENV"
+          echo "package_name=MihoyoBBSToolsRS-$version-linux-x86_64" >> "$GITHUB_OUTPUT"
+
+      - name: 确定 Windows 构建版本
+        id: version_windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $rawVersion = '${{ inputs.version }}'
+          if ([string]::IsNullOrWhiteSpace($rawVersion)) {
+            $rawVersion = "ci-$env:GITHUB_RUN_NUMBER"
+          }
+          $version = $rawVersion.TrimStart('v')
+          if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') {
+            throw '版本号只能包含字母、数字、点、下划线和连字符'
+          }
+          "MIHOYO_BBS_TOOLS_VERSION=$version" | Add-Content -Path $env:GITHUB_ENV
+          "PACKAGE_NAME=MihoyoBBSToolsRS-$version-windows-x86_64" | Add-Content -Path $env:GITHUB_ENV
+          "package_name=MihoyoBBSToolsRS-$version-windows-x86_64" | Add-Content -Path $env:GITHUB_OUTPUT
+
       - name: 安装 Rust
         run: |
           rustup toolchain install stable --profile minimal
@@ -121,10 +175,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package_name="mihoyo-bbs-tools-linux-x86_64"
+          package_name="$PACKAGE_NAME"
           package_dir="package/$package_name"
           mkdir -p "$package_dir/config" dist
-          cp target/release/mihoyo-bbs-tools "$package_dir/"
+          cp target/release/MihoyoBBSToolsRS "$package_dir/"
           cp docs/使用说明.md "$package_dir/使用说明.md"
           cp config/config.example.yaml "$package_dir/config/"
           tar -C package -czf "dist/$package_name.tar.gz" "$package_name"
@@ -135,11 +189,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $packageName = "mihoyo-bbs-tools-windows-x86_64"
+          $packageName = $env:PACKAGE_NAME
           $packageDir = Join-Path package $packageName
           New-Item -ItemType Directory -Path (Join-Path $packageDir config) -Force | Out-Null
           New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Copy-Item -LiteralPath target/release/mihoyo-bbs-tools.exe -Destination $packageDir
+          Copy-Item -LiteralPath target/release/MihoyoBBSToolsRS.exe -Destination $packageDir
           Copy-Item -LiteralPath docs/使用说明.md -Destination (Join-Path $packageDir 使用说明.md)
           Copy-Item -LiteralPath config/config.example.yaml -Destination (Join-Path $packageDir config)
           $archive = "dist/$packageName.zip"
@@ -150,6 +204,6 @@ jobs:
       - name: 上传完整使用包
         uses: actions/upload-artifact@v4
         with:
-          name: mihoyo-bbs-tools-${{ runner.os }}-x86_64
+          name: ${{ steps.version_linux.outputs.package_name || steps.version_windows.outputs.package_name }}
           path: dist/*
           if-no-files-found: error

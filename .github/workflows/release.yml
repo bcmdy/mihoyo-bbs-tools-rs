@@ -3,8 +3,8 @@ name: 发布
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: 要构建和发布的已有版本标签
+      version:
+        description: 要构建和发布的版本号，例如 1.0.1（对应标签 v1.0.1）
         required: true
         type: string
   push:
@@ -23,7 +23,21 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.ref }}
+
+      - name: 确定构建版本
+        id: version
+        shell: bash
+        run: |
+          raw_version='${{ inputs.version || github.ref_name }}'
+          version="${raw_version#v}"
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "版本号只能包含字母、数字、点、下划线和连字符" >&2
+            exit 1
+          fi
+          echo "MIHOYO_BBS_TOOLS_VERSION=$version" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=MihoyoBBSToolsRS-$version-linux-x86_64" >> "$GITHUB_ENV"
+          echo "package_name=MihoyoBBSToolsRS-$version-linux-x86_64" >> "$GITHUB_OUTPUT"
 
       - name: 安装 Rust
         run: |
@@ -40,10 +54,10 @@ jobs:
       - name: 打包并生成校验文件
         run: |
           set -euo pipefail
-          package_name="mihoyo-bbs-tools-linux-x86_64"
+          package_name="$PACKAGE_NAME"
           package_dir="package/$package_name"
           mkdir -p "$package_dir/config" dist
-          cp target/release/mihoyo-bbs-tools "$package_dir/"
+          cp target/release/MihoyoBBSToolsRS "$package_dir/"
           cp docs/使用说明.md "$package_dir/使用说明.md"
           cp config/config.example.yaml "$package_dir/config/"
           tar -C package -czf "dist/$package_name.tar.gz" "$package_name"
@@ -53,7 +67,7 @@ jobs:
       - name: 上传 Linux 构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: mihoyo-bbs-tools-linux-x86_64
+          name: ${{ steps.version.outputs.package_name }}
           path: dist/*
           if-no-files-found: error
 
@@ -65,7 +79,20 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.ref }}
+
+      - name: 确定构建版本
+        id: version
+        shell: pwsh
+        run: |
+          $rawVersion = '${{ inputs.version || github.ref_name }}'
+          $version = $rawVersion.TrimStart('v')
+          if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') {
+            throw '版本号只能包含字母、数字、点、下划线和连字符'
+          }
+          "MIHOYO_BBS_TOOLS_VERSION=$version" | Add-Content -Path $env:GITHUB_ENV
+          "PACKAGE_NAME=MihoyoBBSToolsRS-$version-windows-x86_64" | Add-Content -Path $env:GITHUB_ENV
+          "package_name=MihoyoBBSToolsRS-$version-windows-x86_64" | Add-Content -Path $env:GITHUB_OUTPUT
 
       - name: 安装 Rust
         run: |
@@ -82,11 +109,11 @@ jobs:
       - name: 打包并生成校验文件
         shell: pwsh
         run: |
-          $packageName = "mihoyo-bbs-tools-windows-x86_64"
+          $packageName = $env:PACKAGE_NAME
           $packageDir = Join-Path package $packageName
           New-Item -ItemType Directory -Path (Join-Path $packageDir config) -Force | Out-Null
           New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Copy-Item -LiteralPath target/release/mihoyo-bbs-tools.exe -Destination $packageDir
+          Copy-Item -LiteralPath target/release/MihoyoBBSToolsRS.exe -Destination $packageDir
           Copy-Item -LiteralPath docs/使用说明.md -Destination (Join-Path $packageDir 使用说明.md)
           Copy-Item -LiteralPath config/config.example.yaml -Destination (Join-Path $packageDir config)
           $archive = "dist/$packageName.zip"
@@ -97,7 +124,7 @@ jobs:
       - name: 上传 Windows 构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: mihoyo-bbs-tools-windows-x86_64
+          name: ${{ steps.version.outputs.package_name }}
           path: dist/*
           if-no-files-found: error
 
@@ -122,7 +149,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
         run: |
           set -euo pipefail
           shopt -s nullglob

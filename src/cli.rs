@@ -4,10 +4,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "mihoyo-bbs-tools",
-    version,
+    name = "MihoyoBBSToolsRS",
+    version = crate::VERSION,
     about = "米游社与 HoYoLAB 自动任务工具",
-    after_help = "示例：\n  mihoyo-bbs-tools validate-config\n  mihoyo-bbs-tools checkin --region china\n  mihoyo-bbs-tools run --task china-checkin,bbs\n  mihoyo-bbs-tools config setup\n\n使用 `mihoyo-bbs-tools <COMMAND> --help` 查看子命令的详细说明。"
+    after_help = "示例：\n  MihoyoBBSToolsRS validate-config\n  MihoyoBBSToolsRS checkin --region china\n  MihoyoBBSToolsRS run --task china-checkin,bbs\n  MihoyoBBSToolsRS config setup\n\n使用 `MihoyoBBSToolsRS <COMMAND> --help` 查看子命令的详细说明。"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -158,7 +158,7 @@ fn default_migration_output(input: &Path) -> PathBuf {
 
 pub fn version_text() -> String {
     format!(
-        "mihoyo-bbs-tools {} (commit {}, target {})",
+        "MihoyoBBSToolsRS {} (commit {}, target {})",
         crate::VERSION,
         option_env!("GIT_COMMIT").unwrap_or("unknown"),
         format_args!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
@@ -200,5 +200,12 @@ mod tests {
         assert!(help.contains("校验配置文件，不访问远程接口"));
         assert!(help.contains("执行游戏签到与米游社社区任务"));
         assert!(help.contains("交互设置、编辑、添加或删除配置账号"));
+    }
+
+    #[test]
+    fn command_name_and_version_match_release_identity() {
+        let command = Cli::command();
+        assert_eq!(command.get_name(), "MihoyoBBSToolsRS");
+        assert_eq!(command.get_version(), Some(crate::VERSION));
     }
 }

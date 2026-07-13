@@ -92,10 +92,10 @@ Telegram 的 `api_url` 默认使用 `https://api.telegram.org`，一般无需修
 ## 配置编辑与账号管理
 
 ```text
-mihoyo-bbs-tools config edit --config config/config.yaml
-mihoyo-bbs-tools config add-account --config config/config.yaml --name "备注"
-mihoyo-bbs-tools config remove-account --config config/config.yaml "备注"
-mihoyo-bbs-tools config setup --config config/config.yaml
+MihoyoBBSToolsRS config edit --config config/config.yaml
+MihoyoBBSToolsRS config add-account --config config/config.yaml --name "备注"
+MihoyoBBSToolsRS config remove-account --config config/config.yaml "备注"
+MihoyoBBSToolsRS config setup --config config/config.yaml
 ```
 
 `config edit` 使用 `VISUAL` 或 `EDITOR` 指定的编辑器（Windows 默认记事本）修改完整 YAML，并在覆盖原文件前校验。`add-account` 从标准输入读取完整 Cookie，避免 Cookie 出现在命令行历史和进程列表；程序通过公开资料接口查询米游社昵称，并将账号名称写为 `mys用户:<米游社昵称>`。可选备注仅用于区分账号。程序会从 Cookie 的 `stoken` 字段自动提取并写入 SToken；Cookie 缺少 `stoken` 时会拒绝添加，以免社区任务在运行时才认证失败。
@@ -115,11 +115,11 @@ mihoyo-bbs-tools config setup --config config/config.yaml
 可以在不修改 YAML 的情况下缩小本次运行范围：
 
 ```text
-mihoyo-bbs-tools run --task china-checkin,hoyolab-checkin,bbs
-mihoyo-bbs-tools run --task bbs
-mihoyo-bbs-tools checkin --region china
-mihoyo-bbs-tools checkin --region hoyolab
-mihoyo-bbs-tools checkin --region all
+MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs
+MihoyoBBSToolsRS run --task bbs
+MihoyoBBSToolsRS checkin --region china
+MihoyoBBSToolsRS checkin --region hoyolab
+MihoyoBBSToolsRS checkin --region all
 ```
 
 `run --task` 可选择 `china-checkin`、`hoyolab-checkin`、`bbs`，支持重复使用参数或逗号分隔多值。尚未实现运行器的云游戏和 Web 活动不会作为可选值暴露。省略 `--task` 时保持原有行为和执行顺序：国内签到、HoYoLAB 签到、米游社任务。
@@ -138,7 +138,7 @@ mihoyo-bbs-tools checkin --region all
 
 ## 配置校验
 
-`mihoyo-bbs-tools validate-config` 只读取和校验配置，不访问远程接口。校验至少包括：
+`MihoyoBBSToolsRS validate-config` 只读取和校验配置，不访问远程接口。校验至少包括：
 
 - `version` 是程序支持的配置版本。
 - 账号名称非空且在配置中唯一。

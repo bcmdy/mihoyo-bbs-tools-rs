@@ -11,7 +11,7 @@
 | 项目展示名 | `MihoyoBBSTools RS` |
 | GitHub 仓库名 | `mihoyo-bbs-tools-rs` |
 | Rust Cargo 包名 | `mihoyo-bbs-tools` |
-| 命令行可执行文件名 | `mihoyo-bbs-tools` |
+| 命令行可执行文件名 | `MihoyoBBSToolsRS` |
 | 默认本地目录名 | `mihoyo-bbs-tools-rs` |
 
 仓库名称中的 `-rs` 用于明确表示这是 Rust 重构项目；Cargo 包名和可执行文件名不重复添加 `-rs`，以保持命令简洁。
@@ -223,12 +223,12 @@ reqwest = {
 推荐统一入口：
 
 ```text
-mihoyo-bbs-tools checkin
-mihoyo-bbs-tools run
-mihoyo-bbs-tools validate-config
-mihoyo-bbs-tools migrate-config
-mihoyo-bbs-tools print-example-config
-mihoyo-bbs-tools version
+MihoyoBBSToolsRS checkin
+MihoyoBBSToolsRS run
+MihoyoBBSToolsRS validate-config
+MihoyoBBSToolsRS migrate-config
+MihoyoBBSToolsRS print-example-config
+MihoyoBBSToolsRS version
 ```
 
 含义：
@@ -429,7 +429,7 @@ pub trait Task {
 
 - 创建名为 `mihoyo-bbs-tools-rs` 的 GitHub 仓库。
 - Rust 2024 项目。
-- Cargo 包名和可执行文件名均为 `mihoyo-bbs-tools`。
+- Cargo 包名保持为 `mihoyo-bbs-tools`，可执行文件名为 `MihoyoBBSToolsRS`。
 - `LICENSE`、`README.md`、`.gitignore`。
 - README 包含非官方项目声明。
 - CI 工作流。
@@ -796,9 +796,9 @@ RUN apk add --no-cache ca-certificates tzdata
 ENV TZ=Asia/Shanghai
 WORKDIR /app
 
-COPY --from=builder /app/target/release/mihoyo-bbs-tools /usr/local/bin/mihoyo-bbs-tools
+COPY --from=builder /app/target/release/MihoyoBBSToolsRS /usr/local/bin/MihoyoBBSToolsRS
 
-ENTRYPOINT ["mihoyo-bbs-tools"]
+ENTRYPOINT ["MihoyoBBSToolsRS"]
 CMD ["run"]
 ```
 
@@ -847,7 +847,7 @@ linux/arm/v7
 新仓库创建后，按以下顺序实施：
 
 - [x] 创建 `mihoyo-bbs-tools-rs` 仓库和同名项目目录。
-- [x] 初始化 Cargo 包名为 `mihoyo-bbs-tools` 的 Rust 2024 二进制项目。
+- [x] 初始化 Cargo 包名为 `mihoyo-bbs-tools`、可执行文件名为 `MihoyoBBSToolsRS` 的 Rust 2024 二进制项目。
 - [x] 添加中文 README 和许可证。
 - [x] 添加 `ci.yml`。
 - [x] 实现 `version` 命令。

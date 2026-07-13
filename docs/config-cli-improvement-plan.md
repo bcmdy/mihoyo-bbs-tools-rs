@@ -61,7 +61,7 @@
 以下命令在 `config/config.yaml` 和 `config` 目录均不存在时应成功：
 
 ```text
-mihoyo-bbs-tools config add-account
+MihoyoBBSToolsRS config add-account
 ```
 
 成功后应创建父目录和有效配置，配置中只包含本次添加的账号，不得包含示例账号或 `${MIHOYO_COOKIE}` 等占位符。
@@ -115,11 +115,11 @@ write_replacement_validated_config(path, value)
 ### 5.1 推荐命令
 
 ```text
-mihoyo-bbs-tools run --task china-checkin,hoyolab-checkin,bbs
-mihoyo-bbs-tools run --task bbs
-mihoyo-bbs-tools checkin --region china
-mihoyo-bbs-tools checkin --region hoyolab
-mihoyo-bbs-tools checkin --region all
+MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs
+MihoyoBBSToolsRS run --task bbs
+MihoyoBBSToolsRS checkin --region china
+MihoyoBBSToolsRS checkin --region hoyolab
+MihoyoBBSToolsRS checkin --region all
 ```
 
 ### 5.2 参数语义
@@ -168,9 +168,9 @@ output.parent().unwrap_or_else(|| Path::new("."))
 以下形式均应工作：
 
 ```text
-mihoyo-bbs-tools migrate-config --input config.yaml --output new_config.yaml
-mihoyo-bbs-tools migrate-config --input .\config.yaml --output .\new_config.yaml
-mihoyo-bbs-tools migrate-config --input config\old.yaml --output output\new.yaml
+MihoyoBBSToolsRS migrate-config --input config.yaml --output new_config.yaml
+MihoyoBBSToolsRS migrate-config --input .\config.yaml --output .\new_config.yaml
+MihoyoBBSToolsRS migrate-config --input config\old.yaml --output output\new.yaml
 ```
 
 ### 6.3 修改方案
@@ -187,12 +187,12 @@ mihoyo-bbs-tools migrate-config --input config\old.yaml --output output\new.yaml
 ### 7.1 支持的语法
 
 ```text
-mihoyo-bbs-tools migrate-config SOURCE
-mihoyo-bbs-tools migrate-config SOURCE TARGET
-mihoyo-bbs-tools migrate-config -i SOURCE
-mihoyo-bbs-tools migrate-config -i SOURCE -o TARGET
-mihoyo-bbs-tools migrate-config --input SOURCE
-mihoyo-bbs-tools migrate-config --input SOURCE --output TARGET
+MihoyoBBSToolsRS migrate-config SOURCE
+MihoyoBBSToolsRS migrate-config SOURCE TARGET
+MihoyoBBSToolsRS migrate-config -i SOURCE
+MihoyoBBSToolsRS migrate-config -i SOURCE -o TARGET
+MihoyoBBSToolsRS migrate-config --input SOURCE
+MihoyoBBSToolsRS migrate-config --input SOURCE --output TARGET
 ```
 
 ### 7.2 参数归一化
@@ -241,10 +241,10 @@ configs/legacy.yaml -> configs/legacy.migrated.yaml
 新增：
 
 ```text
-mihoyo-bbs-tools config setup --config config/config.yaml
+MihoyoBBSToolsRS config setup --config config/config.yaml
 ```
 
-不建议让 `mihoyo-bbs-tools`、`run` 或 `config` 在缺少子命令时自动进入菜单。
+不建议让 `MihoyoBBSToolsRS`、`run` 或 `config` 在缺少子命令时自动进入菜单。
 
 ### 8.2 一级菜单
 
@@ -318,7 +318,7 @@ mihoyo-bbs-tools config setup --config config/config.yaml
 可选增强但不作为首期必需项：
 
 ```text
-mihoyo-bbs-tools config set-tasks --account NAME --enable china-checkin,bbs
+MihoyoBBSToolsRS config set-tasks --account NAME --enable china-checkin,bbs
 ```
 
 该命令可为交互菜单提供非交互等价能力，但应在五项核心需求完成后再评估。
@@ -416,22 +416,22 @@ mihoyo-bbs-tools config set-tasks --account NAME --enable china-checkin,bbs
 
 ```text
 # 配置和目录不存在时创建首个账号配置
-mihoyo-bbs-tools config add-account
+MihoyoBBSToolsRS config add-account
 
 # 相对路径迁移
-mihoyo-bbs-tools migrate-config --input config.yaml --output new_config.yaml
+MihoyoBBSToolsRS migrate-config --input config.yaml --output new_config.yaml
 
 # 位置参数迁移
-mihoyo-bbs-tools migrate-config config.yaml new_config.yaml
+MihoyoBBSToolsRS migrate-config config.yaml new_config.yaml
 
 # 自动生成 config.migrated.yaml
-mihoyo-bbs-tools migrate-config config.yaml
+MihoyoBBSToolsRS migrate-config config.yaml
 
 # 临时只运行指定功能
-mihoyo-bbs-tools run --task china-checkin,bbs
+MihoyoBBSToolsRS run --task china-checkin,bbs
 
 # 进入数字设置菜单
-mihoyo-bbs-tools config setup
+MihoyoBBSToolsRS config setup
 ```
 
 同时满足：

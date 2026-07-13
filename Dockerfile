@@ -19,9 +19,9 @@ RUN apk add --no-cache ca-certificates tzdata \
 ENV TZ=Asia/Shanghai
 WORKDIR /app
 
-COPY --from=builder /app/target/release/mihoyo-bbs-tools /usr/local/bin/mihoyo-bbs-tools
+COPY --from=builder /app/target/release/MihoyoBBSToolsRS /usr/local/bin/MihoyoBBSToolsRS
 
 USER app
 
-ENTRYPOINT ["mihoyo-bbs-tools"]
+ENTRYPOINT ["MihoyoBBSToolsRS"]
 CMD ["run"]

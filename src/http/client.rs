@@ -4,8 +4,6 @@ use reqwest::{Method, Proxy, StatusCode, Url, header::HeaderMap};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
-const DEFAULT_USER_AGENT: &str = concat!("mihoyo-bbs-tools-rs/", env!("CARGO_PKG_VERSION"));
-
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
     pub attempts: usize,
@@ -59,7 +57,7 @@ impl Default for HttpClientBuilder {
             timeout: Duration::from_secs(30),
             retry: RetryPolicy::default(),
             proxy: None,
-            user_agent: DEFAULT_USER_AGENT.to_owned(),
+            user_agent: format!("MihoyoBBSToolsRS/{}", crate::VERSION),
         }
     }
 }

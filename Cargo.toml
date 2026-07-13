@@ -8,7 +8,7 @@ repository = "https://github.com/bcmdy/mihoyo-bbs-tools-rs"
 rust-version = "1.85"
 
 [[bin]]
-name = "mihoyo-bbs-tools"
+name = "MihoyoBBSToolsRS"
 path = "src/main.rs"
 
 [dependencies]
