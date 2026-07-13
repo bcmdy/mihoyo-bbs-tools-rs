@@ -451,7 +451,7 @@ fn tasks(path: &Path) -> Result<(), ConfigError> {
     if selected == [0] {
         return Ok(());
     }
-    let bbs = if selected.contains(&3) {
+    let (bbs, forums) = if selected.contains(&3) {
         println!("米游社：1.签到 2.阅读 3.点赞 4.取消点赞 5.分享；留空取消");
         let Some(value) = read_choice(5)? else {
             return Ok(());
@@ -459,11 +459,31 @@ fn tasks(path: &Path) -> Result<(), ConfigError> {
         if value == [0] {
             return Ok(());
         }
-        value
+        let choices = crate::bbs::SUPPORTED_FORUMS
+            .iter()
+            .enumerate()
+            .map(|(index, forum)| format!("{}.{}", index + 1, forum.name))
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("社区板块（首项也用于获取帖子）：{choices}；可多选，留空取消");
+        let Some(selected_forums) = read_choice(crate::bbs::SUPPORTED_FORUMS.len() as u8)? else {
+            return Ok(());
+        };
+        if selected_forums == [0] {
+            return Ok(());
+        }
+        let forums = selected_forums
+            .iter()
+            .filter_map(|number| {
+                crate::bbs::SUPPORTED_FORUMS.get((*number as usize).saturating_sub(1))
+            })
+            .map(|forum| forum.id)
+            .collect();
+        (value, forums)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
-    set_account_tasks(path, &name, &selected, &bbs)
+    set_account_tasks(path, &name, &selected, &bbs, &forums)
 }
 
 fn games(path: &Path) -> Result<(), ConfigError> {

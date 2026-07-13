@@ -1,12 +1,13 @@
 mod bbs_runner;
+mod credential_refresh;
 mod report;
 mod runner;
 
 use uuid::Uuid;
 
-pub use bbs_runner::run_bbs;
+pub use bbs_runner::{run_bbs, run_bbs_with_refresh};
 pub use report::{RunReport, TaskOutcome, TaskRecord};
-pub use runner::{run_china_checkin, run_hoyolab_checkin};
+pub use runner::{run_china_checkin, run_china_checkin_with_refresh, run_hoyolab_checkin};
 
 fn resolve_device_id(configured: &str, cookie: &str) -> String {
     if configured.is_empty() {

@@ -41,13 +41,15 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             config: path,
             region,
         } => {
-            let loaded = config::load(&path)?;
+            let mut loaded = config::load(&path)?;
             for warning in &loaded.warnings {
                 tracing::warn!("{warning}");
             }
             let mut report = service::RunReport::default();
             if matches!(region, CheckinRegion::China | CheckinRegion::All) {
-                report.extend(service::run_china_checkin(&loaded.config).await);
+                report.extend(
+                    service::run_china_checkin_with_refresh(&mut loaded.config, &path).await,
+                );
             }
             if matches!(region, CheckinRegion::Hoyolab | CheckinRegion::All) {
                 report.extend(service::run_hoyolab_checkin(&loaded.config).await);
@@ -58,20 +60,22 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             config: path,
             tasks,
         } => {
-            let loaded = config::load(&path)?;
+            let mut loaded = config::load(&path)?;
             for warning in &loaded.warnings {
                 tracing::warn!("{warning}");
             }
             let all = tasks.is_empty();
             let mut report = service::RunReport::default();
             if all || tasks.contains(&RunTask::ChinaCheckin) {
-                report.extend(service::run_china_checkin(&loaded.config).await);
+                report.extend(
+                    service::run_china_checkin_with_refresh(&mut loaded.config, &path).await,
+                );
             }
             if all || tasks.contains(&RunTask::HoyolabCheckin) {
                 report.extend(service::run_hoyolab_checkin(&loaded.config).await);
             }
             if all || tasks.contains(&RunTask::Bbs) {
-                report.extend(service::run_bbs(&loaded.config).await);
+                report.extend(service::run_bbs_with_refresh(&mut loaded.config, &path).await);
             }
             return Ok(finish_report(&loaded.config, &report).await);
         }

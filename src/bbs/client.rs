@@ -83,6 +83,7 @@ pub struct BbsClient {
     device_id: String,
     device_name: String,
     device_model: String,
+    device_fp: Option<String>,
     endpoints: BbsEndpoints,
 }
 
@@ -100,13 +101,21 @@ impl BbsClient {
             device_id: device_id.into(),
             device_name: "Xiaomi MI 6".to_owned(),
             device_model: "Mi 6".to_owned(),
+            device_fp: None,
             endpoints: BbsEndpoints::production(),
         }
     }
 
-    pub fn device(mut self, name: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn device(
+        mut self,
+        name: impl Into<String>,
+        model: impl Into<String>,
+        fp: impl Into<String>,
+    ) -> Self {
         self.device_name = name.into();
         self.device_model = model.into();
+        let fp = fp.into();
+        self.device_fp = (!fp.is_empty()).then_some(fp);
         self
     }
 
@@ -359,6 +368,9 @@ impl BbsClient {
         insert_header(&mut headers, "x-rpc-device_id", &self.device_id)?;
         insert_header(&mut headers, "x-rpc-device_name", &self.device_name)?;
         insert_header(&mut headers, "x-rpc-device_model", &self.device_model)?;
+        if let Some(device_fp) = &self.device_fp {
+            insert_header(&mut headers, "x-rpc-device_fp", device_fp)?;
+        }
         insert_header(&mut headers, "x-rpc-h265_supported", "1")?;
         insert_header(&mut headers, "x-rpc-verify_key", "bll8iq97cem8")?;
         insert_header(&mut headers, "x-rpc-csm_source", "discussion")?;
@@ -483,6 +495,59 @@ mod tests {
             "device-id",
         )
         .endpoints(BbsEndpoints::from_base_url(&base).unwrap())
+    }
+
+    #[test]
+    fn app_headers_include_configured_device_context_and_omit_empty_fp() {
+        let http = HttpClient::builder().build().unwrap();
+        let configured = BbsClient::new(
+            http.clone(),
+            SecretString::new("stuid=123;stoken=test-secret"),
+            SecretString::new("cookie_token=test-secret"),
+            "configured-device-id",
+        )
+        .device("Configured Device", "Configured Model", "configured-fp");
+        let headers = configured.app_headers("fixed-ds").unwrap();
+        assert_eq!(
+            headers["x-rpc-device_id"],
+            HeaderValue::from_static("configured-device-id")
+        );
+        assert_eq!(
+            headers["x-rpc-device_name"],
+            HeaderValue::from_static("Configured Device")
+        );
+        assert_eq!(
+            headers["x-rpc-device_model"],
+            HeaderValue::from_static("Configured Model")
+        );
+        assert_eq!(
+            headers["x-rpc-device_fp"],
+            HeaderValue::from_static("configured-fp")
+        );
+        let web_headers = configured.web_headers().unwrap();
+        for name in [
+            "x-rpc-device_id",
+            "x-rpc-device_name",
+            "x-rpc-device_model",
+            "x-rpc-device_fp",
+        ] {
+            assert!(web_headers.get(name).is_none());
+        }
+
+        let empty_fp = BbsClient::new(
+            http,
+            SecretString::new("stuid=123;stoken=test-secret"),
+            SecretString::new("cookie_token=test-secret"),
+            "configured-device-id",
+        )
+        .device("Configured Device", "Configured Model", "");
+        assert!(
+            empty_fp
+                .app_headers("fixed-ds")
+                .unwrap()
+                .get("x-rpc-device_fp")
+                .is_none()
+        );
     }
 
     #[tokio::test]

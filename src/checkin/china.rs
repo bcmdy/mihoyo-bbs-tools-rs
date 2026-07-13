@@ -16,8 +16,8 @@ use crate::{
 use super::{
     games::ChinaGame,
     response::{
-        ApiEnvelope, CheckinInfoData, CheckinState, RoleListData, RoleState, SignData, SignState,
-        is_cookie_invalid,
+        ApiEnvelope, CheckinInfoData, CheckinState, Reward, RewardListData, RoleListData,
+        RoleState, SignData, SignState, is_cookie_invalid,
     },
 };
 
@@ -118,6 +118,26 @@ impl ChinaCheckinClient {
             .decode()
             .map_err(|error| CheckinError::InvalidResponse(error.to_string()))?;
         Ok(data.into())
+    }
+
+    pub async fn home(&self, game: ChinaGame, ds: &str) -> Result<Vec<Reward>, CheckinError> {
+        let spec = game.spec();
+        let response: ApiEnvelope = self
+            .http
+            .get_json_with(
+                self.url(spec.api_base, spec.rewards_path)?,
+                self.headers(game, ds)?,
+                &[
+                    ("lang", "zh-cn".to_owned()),
+                    ("act_id", spec.act_id.to_owned()),
+                ],
+            )
+            .await?;
+        self.ensure_success(&response)?;
+        let data: RewardListData = response
+            .decode()
+            .map_err(|error| CheckinError::InvalidResponse(error.to_string()))?;
+        Ok(data.awards)
     }
 
     /// 只发送一次签到 POST。验证码处理完成后是否再次发送必须由上层显式决定。
@@ -277,6 +297,18 @@ mod tests {
             .endpoint_override(Url::parse(&server.uri()).unwrap())
     }
 
+    #[test]
+    fn device_header_contract_only_sends_id() {
+        let http = HttpClient::builder().build().unwrap();
+        let client =
+            ChinaCheckinClient::new(http, SecretString::new("cookie_token=test-secret"), "id");
+        let headers = client.headers(ChinaGame::Genshin, "ds").unwrap();
+        assert_eq!(headers["x-rpc-device_id"], HeaderValue::from_static("id"));
+        for name in ["x-rpc-device_name", "x-rpc-device_model", "x-rpc-device_fp"] {
+            assert!(headers.get(name).is_none());
+        }
+    }
+
     #[tokio::test]
     async fn empty_role_list_is_classified_without_real_api() {
         let server = MockServer::start().await;
@@ -311,6 +343,7 @@ mod tests {
             .and(query_param("uid", "10001"))
             .and(header("cookie", "cookie_token=secret"))
             .and(header("ds", "fixed-ds"))
+            .and(header("x-rpc-device_id", "device-id"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "retcode": 0,
                 "message": "OK",
@@ -326,6 +359,45 @@ mod tests {
                 .await
                 .unwrap(),
             CheckinState::AlreadySigned { total_sign_day: 8 }
+        );
+    }
+
+    #[tokio::test]
+    async fn home_returns_typed_rewards_from_game_specific_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/event/luna/zzz/home"))
+            .and(query_param(
+                "act_id",
+                ChinaGame::ZenlessZoneZero.spec().act_id,
+            ))
+            .and(query_param("lang", "zh-cn"))
+            .and(header("x-rpc-device_id", "device-id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": {
+                    "awards": [{
+                        "icon": "https://example.invalid/polychrome.png",
+                        "name": "菲林",
+                        "cnt": 20
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        assert_eq!(
+            client(&server)
+                .await
+                .home(ChinaGame::ZenlessZoneZero, "fixed-ds")
+                .await
+                .unwrap(),
+            vec![Reward {
+                icon: "https://example.invalid/polychrome.png".to_owned(),
+                name: "菲林".to_owned(),
+                cnt: 20,
+            }]
         );
     }
 

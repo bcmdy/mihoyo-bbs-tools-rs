@@ -237,6 +237,22 @@ mod tests {
             .endpoint_override(Url::parse(&server.uri()).unwrap())
     }
 
+    #[test]
+    fn device_headers_are_not_sent_to_hoyolab() {
+        let http = HttpClient::builder().build().unwrap();
+        let client =
+            HoyolabCheckinClient::new(http, SecretString::new("ltoken=test-secret;ltuid=10001"));
+        let headers = client.headers(HoyolabGame::Genshin).unwrap();
+        for name in [
+            "x-rpc-device_id",
+            "x-rpc-device_name",
+            "x-rpc-device_model",
+            "x-rpc-device_fp",
+        ] {
+            assert!(headers.get(name).is_none());
+        }
+    }
+
     #[tokio::test]
     async fn info_maps_already_signed_and_first_bind() {
         let signed_server = MockServer::start().await;

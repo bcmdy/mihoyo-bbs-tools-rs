@@ -35,6 +35,9 @@ accounts:
       bbs:
         enabled: true
         sign: true
+        forums:
+          - 5
+          - 2
         read: false
         like: false
         cancel_like: false
@@ -65,6 +68,9 @@ accounts:
   #     bbs:
   #       enabled: true
   #       sign: true
+  #       forums:
+  #         - 5
+  #         - 2
   #       read: false
   #       like: false
   #       cancel_like: false

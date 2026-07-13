@@ -17,9 +17,9 @@ mod editor;
 mod interactive;
 mod legacy;
 pub use editor::{
-    add_account_from_stdin, edit_file, remove_account, remove_notification_provider,
-    replace_account_cookie, set_account_device, set_account_games, set_account_general,
-    set_account_proxy, set_account_tasks, set_captcha_endpoint, set_logging,
+    add_account_from_stdin, edit_file, persist_refreshed_cookie, remove_account,
+    remove_notification_provider, replace_account_cookie, set_account_device, set_account_games,
+    set_account_general, set_account_proxy, set_account_tasks, set_captcha_endpoint, set_logging,
     set_notification_options, set_notification_provider, set_runtime,
 };
 pub use interactive::setup as interactive_setup;
@@ -651,6 +651,21 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         {
             errors.push(format!("{path} 启用了 BBS 任务但 credentials.stoken 为空"));
         }
+        if account.tasks.bbs.is_enabled() && account.tasks.bbs.forums.is_empty() {
+            errors.push(format!(
+                "{path}.tasks.bbs.forums 不能为空；社区签到和帖子任务至少需要一个板块"
+            ));
+        }
+        let mut forums = HashSet::new();
+        for forum in &account.tasks.bbs.forums {
+            if crate::bbs::forum_by_id(*forum).is_none() {
+                errors.push(format!(
+                    "{path}.tasks.bbs.forums 包含不支持的板块 ID {forum}"
+                ));
+            } else if !forums.insert(*forum) {
+                errors.push(format!("{path}.tasks.bbs.forums 包含重复的板块 ID {forum}"));
+            }
+        }
     }
     if config.notifications.enabled && config.notifications.providers.is_empty() {
         errors.push("notifications.enabled=true 时必须配置至少一个 provider".to_owned());
@@ -990,6 +1005,23 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                         ],
                         &mut warnings,
                     );
+                    if let Some(Value::Mapping(tasks)) = get(account_map, "tasks") {
+                        inspect_named_child(
+                            tasks,
+                            "bbs",
+                            &format!("{base}.tasks.bbs"),
+                            &[
+                                "enabled",
+                                "sign",
+                                "forums",
+                                "read",
+                                "like",
+                                "cancel_like",
+                                "share",
+                            ],
+                            &mut warnings,
+                        );
+                    }
                 }
             }
         }
@@ -1160,6 +1192,7 @@ fn hydrate_stokens_from_cookies(config: &mut Config) {
 pub struct BbsTaskConfig {
     pub enabled: bool,
     pub sign: bool,
+    pub forums: Vec<u8>,
     pub read: bool,
     pub like: bool,
     pub cancel_like: bool,
@@ -1171,6 +1204,7 @@ impl Default for BbsTaskConfig {
         Self {
             enabled: false,
             sign: true,
+            forums: default_bbs_forums(),
             read: true,
             like: true,
             cancel_like: true,
@@ -1202,6 +1236,8 @@ struct BbsTaskConfigDetail {
     enabled: bool,
     #[serde(default = "default_true")]
     sign: bool,
+    #[serde(default = "default_bbs_forums")]
+    forums: Vec<u8>,
     #[serde(default = "default_true")]
     read: bool,
     #[serde(default = "default_true")]
@@ -1225,6 +1261,7 @@ impl<'de> Deserialize<'de> for BbsTaskConfig {
             BbsTaskConfigInput::Detail(detail) => Self {
                 enabled: detail.enabled,
                 sign: detail.sign,
+                forums: detail.forums,
                 read: detail.read,
                 like: detail.like,
                 cancel_like: detail.cancel_like,
@@ -1232,6 +1269,9 @@ impl<'de> Deserialize<'de> for BbsTaskConfig {
             },
         })
     }
+}
+fn default_bbs_forums() -> Vec<u8> {
+    vec![5, 2]
 }
 fn default_device_name() -> String {
     "Xiaomi MI 6".to_owned()
@@ -1358,15 +1398,45 @@ accounts:
         let legacy = parse(MINIMAL).unwrap();
         let legacy_bbs = &legacy.config.accounts[0].tasks.bbs;
         assert!(legacy_bbs.enabled && legacy_bbs.sign && legacy_bbs.read);
+        assert_eq!(legacy_bbs.forums, vec![5, 2]);
 
         let detailed = parse(&MINIMAL.replace(
             "      bbs: true",
-            "      bbs:\n        enabled: true\n        sign: false\n        read: true\n        like: false\n        cancel_like: false\n        share: false",
+            "      bbs:\n        enabled: true\n        sign: false\n        forums: [2, 6]\n        read: true\n        like: false\n        cancel_like: false\n        share: false",
         ))
         .unwrap();
         let bbs = &detailed.config.accounts[0].tasks.bbs;
         assert!(bbs.enabled && bbs.read);
+        assert_eq!(bbs.forums, vec![2, 6]);
         assert!(!bbs.sign && !bbs.like && !bbs.cancel_like && !bbs.share);
+    }
+
+    #[test]
+    fn bbs_forums_must_be_supported_unique_and_nonempty_when_enabled() {
+        for forums in ["[]", "[2, 2]", "[7]"] {
+            let source = MINIMAL.replace(
+                "      bbs: true",
+                &format!(
+                    "      bbs:\n        enabled: true\n        sign: true\n        forums: {forums}"
+                ),
+            );
+            assert!(
+                matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("tasks.bbs.forums")))
+            );
+        }
+    }
+
+    #[test]
+    fn warns_about_unknown_bbs_fields() {
+        let source = MINIMAL.replace(
+            "      bbs: true",
+            "      bbs:\n        enabled: true\n        typo: true",
+        );
+        let loaded = parse(&source).unwrap();
+        assert_eq!(
+            loaded.warnings,
+            vec!["未知配置字段 accounts[0].tasks.bbs.typo"]
+        );
     }
 
     #[test]

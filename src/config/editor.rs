@@ -218,6 +218,7 @@ pub fn set_account_tasks(
     name: &str,
     selected: &[u8],
     bbs: &[u8],
+    forums: &[u8],
 ) -> Result<(), ConfigError> {
     mutate_raw(path, |root| {
         let account = find_account_mut(root, name)?;
@@ -242,6 +243,20 @@ pub fn set_account_tasks(
         ] {
             detail.insert(key(field), Value::Bool(bbs.contains(&number)));
         }
+        let forums = if forums.is_empty() {
+            super::default_bbs_forums()
+        } else {
+            forums.to_vec()
+        };
+        detail.insert(
+            key("forums"),
+            Value::Sequence(
+                forums
+                    .into_iter()
+                    .map(|forum| Value::Number(forum.into()))
+                    .collect(),
+            ),
+        );
         tasks.insert(key("bbs"), Value::Mapping(detail));
         Ok(())
     })
@@ -436,6 +451,45 @@ pub fn replace_account_cookie(
         Ok(())
     })?;
     Ok(new_name)
+}
+
+/// 仅持久化运行期间自动刷新的 Cookie，不查询昵称，也不改动账号名称或 SToken。
+pub fn persist_refreshed_cookie(
+    path: &Path,
+    account_name: &str,
+    cookie: &str,
+) -> Result<bool, ConfigError> {
+    CookieJar::parse(cookie).map_err(|_| ConfigError::Edit("刷新后的 Cookie 格式无效".into()))?;
+    let raw = read_raw(path)?;
+    let current_cookie = raw
+        .as_mapping()
+        .and_then(|root| root.get(key("accounts")))
+        .and_then(Value::as_sequence)
+        .and_then(|accounts| {
+            accounts
+                .iter()
+                .find(|account| account_name_of(account) == Some(account_name))
+        })
+        .and_then(Value::as_mapping)
+        .and_then(|account| account.get(key("credentials")))
+        .and_then(Value::as_mapping)
+        .and_then(|credentials| credentials.get(key("cookie")))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ConfigError::Edit(format!("未找到账号 {account_name:?} 的 Cookie")))?;
+    if current_cookie.contains("${") {
+        return Ok(false);
+    }
+    mutate_raw(path, |root| {
+        let account = find_account_mut(root, account_name)?;
+        let credentials = account
+            .entry(key("credentials"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("credentials 必须是对象".into()))?;
+        credentials.insert(key("cookie"), Value::String(cookie.to_owned()));
+        Ok(())
+    })?;
+    Ok(true)
 }
 
 pub fn set_notification_provider(
@@ -669,6 +723,15 @@ fn default_tasks() -> Value {
     let mut bbs = Mapping::new();
     bbs.insert(key("enabled"), Value::Bool(true));
     bbs.insert(key("sign"), Value::Bool(true));
+    bbs.insert(
+        key("forums"),
+        Value::Sequence(
+            super::default_bbs_forums()
+                .into_iter()
+                .map(|forum| Value::Number(forum.into()))
+                .collect(),
+        ),
+    );
     for field in ["read", "like", "cancel_like", "share"] {
         bbs.insert(key(field), Value::Bool(false));
     }
@@ -736,6 +799,7 @@ mod tests {
             vec![super::super::Game::Genshin]
         );
         assert!(!loaded.config.accounts[0].tasks.bbs.read);
+        assert_eq!(loaded.config.accounts[0].tasks.bbs.forums, vec![5, 2]);
         let written = fs::read_to_string(path).unwrap();
         assert!(!written.contains("MIHOYO_COOKIE"));
         for field in [
@@ -745,6 +809,7 @@ mod tests {
             "stoken:",
             "device:",
             "proxy:",
+            "forums:",
             "notifications:",
             "providers:",
         ] {
@@ -766,5 +831,59 @@ mod tests {
         assert_eq!(url.path(), "/user/api/getUserFullInfo");
         assert_eq!(url.query(), Some("uid=123456"));
         assert_eq!(format_account_name(" 测试昵称 "), "mys用户:测试昵称");
+    }
+
+    #[test]
+    fn refreshed_cookie_is_persisted_without_changing_account_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        let name = add_account(
+            &path,
+            Some("备注"),
+            "account_id=123; account_mid_v2=mid; stoken=v2_secret; cookie_token=old",
+        )
+        .unwrap();
+
+        assert!(
+            persist_refreshed_cookie(
+                &path,
+                &name,
+                "account_id=123; account_mid_v2=mid; stoken=v2_secret; cookie_token=new",
+            )
+            .unwrap()
+        );
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.config.accounts[0].name, name);
+        assert_eq!(loaded.config.accounts[0].remark.as_deref(), Some("备注"));
+        assert!(
+            loaded.config.accounts[0]
+                .credentials
+                .cookie
+                .expose_secret()
+                .contains("cookie_token=new")
+        );
+    }
+
+    #[test]
+    fn refreshed_cookie_never_replaces_environment_placeholder_with_secret() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        fs::write(
+            &path,
+            "accounts:\n  - name: env-account\n    credentials:\n      cookie: '${MIHOYO_COOKIE}'\n",
+        )
+        .unwrap();
+
+        assert!(
+            !persist_refreshed_cookie(
+                &path,
+                "env-account",
+                "account_id=123; cookie_token=refreshed-secret",
+            )
+            .unwrap()
+        );
+        let written = fs::read_to_string(path).unwrap();
+        assert!(written.contains("${MIHOYO_COOKIE}"));
+        assert!(!written.contains("refreshed-secret"));
     }
 }

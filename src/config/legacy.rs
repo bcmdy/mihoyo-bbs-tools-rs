@@ -99,6 +99,7 @@ pub(super) fn migrate_value(
 
     let bbs = mapping(root, "mihoyobbs");
     let bbs_enabled = bbs.and_then(|map| boolean(map, "enable")).unwrap_or(true);
+    let bbs_forums = legacy_bbs_forums(bbs, &mut warnings);
     let cloud_games = mapping(root, "cloud_games");
     let cloud_cn_enabled = cloud_games
         .and_then(|map| mapping(map, "cn"))
@@ -144,6 +145,7 @@ pub(super) fn migrate_value(
                 bbs: super::BbsTaskConfig {
                     enabled: bbs_enabled,
                     sign: bbs.and_then(|map| boolean(map, "checkin")).unwrap_or(true),
+                    forums: bbs_forums,
                     read: bbs.and_then(|map| boolean(map, "read")).unwrap_or(true),
                     like: bbs.and_then(|map| boolean(map, "like")).unwrap_or(true),
                     cancel_like: bbs
@@ -161,6 +163,46 @@ pub(super) fn migrate_value(
     };
 
     Ok(LoadedConfig { config, warnings })
+}
+
+fn legacy_bbs_forums(bbs: Option<&Mapping>, warnings: &mut Vec<String>) -> Vec<u8> {
+    let defaults = super::default_bbs_forums();
+    let Some(value) = bbs.and_then(|map| get(map, "checkin_list")) else {
+        return defaults;
+    };
+    let Some(values) = value.as_sequence() else {
+        warnings.push("mihoyobbs.checkin_list 不是列表，已使用默认值 [5, 2]".to_owned());
+        return defaults;
+    };
+
+    let mut selected = Vec::new();
+    let mut seen = HashSet::new();
+    for value in values {
+        let id = value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+            .and_then(|value| u8::try_from(value).ok());
+        match id {
+            Some(id) if crate::bbs::forum_by_id(id).is_some() && seen.insert(id) => {
+                selected.push(id);
+            }
+            Some(id) if crate::bbs::forum_by_id(id).is_some() => {
+                warnings.push(format!(
+                    "mihoyobbs.checkin_list 中的板块 ID {id} 重复，已去重"
+                ));
+            }
+            Some(id) => warnings.push(format!(
+                "mihoyobbs.checkin_list 中的板块 ID {id} 不受支持，未迁移"
+            )),
+            None => warnings.push("mihoyobbs.checkin_list 包含无效板块 ID，未迁移".to_owned()),
+        }
+    }
+    if selected.is_empty() {
+        warnings.push("mihoyobbs.checkin_list 没有有效板块，已使用默认值 [5, 2]".to_owned());
+        defaults
+    } else {
+        selected
+    }
 }
 
 fn warn_about_lossy_fields(root: &Mapping, warnings: &mut Vec<String>) {
@@ -263,6 +305,7 @@ mod tests {
         assert_eq!(account.name, "legacy-v15");
         assert!(account.tasks.china_game_checkin);
         assert!(account.tasks.bbs.enabled);
+        assert_eq!(account.tasks.bbs.forums, vec![5, 2]);
         assert_eq!(account.games, vec![Game::Genshin, Game::StarRail]);
         assert_eq!(account.device.id, "fixture-device-id");
         assert_eq!(account.device.name, "Fixture Device");
@@ -309,6 +352,27 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("云游戏 Token"))
+        );
+    }
+
+    #[test]
+    fn migrates_and_sanitizes_legacy_bbs_forums() {
+        let source = include_str!("fixtures/legacy_v15.yaml")
+            .replace("checkin_list: [5, 2]", "checkin_list: [1, '6', 7, 1]");
+        let value: Value = serde_yaml_ng::from_str(&source).unwrap();
+        let migrated = migrate_value(&value, "legacy-forums").unwrap();
+        assert_eq!(migrated.config.accounts[0].tasks.bbs.forums, vec![1, 6]);
+        assert!(
+            migrated
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ID 7") && warning.contains("不受支持"))
+        );
+        assert!(
+            migrated
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ID 1") && warning.contains("重复"))
         );
     }
 }
