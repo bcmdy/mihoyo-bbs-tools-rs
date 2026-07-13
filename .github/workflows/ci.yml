@@ -55,7 +55,16 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy 静态检查
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        run: |
+          set +e
+          cargo clippy --all-targets --all-features --locked -- -D warnings 2>&1 | tee clippy.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 120 clippy.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$code"
 
       - name: 执行测试
         run: cargo test --all-features --locked
@@ -85,4 +94,18 @@ jobs:
         run: cargo generate-lockfile
 
       - name: 编译 Release
+        if: runner.os == 'Linux'
+        run: |
+          set +e
+          cargo build --release --locked 2>&1 | tee build.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 120 build.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$code"
+
+      - name: 编译 Release
+        if: runner.os == 'Windows'
         run: cargo build --release --locked

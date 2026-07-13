@@ -151,8 +151,8 @@ struct ProfileInfo {
 }
 
 #[cfg(test)]
-fn fetch_nickname(_cookie: &str, _uid: &str) -> Result<String, ConfigError> {
-    if _cookie.is_empty() {
+fn fetch_nickname(cookie: &str, _uid: &str) -> Result<String, ConfigError> {
+    if cookie.is_empty() {
         Err(ConfigError::Edit("Cookie 不能为空".to_owned()))
     } else {
         Ok("测试昵称".to_owned())
