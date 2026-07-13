@@ -117,13 +117,11 @@ pub fn add_account(path: &Path, name: Option<&str>, cookie: &str) -> Result<Stri
         account.insert(key("credentials"), Value::Mapping(credentials));
         account.insert(
             key("device"),
-            serde_yaml_ng::to_value(super::DeviceConfig::default())
-                .expect("默认设备配置可序列化"),
+            serde_yaml_ng::to_value(super::DeviceConfig::default()).expect("默认设备配置可序列化"),
         );
         account.insert(
             key("proxy"),
-            serde_yaml_ng::to_value(super::ProxyConfig::default())
-                .expect("默认代理配置可序列化"),
+            serde_yaml_ng::to_value(super::ProxyConfig::default()).expect("默认代理配置可序列化"),
         );
         account.insert(key("tasks"), default_tasks());
         account.insert(key("games"), default_games());
@@ -376,11 +374,7 @@ pub fn set_account_device(
     })
 }
 
-pub fn set_account_proxy(
-    path: &Path,
-    name: &str,
-    proxy: Option<&str>,
-) -> Result<(), ConfigError> {
+pub fn set_account_proxy(path: &Path, name: &str, proxy: Option<&str>) -> Result<(), ConfigError> {
     mutate_raw(path, |root| {
         let account = find_account_mut(root, name)?;
         let value = account
@@ -421,11 +415,7 @@ pub fn replace_account_cookie(
         if accounts.iter().enumerate().any(|(other, account)| {
             other != index && account_name_of(account) == Some(new_name.as_str())
         }) {
-            new_name = format!(
-                "{}-{}",
-                new_name,
-                uid_suffix(jar.uid().unwrap_or_default())
-            );
+            new_name = format!("{}-{}", new_name, uid_suffix(jar.uid().unwrap_or_default()));
         }
         if accounts.iter().enumerate().any(|(other, account)| {
             other != index && account_name_of(account) == Some(new_name.as_str())
@@ -649,13 +639,11 @@ fn empty_config_value() -> Value {
     root.insert(key("version"), Value::Number(CURRENT_CONFIG_VERSION.into()));
     root.insert(
         key("runtime"),
-        serde_yaml_ng::to_value(super::RuntimeConfig::default())
-            .expect("默认运行配置可序列化"),
+        serde_yaml_ng::to_value(super::RuntimeConfig::default()).expect("默认运行配置可序列化"),
     );
     root.insert(
         key("captcha"),
-        serde_yaml_ng::to_value(super::CaptchaConfig::default())
-            .expect("默认验证码配置可序列化"),
+        serde_yaml_ng::to_value(super::CaptchaConfig::default()).expect("默认验证码配置可序列化"),
     );
     root.insert(key("accounts"), Value::Sequence(Vec::new()));
     root.insert(

@@ -66,7 +66,11 @@ fn runtime_logging(path: &Path) -> Result<(), ConfigError> {
 }
 
 fn captcha(path: &Path) -> Result<(), ConfigError> {
-    let current = load(path)?.config.captcha.endpoint.map(|url| url.to_string());
+    let current = load(path)?
+        .config
+        .captcha
+        .endpoint
+        .map(|url| url.to_string());
     let shown = current.as_ref().map(|_| "<已配置>");
     let endpoint = prompt_optional("验证码端点", shown)?;
     if endpoint.as_deref() == Some("<已配置>") {
@@ -82,10 +86,8 @@ fn accounts(path: &Path) -> Result<(), ConfigError> {
             None | Some(0) => return Ok(()),
             Some(1) => {
                 let remark = prompt("可选备注(留空不设置)")?;
-                let name = add_account_from_stdin(
-                    path,
-                    (!remark.is_empty()).then_some(remark.as_str()),
-                )?;
+                let name =
+                    add_account_from_stdin(path, (!remark.is_empty()).then_some(remark.as_str()))?;
                 println!("已添加账号：{name}");
             }
             Some(2) => account_general(path)?,
@@ -105,7 +107,9 @@ fn accounts(path: &Path) -> Result<(), ConfigError> {
 }
 
 fn account_general(path: &Path) -> Result<(), ConfigError> {
-    let Some(name) = choose(path)? else { return Ok(()) };
+    let Some(name) = choose(path)? else {
+        return Ok(());
+    };
     let loaded = load(path)?.config;
     let account = loaded
         .accounts
@@ -118,7 +122,9 @@ fn account_general(path: &Path) -> Result<(), ConfigError> {
 }
 
 fn account_cookie(path: &Path) -> Result<(), ConfigError> {
-    let Some(name) = choose(path)? else { return Ok(()) };
+    let Some(name) = choose(path)? else {
+        return Ok(());
+    };
     eprintln!("请输入新的完整 Cookie（输入内容不会写入日志，留空取消）：");
     let cookie = prompt("")?;
     if cookie.is_empty() {
@@ -130,7 +136,9 @@ fn account_cookie(path: &Path) -> Result<(), ConfigError> {
 }
 
 fn account_device(path: &Path) -> Result<(), ConfigError> {
-    let Some(name) = choose(path)? else { return Ok(()) };
+    let Some(name) = choose(path)? else {
+        return Ok(());
+    };
     let loaded = load(path)?.config;
     let device = &loaded
         .accounts
@@ -146,7 +154,9 @@ fn account_device(path: &Path) -> Result<(), ConfigError> {
 }
 
 fn account_proxy(path: &Path) -> Result<(), ConfigError> {
-    let Some(name) = choose(path)? else { return Ok(()) };
+    let Some(name) = choose(path)? else {
+        return Ok(());
+    };
     let loaded = load(path)?.config;
     let account = loaded
         .accounts
@@ -204,14 +214,18 @@ fn notification_options(path: &Path) -> Result<(), ConfigError> {
 }
 
 fn add_notification_provider(path: &Path) -> Result<(), ConfigError> {
-    let Some(kind) = choose_provider_type()? else { return Ok(()) };
+    let Some(kind) = choose_provider_type()? else {
+        return Ok(());
+    };
     let fields = prompt_provider_fields(kind, false)?;
     set_notification_provider(path, None, kind, &fields)
 }
 
 fn edit_notification_provider(path: &Path) -> Result<(), ConfigError> {
     let providers = load(path)?.config.notifications.providers;
-    let Some(index) = choose_provider(&providers)? else { return Ok(()) };
+    let Some(index) = choose_provider(&providers)? else {
+        return Ok(());
+    };
     let kind = provider_type(&providers[index]);
     println!("编辑 {kind}：留空保留原值，输入 - 清空可选字段；敏感值不会回显");
     let fields = prompt_provider_fields(kind, true)?;
@@ -234,9 +248,11 @@ fn choose_provider(providers: &[NotificationProvider]) -> Result<Option<usize>, 
     for (index, provider) in providers.iter().enumerate() {
         println!("{}. {}", index + 1, provider_type(provider));
     }
-    Ok(read_number(providers.len())?.and_then(|number| {
-        if number == 0 { None } else { Some(number - 1) }
-    }))
+    Ok(read_number(providers.len())?.and_then(
+        |number| {
+            if number == 0 { None } else { Some(number - 1) }
+        },
+    ))
 }
 
 fn choose_provider_type() -> Result<Option<&'static str>, ConfigError> {
@@ -245,7 +261,11 @@ fn choose_provider_type() -> Result<Option<&'static str>, ConfigError> {
         println!("{}. {kind}", index + 1);
     }
     Ok(read_number(types.len())?.and_then(|number| {
-        if number == 0 { None } else { Some(types[number - 1]) }
+        if number == 0 {
+            None
+        } else {
+            Some(types[number - 1])
+        }
     }))
 }
 
@@ -263,7 +283,10 @@ fn prompt_provider_fields(
     let mut values = Vec::new();
     for field in provider_fields(kind) {
         loop {
-            let default = field.default.map(|value| format!("，默认 {value}")).unwrap_or_default();
+            let default = field
+                .default
+                .map(|value| format!("，默认 {value}"))
+                .unwrap_or_default();
             let value = prompt(&format!("{}{}", field.name, default))?;
             if editing && value.is_empty() {
                 values.push((field.name.to_owned(), None));
@@ -293,38 +316,78 @@ fn prompt_provider_fields(
 
 fn provider_types() -> &'static [&'static str] {
     &[
-        "telegram", "webhook", "pushplus", "ftqq", "pushme", "cqhttp", "wecom",
-        "wecomrobot", "pushdeer", "dingrobot", "feishubot", "bark", "gotify", "ifttt",
-        "qmsg", "discord", "wxpusher", "serverchan3",
+        "telegram",
+        "webhook",
+        "pushplus",
+        "ftqq",
+        "pushme",
+        "cqhttp",
+        "wecom",
+        "wecomrobot",
+        "pushdeer",
+        "dingrobot",
+        "feishubot",
+        "bark",
+        "gotify",
+        "ifttt",
+        "qmsg",
+        "discord",
+        "wxpusher",
+        "serverchan3",
     ]
 }
 
 fn provider_fields(kind: &str) -> &'static [ProviderField] {
     const TELEGRAM: &[ProviderField] = &[
-        field("bot_token", true, None), field("chat_id", true, None),
-        field("api_url", true, Some("https://api.telegram.org")), field("proxy", false, None),
+        field("bot_token", true, None),
+        field("chat_id", true, None),
+        field("api_url", true, Some("https://api.telegram.org")),
+        field("proxy", false, None),
     ];
     const WEBHOOK: &[ProviderField] = &[field("url", true, None)];
     const PUSHPLUS: &[ProviderField] = &[field("token", true, None), field("topic", false, None)];
     const FTQQ: &[ProviderField] = &[field("sendkey", true, None), field("api_url", false, None)];
-    const TOKEN_URL: &[ProviderField] = &[field("token", true, None), field("api_url", false, None)];
-    const CQHTTP: &[ProviderField] = &[field("url", true, None), field("qq", false, None), field("group", false, None)];
+    const TOKEN_URL: &[ProviderField] =
+        &[field("token", true, None), field("api_url", false, None)];
+    const CQHTTP: &[ProviderField] = &[
+        field("url", true, None),
+        field("qq", false, None),
+        field("group", false, None),
+    ];
     const WECOM: &[ProviderField] = &[
-        field("corp_id", true, None), field("agent_id", true, None), field("secret", true, None),
-        field("to_user", true, Some("@all")), field("api_url", false, None),
+        field("corp_id", true, None),
+        field("agent_id", true, None),
+        field("secret", true, None),
+        field("to_user", true, Some("@all")),
+        field("api_url", false, None),
     ];
     const WECOM_ROBOT: &[ProviderField] = &[field("url", true, None), field("mobile", false, None)];
     const DING: &[ProviderField] = &[field("webhook", true, None), field("secret", false, None)];
     const WEBHOOK_ONLY: &[ProviderField] = &[field("webhook", true, None)];
-    const BARK: &[ProviderField] = &[field("token", true, None), field("api_url", false, None), field("icon", false, None)];
-    const GOTIFY: &[ProviderField] = &[field("token", true, None), field("api_url", true, None), field("priority", true, Some("0"))];
-    const IFTTT: &[ProviderField] = &[field("event", true, None), field("key", true, None), field("api_url", false, None)];
+    const BARK: &[ProviderField] = &[
+        field("token", true, None),
+        field("api_url", false, None),
+        field("icon", false, None),
+    ];
+    const GOTIFY: &[ProviderField] = &[
+        field("token", true, None),
+        field("api_url", true, None),
+        field("priority", true, Some("0")),
+    ];
+    const IFTTT: &[ProviderField] = &[
+        field("event", true, None),
+        field("key", true, None),
+        field("api_url", false, None),
+    ];
     const QMSG: &[ProviderField] = &[field("key", true, None), field("api_url", false, None)];
     const WXPUSHER: &[ProviderField] = &[
-        field("app_token", true, None), field("uids", false, None),
-        field("topic_ids", false, None), field("api_url", false, None),
+        field("app_token", true, None),
+        field("uids", false, None),
+        field("topic_ids", false, None),
+        field("api_url", false, None),
     ];
-    const SERVERCHAN3: &[ProviderField] = &[field("sendkey", true, None), field("tags", false, None)];
+    const SERVERCHAN3: &[ProviderField] =
+        &[field("sendkey", true, None), field("tags", false, None)];
     match kind {
         "telegram" => TELEGRAM,
         "webhook" => WEBHOOK,
@@ -347,7 +410,11 @@ fn provider_fields(kind: &str) -> &'static [ProviderField] {
 }
 
 const fn field(name: &'static str, required: bool, default: Option<&'static str>) -> ProviderField {
-    ProviderField { name, required, default }
+    ProviderField {
+        name,
+        required,
+        default,
+    }
 }
 
 fn provider_type(provider: &NotificationProvider) -> &'static str {
@@ -374,15 +441,21 @@ fn provider_type(provider: &NotificationProvider) -> &'static str {
 }
 
 fn tasks(path: &Path) -> Result<(), ConfigError> {
-    let Some(name) = choose(path)? else { return Ok(()) };
+    let Some(name) = choose(path)? else {
+        return Ok(());
+    };
     println!("任务：1.国内签到 2.HoYoLAB 3.米游社 4.国内云游戏 5.海外云游戏 6.Web活动；留空取消");
-    let Some(selected) = read_choice(6)? else { return Ok(()) };
+    let Some(selected) = read_choice(6)? else {
+        return Ok(());
+    };
     if selected == [0] {
         return Ok(());
     }
     let bbs = if selected.contains(&3) {
         println!("米游社：1.签到 2.阅读 3.点赞 4.取消点赞 5.分享；留空取消");
-        let Some(value) = read_choice(5)? else { return Ok(()) };
+        let Some(value) = read_choice(5)? else {
+            return Ok(());
+        };
         if value == [0] {
             return Ok(());
         }
@@ -394,9 +467,13 @@ fn tasks(path: &Path) -> Result<(), ConfigError> {
 }
 
 fn games(path: &Path) -> Result<(), ConfigError> {
-    let Some(name) = choose(path)? else { return Ok(()) };
+    let Some(name) = choose(path)? else {
+        return Ok(());
+    };
     println!("游戏：1.原神 2.崩坏学园2 3.崩坏3 4.未定事件簿 5.星穹铁道 6.绝区零；留空取消");
-    let Some(selected) = read_choice(6)? else { return Ok(()) };
+    let Some(selected) = read_choice(6)? else {
+        return Ok(());
+    };
     if selected == [0] {
         return Ok(());
     }
@@ -436,7 +513,11 @@ fn prompt_bool(label: &str, current: bool) -> Result<bool, ConfigError> {
 
 fn prompt_keep(label: &str, current: &str) -> Result<String, ConfigError> {
     let value = prompt(&format!("{label}[{current}] (留空保留)"))?;
-    Ok(if value.is_empty() { current.to_owned() } else { value })
+    Ok(if value.is_empty() {
+        current.to_owned()
+    } else {
+        value
+    })
 }
 
 fn prompt_clearable(label: &str, current: &str) -> Result<String, ConfigError> {
@@ -580,6 +661,10 @@ mod tests {
         for kind in provider_types() {
             assert!(!provider_fields(kind).is_empty(), "{kind} 缺少菜单字段");
         }
-        assert!(provider_fields("telegram").iter().any(|field| field.name == "proxy"));
+        assert!(
+            provider_fields("telegram")
+                .iter()
+                .any(|field| field.name == "proxy")
+        );
     }
 }
