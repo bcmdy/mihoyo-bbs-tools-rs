@@ -55,8 +55,10 @@ jobs:
 
       - name: 确定构建版本
         shell: bash
+        env:
+          RAW_VERSION: ${{ inputs.version }}
         run: |
-          raw_version='${{ inputs.version }}'
+          raw_version="$RAW_VERSION"
           if [[ -z "$raw_version" ]]; then
             raw_version="ci-${GITHUB_RUN_NUMBER}"
           fi
@@ -113,8 +115,10 @@ jobs:
         id: version_linux
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          RAW_VERSION: ${{ inputs.version }}
         run: |
-          raw_version='${{ inputs.version }}'
+          raw_version="$RAW_VERSION"
           if [[ -z "$raw_version" ]]; then
             raw_version="ci-${GITHUB_RUN_NUMBER}"
           fi
@@ -131,12 +135,14 @@ jobs:
         id: version_windows
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          RAW_VERSION: ${{ inputs.version }}
         run: |
-          $rawVersion = '${{ inputs.version }}'
+          $rawVersion = $env:RAW_VERSION
           if ([string]::IsNullOrWhiteSpace($rawVersion)) {
             $rawVersion = "ci-$env:GITHUB_RUN_NUMBER"
           }
-          $version = $rawVersion.TrimStart('v')
+          $version = if ($rawVersion.StartsWith('v')) { $rawVersion.Substring(1) } else { $rawVersion }
           if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') {
             throw '版本号只能包含字母、数字、点、下划线和连字符'
           }

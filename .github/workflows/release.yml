@@ -18,18 +18,20 @@ jobs:
   build-linux:
     name: 构建 Linux x86_64
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
 
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.ref }}
 
       - name: 确定构建版本
         id: version
         shell: bash
+        env:
+          RAW_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          raw_version='${{ inputs.version || github.ref_name }}'
+          raw_version="$RAW_VERSION"
           version="${raw_version#v}"
           if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
             echo "版本号只能包含字母、数字、点、下划线和连字符" >&2
@@ -38,6 +40,16 @@ jobs:
           echo "MIHOYO_BBS_TOOLS_VERSION=$version" >> "$GITHUB_ENV"
           echo "PACKAGE_NAME=MihoyoBBSToolsRS-$version-linux-x86_64" >> "$GITHUB_ENV"
           echo "package_name=MihoyoBBSToolsRS-$version-linux-x86_64" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: 检出手动指定的版本标签
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git checkout --detach "$TAG"
 
       - name: 安装 Rust
         run: |
@@ -78,21 +90,32 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.ref }}
 
       - name: 确定构建版本
         id: version
         shell: pwsh
+        env:
+          RAW_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          $rawVersion = '${{ inputs.version || github.ref_name }}'
-          $version = $rawVersion.TrimStart('v')
+          $rawVersion = $env:RAW_VERSION
+          $version = if ($rawVersion.StartsWith('v')) { $rawVersion.Substring(1) } else { $rawVersion }
           if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') {
             throw '版本号只能包含字母、数字、点、下划线和连字符'
           }
           "MIHOYO_BBS_TOOLS_VERSION=$version" | Add-Content -Path $env:GITHUB_ENV
           "PACKAGE_NAME=MihoyoBBSToolsRS-$version-windows-x86_64" | Add-Content -Path $env:GITHUB_ENV
           "package_name=MihoyoBBSToolsRS-$version-windows-x86_64" | Add-Content -Path $env:GITHUB_OUTPUT
+          "tag=v$version" | Add-Content -Path $env:GITHUB_OUTPUT
+
+      - name: 检出手动指定的版本标签
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $refspec = "refs/tags/{0}:refs/tags/{0}" -f $env:TAG
+          git fetch --force origin $refspec
+          git checkout --detach $env:TAG
 
       - name: 安装 Rust
         run: |
@@ -149,7 +172,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+          TAG: ${{ needs.build-linux.outputs.tag }}
         run: |
           set -euo pipefail
           shopt -s nullglob
