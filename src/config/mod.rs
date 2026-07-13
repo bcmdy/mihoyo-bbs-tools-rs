@@ -17,8 +17,10 @@ mod editor;
 mod interactive;
 mod legacy;
 pub use editor::{
-    add_account_from_stdin, edit_file, remove_account, set_account_games, set_account_tasks,
-    set_captcha_endpoint, set_notification_options, set_runtime,
+    add_account_from_stdin, edit_file, remove_account, remove_notification_provider,
+    replace_account_cookie, set_account_device, set_account_games, set_account_general,
+    set_account_proxy, set_account_tasks, set_captcha_endpoint, set_logging,
+    set_notification_options, set_notification_provider, set_runtime,
 };
 pub use interactive::setup as interactive_setup;
 
@@ -276,8 +278,17 @@ pub enum NotificationProvider {
         )]
         bot_token: SecretString,
         chat_id: String,
-        #[serde(default)]
-        api_url: Option<Url>,
+        #[serde(
+            default = "default_telegram_api_url",
+            deserialize_with = "deserialize_telegram_api_url"
+        )]
+        api_url: Url,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_optional_secret",
+            serialize_with = "serialize_optional_secret"
+        )]
+        proxy: Option<SecretString>,
     },
     Webhook {
         #[serde(
@@ -678,6 +689,7 @@ fn validate_provider(provider: &NotificationProvider, index: usize, errors: &mut
             bot_token,
             chat_id,
             api_url,
+            proxy,
         } => {
             if bot_token.is_empty() {
                 errors.push(format!("{path}.bot_token 不能为空"));
@@ -685,10 +697,11 @@ fn validate_provider(provider: &NotificationProvider, index: usize, errors: &mut
             if chat_id.trim().is_empty() {
                 errors.push(format!("{path}.chat_id 不能为空"));
             }
-            if let Some(url) = api_url {
-                if !matches!(url.scheme(), "http" | "https") {
-                    errors.push(format!("{path}.api_url 仅支持 http 或 https"));
-                }
+            if !matches!(api_url.scheme(), "http" | "https") {
+                errors.push(format!("{path}.api_url 仅支持 http 或 https"));
+            }
+            if let Some(proxy) = proxy {
+                validate_proxy(proxy.expose_secret(), &format!("{path}.proxy"), errors);
             }
         }
         NotificationProvider::Webhook { url } => match Url::parse(url.expose_secret()) {
@@ -994,7 +1007,9 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                         .and_then(|m| get(m, "type"))
                         .and_then(Value::as_str)
                     {
-                        Some("telegram") => &["type", "bot_token", "chat_id", "api_url"][..],
+                        Some("telegram") => {
+                            &["type", "bot_token", "chat_id", "api_url", "proxy"][..]
+                        }
                         Some("webhook") => &["type", "url"][..],
                         Some("pushplus") => &["type", "token", "topic"][..],
                         Some("ftqq") => &["type", "sendkey", "api_url"][..],
@@ -1224,6 +1239,16 @@ fn default_device_name() -> String {
 fn default_device_model() -> String {
     "Mi 6".to_owned()
 }
+fn default_telegram_api_url() -> Url {
+    Url::parse("https://api.telegram.org").expect("valid Telegram API URL")
+}
+
+fn deserialize_telegram_api_url<'de, D>(deserializer: D) -> Result<Url, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Url>::deserialize(deserializer)?.unwrap_or_else(default_telegram_api_url))
+}
 const fn default_true() -> bool {
     true
 }
@@ -1279,6 +1304,53 @@ accounts:
         let mut config: Config = serde_yaml_ng::from_str(&source).unwrap();
         hydrate_stokens_from_cookies(&mut config);
         validate(&config).unwrap();
+    }
+
+    #[test]
+    fn telegram_applies_default_api_url_and_accepts_proxy() {
+        let source = format!(
+            "{MINIMAL}\nnotifications:\n  enabled: true\n  providers:\n    - type: telegram\n      bot_token: bot-secret\n      chat_id: '123456'\n      proxy: 127.0.0.1:7890\n"
+        );
+        let loaded = parse(&source).unwrap();
+
+        let NotificationProvider::Telegram { api_url, proxy, .. } =
+            &loaded.config.notifications.providers[0]
+        else {
+            panic!("expected Telegram provider");
+        };
+        assert_eq!(api_url.as_str(), "https://api.telegram.org/");
+        assert_eq!(
+            proxy.as_ref().map(|value| value.expose_secret()),
+            Some("127.0.0.1:7890")
+        );
+        assert!(loaded.warnings.is_empty());
+        let debug = format!("{:?}", loaded.config.notifications);
+        assert!(!debug.contains("bot-secret"));
+        assert!(!debug.contains("127.0.0.1:7890"));
+    }
+
+    #[test]
+    fn telegram_accepts_legacy_null_api_url() {
+        let source = format!(
+            "{MINIMAL}\nnotifications:\n  providers:\n    - type: telegram\n      bot_token: bot-secret\n      chat_id: '123456'\n      api_url: null\n"
+        );
+        let loaded = parse(&source).unwrap();
+        let NotificationProvider::Telegram { api_url, .. } =
+            &loaded.config.notifications.providers[0]
+        else {
+            panic!("expected Telegram provider");
+        };
+        assert_eq!(api_url.as_str(), "https://api.telegram.org/");
+    }
+
+    #[test]
+    fn telegram_rejects_unsafe_proxy_protocol() {
+        let source = format!(
+            "{MINIMAL}\nnotifications:\n  enabled: true\n  providers:\n    - type: telegram\n      bot_token: bot-secret\n      chat_id: '123456'\n      proxy: file:///private/proxy-secret\n"
+        );
+        assert!(
+            matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("notifications.providers[0].proxy")))
+        );
     }
 
     #[test]

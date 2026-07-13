@@ -47,9 +47,11 @@ accounts:
 
   # 添加更多账号时复制完整账号块。保持注释可避免未设置的环境变量影响校验。
   # - name: "账号二"
+  #   remark: null
   #   enabled: true
   #   credentials:
   #     cookie: "${MIHOYO_COOKIE_2}"
+  #     stoken: ""
   #   device:
   #     name: "Xiaomi MI 6"
   #     model: "Mi 6"
@@ -63,10 +65,10 @@ accounts:
   #     bbs:
   #       enabled: true
   #       sign: true
-  #       read: true
-  #       like: true
-  #       cancel_like: true
-  #       share: true
+  #       read: false
+  #       like: false
+  #       cancel_like: false
+  #       share: false
   #     china_cloud_game: false
   #     overseas_cloud_game: false
   #     web_activity: false
@@ -85,7 +87,8 @@ notifications:
   # - type: telegram
   #   bot_token: "${TELEGRAM_BOT_TOKEN}"
   #   chat_id: "${TELEGRAM_CHAT_ID}"
-  #   api_url: null
+  #   api_url: "https://api.telegram.org"
+  #   proxy: null
   # - type: webhook
   #   url: "${WEBHOOK_URL}"
   # - type: pushplus

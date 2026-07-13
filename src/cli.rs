@@ -81,7 +81,7 @@ pub enum ConfigCommand {
         /// 配置文件路径
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
-        /// 要删除的账号名称，通常为米游社昵称
+        /// 要删除的账号名称，格式通常为 mys用户:<米游社昵称>
         #[arg(value_name = "ACCOUNT_NAME")]
         name: String,
     },

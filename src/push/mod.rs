@@ -5,12 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::SecretString,
-    config::{Config, NotificationProvider, NotificationsConfig},
+    config::{Config, NotificationProvider},
     http::{HttpClient, HttpError, RetryPolicy},
     service::RunReport,
 };
 
-const TELEGRAM_API_URL: &str = "https://api.telegram.org";
 const PUSHPLUS_API_URL: &str = "https://www.pushplus.plus/send";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -127,11 +126,12 @@ impl PushDispatcher {
         Self { providers }
     }
 
-    pub fn from_config(http: HttpClient, config: &NotificationsConfig) -> Self {
+    pub fn from_config(config: &Config) -> Self {
         let providers = config
+            .notifications
             .providers
             .iter()
-            .map(|provider| configured_provider(http.clone(), provider))
+            .map(|provider| configured_provider(configured_http(config, provider), provider))
             .collect();
         Self::new(providers)
     }
@@ -167,32 +167,6 @@ pub async fn send_report(config: &Config, report: &RunReport) -> PushReport {
         return PushReport::default();
     }
 
-    let http = HttpClient::builder()
-        .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy {
-            attempts: config.runtime.retry_count as usize + 1,
-            base_delay: Duration::from_millis(500),
-        })
-        .build();
-
-    let http = match http {
-        Ok(http) => http,
-        Err(_) => {
-            return PushReport {
-                deliveries: config
-                    .notifications
-                    .providers
-                    .iter()
-                    .map(|provider| DeliveryResult {
-                        provider: configured_kind(provider),
-                        status: DeliveryStatus::Failed,
-                        message: "推送 HTTP 客户端初始化失败".to_owned(),
-                    })
-                    .collect(),
-            };
-        }
-    };
-
     let mut notification = Notification::from_report(report);
     for keyword in &config.notifications.block_keywords {
         if !keyword.is_empty() {
@@ -201,24 +175,54 @@ pub async fn send_report(config: &Config, report: &RunReport) -> PushReport {
                 .replace(keyword, &"*".repeat(keyword.chars().count()));
         }
     }
-    PushDispatcher::from_config(http, &config.notifications)
+    PushDispatcher::from_config(config)
         .dispatch(&notification)
         .await
 }
 
-fn configured_provider(http: HttpClient, provider: &NotificationProvider) -> Box<dyn Provider> {
+fn configured_http(
+    config: &Config,
+    provider: &NotificationProvider,
+) -> Result<HttpClient, HttpError> {
+    let builder = HttpClient::builder()
+        .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
+        .retry(RetryPolicy {
+            attempts: config.runtime.retry_count as usize + 1,
+            base_delay: Duration::from_millis(500),
+        });
+    let proxy = match provider {
+        NotificationProvider::Telegram { proxy, .. } => {
+            proxy.as_ref().map(|value| value.expose_secret())
+        }
+        _ => None,
+    };
+    builder.proxy(proxy)?.build()
+}
+
+fn configured_provider(
+    http: Result<HttpClient, HttpError>,
+    provider: &NotificationProvider,
+) -> Box<dyn Provider> {
+    let http = match http {
+        Ok(http) => http,
+        Err(error) => {
+            return Box::new(FailedProvider {
+                kind: configured_kind(provider),
+                error: redact_http_error(error),
+            });
+        }
+    };
     match provider {
         NotificationProvider::Telegram {
             bot_token,
             chat_id,
             api_url,
+            ..
         } => Box::new(TelegramProvider::new(
             http,
             bot_token.clone(),
             chat_id.clone(),
-            api_url
-                .clone()
-                .unwrap_or_else(|| Url::parse(TELEGRAM_API_URL).expect("valid Telegram URL")),
+            api_url.clone(),
         )),
         NotificationProvider::Webhook { url } => Box::new(WebhookProvider::new(http, url.clone())),
         NotificationProvider::Pushplus { token, topic } => {
@@ -228,6 +232,21 @@ fn configured_provider(http: HttpClient, provider: &NotificationProvider) -> Box
             http,
             config: other.clone(),
         }),
+    }
+}
+
+struct FailedProvider {
+    kind: ProviderKind,
+    error: PushError,
+}
+
+impl Provider for FailedProvider {
+    fn kind(&self) -> ProviderKind {
+        self.kind
+    }
+
+    fn send<'a>(&'a self, _notification: &'a Notification) -> SendFuture<'a> {
+        Box::pin(async move { Err(self.error.clone()) })
     }
 }
 
@@ -737,6 +756,32 @@ mod tests {
         assert_eq!(report.deliveries[0].status, DeliveryStatus::Failed);
         assert_eq!(report.deliveries[1].status, DeliveryStatus::Sent);
         assert!(!report.all_succeeded());
+    }
+
+    #[tokio::test]
+    async fn telegram_proxy_initialization_failure_does_not_block_other_providers() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/succeeded"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let proxy_secret = "proxy-user:proxy-password";
+        let source = format!(
+            "version: 1\naccounts: []\nnotifications:\n  enabled: true\n  providers:\n    - type: telegram\n      bot_token: telegram-secret\n      chat_id: '123456'\n      proxy: file://{proxy_secret}@localhost/private\n    - type: webhook\n      url: '{}/succeeded'\n",
+            server.uri()
+        );
+        let config: Config = serde_yaml_ng::from_str(&source).unwrap();
+
+        let report = send_report(&config, &RunReport::default()).await;
+
+        assert_eq!(report.deliveries.len(), 2);
+        assert_eq!(report.deliveries[0].provider, ProviderKind::Telegram);
+        assert_eq!(report.deliveries[0].status, DeliveryStatus::Failed);
+        assert!(!report.deliveries[0].message.contains(proxy_secret));
+        assert_eq!(report.deliveries[1].provider, ProviderKind::Webhook);
+        assert_eq!(report.deliveries[1].status, DeliveryStatus::Sent);
     }
 
     #[tokio::test]

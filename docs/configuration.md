@@ -66,6 +66,8 @@ notifications:
     - type: telegram
       bot_token: "${TELEGRAM_BOT_TOKEN}"
       chat_id: "${TELEGRAM_CHAT_ID}"
+      api_url: "https://api.telegram.org"
+      proxy: null
 
     - type: webhook
       url: "${WEBHOOK_URL}"
@@ -81,9 +83,11 @@ notifications:
 
 `captcha.endpoint` 是完整的 HTTP/HTTPS 求解地址，程序不会自动追加路径；服务需兼容 pass_nine 的 GET 协议，接收 `gt`、`challenge`、`use_v3_model=true`，并在顶层或 `data` 中返回 `validate` 和可选的 `challenge`。国内签到遇到验证码时会求解并携带验证参数重试一次；米游社社区签到、点赞和取消点赞按“创建验证 → 平台求解 → 服务端校验 → 重试原操作”的顺序执行，原操作最多重试一次。未配置端点、求解失败或重试后仍要求验证码时会在运行报告中明确标记，不会无限重试。
 
-通知当前支持 `telegram`、`webhook` 和 `pushplus`。所有账号任务结束后统一发送报告；单个渠道失败不会阻止其他渠道，也不会覆盖核心任务的退出码。Bot Token、PushPlus Token、Chat ID 和 Webhook URL 均按敏感信息处理，不会写入错误消息或日志。
+所有账号任务结束后统一发送报告；单个渠道失败不会阻止其他渠道，也不会覆盖核心任务的退出码。Bot Token、PushPlus Token、Chat ID、Webhook URL 和代理认证信息均按敏感信息处理，不会写入错误消息或日志。
 
 环境变量会在配置反序列化前统一展开，因此即使 `notifications.enabled` 为 `false`，配置文件中已经写入的 `${ENV_NAME}` 仍必须存在。不使用通知时应保留空的 `providers: []`，不要放置尚未配置 Secret 的渠道。
+
+Telegram 的 `api_url` 默认使用 `https://api.telegram.org`，一般无需修改。无法直接访问 Telegram API 时，可通过该渠道独立的 `proxy` 字段配置 HTTP、HTTPS、SOCKS5 或 SOCKS5H 代理，例如 `proxy: "127.0.0.1:7890"`；省略协议时按 HTTP 代理处理，不使用代理时设为 `null`。代理仅作用于 Telegram，不影响其他通知渠道；带用户名和密码的代理地址属于敏感信息，不会写入错误消息或日志。
 
 ## 配置编辑与账号管理
 
@@ -94,7 +98,7 @@ mihoyo-bbs-tools config remove-account --config config/config.yaml "备注"
 mihoyo-bbs-tools config setup --config config/config.yaml
 ```
 
-`config edit` 使用 `VISUAL` 或 `EDITOR` 指定的编辑器（Windows 默认记事本）修改完整 YAML，并在覆盖原文件前校验。`add-account` 从标准输入读取完整 Cookie，避免 Cookie 出现在命令行历史和进程列表；备注可省略，此时使用 Cookie 中的 UID 生成名称。程序会从 Cookie 的 `stoken` 字段自动提取 SToken，因此配置中的 `credentials.stoken` 可以省略。Cookie 缺少 `stoken` 时会拒绝添加，以免社区任务在运行时才认证失败。
+`config edit` 使用 `VISUAL` 或 `EDITOR` 指定的编辑器（Windows 默认记事本）修改完整 YAML，并在覆盖原文件前校验。`add-account` 从标准输入读取完整 Cookie，避免 Cookie 出现在命令行历史和进程列表；程序通过公开资料接口查询米游社昵称，并将账号名称写为 `mys用户:<米游社昵称>`。可选备注仅用于区分账号。程序会从 Cookie 的 `stoken` 字段自动提取并写入 SToken；Cookie 缺少 `stoken` 时会拒绝添加，以免社区任务在运行时才认证失败。
 
 当 `add-account` 指向的配置文件不存在时，它会在账号名称和 Cookie 全部校验成功后创建父目录及新配置。新文件只包含本次添加的账号，不会复制示例账号或 `${MIHOYO_COOKIE}` 等占位符。空文件、损坏的 YAML、目标为目录或其他读取错误不会触发自动重建；`edit`、`remove-account`、`run`、`checkin` 和 `validate-config` 仍要求配置文件已经存在。新建配置不会覆盖并发创建或已经存在的文件，Unix 下使用 `0600` 权限。
 
@@ -102,7 +106,7 @@ mihoyo-bbs-tools config setup --config config/config.yaml
 
 ### 交互式设置
 
-`config setup` 显式进入数字菜单，可以添加或删除账号、设置指定账号的任务与游戏，或调用完整配置编辑器。任务菜单可继续设置米游社签到、阅读、点赞、点赞后取消和分享开关。
+`config setup` 显式进入数字菜单，可设置请求与重试、文件日志、验证码端点、账号启用状态与备注、Cookie/SToken、设备、账号代理、任务、游戏以及全部通知渠道。通知渠道支持在菜单中添加、编辑和删除，Telegram 的 API 地址与独立代理也可直接设置，不再要求跳转编辑器。`高级 YAML 编辑` 仅作为可选入口保留。
 
 多选支持连续数字（如 `123`）或逗号分隔（如 `1,2,3`），重复编号会自动去重；`0` 取消当前操作且不写配置。无效、越界或空输入会提示重新输入，EOF 会安全退出。该命令只适用于交互终端；标准输入不可用或不是交互终端时会明确失败，不会无限等待。菜单和错误信息不会显示 Cookie、SToken、通知 Token 或代理认证信息。
 

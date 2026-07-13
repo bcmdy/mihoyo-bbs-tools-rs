@@ -12,7 +12,6 @@ use crate::auth::CookieJar;
 use reqwest::header::{COOKIE, USER_AGENT};
 #[cfg(not(test))]
 use serde::Deserialize;
-#[cfg(not(test))]
 use url::Url;
 
 use super::{
@@ -71,12 +70,14 @@ pub fn add_account_from_stdin(path: &Path, name: Option<&str>) -> Result<String,
 pub fn add_account(path: &Path, name: Option<&str>, cookie: &str) -> Result<String, ConfigError> {
     let jar =
         CookieJar::parse(cookie).map_err(|_| ConfigError::Edit("Cookie 格式无效".to_owned()))?;
-    jar.get("stoken")
+    let stoken = jar
+        .get("stoken")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             ConfigError::Edit("Cookie 中缺少 stoken，请重新获取完整 Cookie".to_owned())
         })?;
-    let mut account_name = fetch_nickname(cookie, jar.uid().unwrap_or_default())?;
+    let nickname = fetch_nickname(cookie, jar.uid().unwrap_or_default())?;
+    let mut account_name = format_account_name(&nickname);
 
     let existed = path.exists();
     let mut root = if existed {
@@ -106,6 +107,7 @@ pub fn add_account(path: &Path, name: Option<&str>, cookie: &str) -> Result<Stri
         }
         let mut credentials = Mapping::new();
         credentials.insert(key("cookie"), Value::String(cookie.to_owned()));
+        credentials.insert(key("stoken"), Value::String(stoken.to_owned()));
         let mut account = Mapping::new();
         account.insert(key("name"), Value::String(account_name.clone()));
         if let Some(remark) = name.map(str::trim).filter(|value| !value.is_empty()) {
@@ -113,8 +115,16 @@ pub fn add_account(path: &Path, name: Option<&str>, cookie: &str) -> Result<Stri
         }
         account.insert(key("enabled"), Value::Bool(true));
         account.insert(key("credentials"), Value::Mapping(credentials));
-        account.insert(key("device"), Value::Mapping(Mapping::new()));
-        account.insert(key("proxy"), Value::Mapping(Mapping::new()));
+        account.insert(
+            key("device"),
+            serde_yaml_ng::to_value(super::DeviceConfig::default())
+                .expect("默认设备配置可序列化"),
+        );
+        account.insert(
+            key("proxy"),
+            serde_yaml_ng::to_value(super::ProxyConfig::default())
+                .expect("默认代理配置可序列化"),
+        );
         account.insert(key("tasks"), default_tasks());
         account.insert(key("games"), default_games());
         accounts.push(Value::Mapping(account));
@@ -161,10 +171,7 @@ fn fetch_nickname(cookie: &str, _uid: &str) -> Result<String, ConfigError> {
 
 #[cfg(not(test))]
 fn fetch_nickname(cookie: &str, uid: &str) -> Result<String, ConfigError> {
-    let mut url = Url::parse("https://bbs-api.miyoushe.com/user/wapi/getUserFullInfo").unwrap();
-    url.query_pairs_mut()
-        .append_pair("gids", "2")
-        .append_pair("uid", uid);
+    let url = profile_url(uid);
     let response: ProfileEnvelope = reqwest::blocking::Client::new()
         .get(url)
         .header(COOKIE, cookie)
@@ -180,6 +187,17 @@ fn fetch_nickname(cookie: &str, uid: &str) -> Result<String, ConfigError> {
         .filter(|v| !v.trim().is_empty())
         .ok_or_else(|| ConfigError::Edit(format!("米游社昵称查询失败（代码 {retcode}）")))?;
     Ok(nickname)
+}
+
+fn profile_url(uid: &str) -> Url {
+    let mut url = Url::parse("https://bbs-api.miyoushe.com/user/api/getUserFullInfo")
+        .expect("valid MiHoYo profile URL");
+    url.query_pairs_mut().append_pair("uid", uid);
+    url
+}
+
+fn format_account_name(nickname: &str) -> String {
+    format!("mys用户:{}", nickname.trim())
 }
 
 pub fn remove_account(path: &Path, name: &str) -> Result<(), ConfigError> {
@@ -284,6 +302,253 @@ pub fn set_runtime(
         Ok(())
     })
 }
+
+pub fn set_logging(
+    path: &Path,
+    enabled: bool,
+    directory: &str,
+    file_prefix: &str,
+) -> Result<(), ConfigError> {
+    mutate_raw(path, |root| {
+        let runtime = root
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("配置根节点无效".into()))?
+            .entry(key("runtime"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("runtime 必须是对象".into()))?;
+        let logging = runtime
+            .entry(key("logging"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("runtime.logging 必须是对象".into()))?;
+        logging.insert(key("enabled"), Value::Bool(enabled));
+        logging.insert(key("directory"), Value::String(directory.to_owned()));
+        logging.insert(key("file_prefix"), Value::String(file_prefix.to_owned()));
+        Ok(())
+    })
+}
+
+pub fn set_account_general(
+    path: &Path,
+    name: &str,
+    enabled: bool,
+    remark: Option<&str>,
+) -> Result<(), ConfigError> {
+    mutate_raw(path, |root| {
+        let account = find_account_mut(root, name)?;
+        account.insert(key("enabled"), Value::Bool(enabled));
+        account.insert(
+            key("remark"),
+            remark
+                .filter(|value| !value.is_empty())
+                .map(|value| Value::String(value.to_owned()))
+                .unwrap_or(Value::Null),
+        );
+        Ok(())
+    })
+}
+
+pub fn set_account_device(
+    path: &Path,
+    name: &str,
+    device_name: &str,
+    model: &str,
+    id: &str,
+    fp: &str,
+) -> Result<(), ConfigError> {
+    mutate_raw(path, |root| {
+        let account = find_account_mut(root, name)?;
+        let device = account
+            .entry(key("device"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("device 必须是对象".into()))?;
+        for (field, value) in [
+            ("name", device_name),
+            ("model", model),
+            ("id", id),
+            ("fp", fp),
+        ] {
+            device.insert(key(field), Value::String(value.to_owned()));
+        }
+        Ok(())
+    })
+}
+
+pub fn set_account_proxy(
+    path: &Path,
+    name: &str,
+    proxy: Option<&str>,
+) -> Result<(), ConfigError> {
+    mutate_raw(path, |root| {
+        let account = find_account_mut(root, name)?;
+        let value = account
+            .entry(key("proxy"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("proxy 必须是对象".into()))?;
+        value.insert(
+            key("url"),
+            proxy
+                .filter(|value| !value.is_empty())
+                .map(|value| Value::String(value.to_owned()))
+                .unwrap_or(Value::Null),
+        );
+        Ok(())
+    })
+}
+
+pub fn replace_account_cookie(
+    path: &Path,
+    old_name: &str,
+    cookie: &str,
+) -> Result<String, ConfigError> {
+    let jar =
+        CookieJar::parse(cookie).map_err(|_| ConfigError::Edit("Cookie 格式无效".to_owned()))?;
+    let stoken = jar
+        .get("stoken")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ConfigError::Edit("Cookie 中缺少 stoken".to_owned()))?;
+    let nickname = fetch_nickname(cookie, jar.uid().unwrap_or_default())?;
+    let mut new_name = format_account_name(&nickname);
+    mutate_raw(path, |root| {
+        let accounts = accounts_mut(root)?;
+        let index = accounts
+            .iter()
+            .position(|value| account_name_of(value) == Some(old_name))
+            .ok_or_else(|| ConfigError::Edit(format!("未找到账号 {old_name:?}")))?;
+        if accounts.iter().enumerate().any(|(other, account)| {
+            other != index && account_name_of(account) == Some(new_name.as_str())
+        }) {
+            new_name = format!(
+                "{}-{}",
+                new_name,
+                uid_suffix(jar.uid().unwrap_or_default())
+            );
+        }
+        if accounts.iter().enumerate().any(|(other, account)| {
+            other != index && account_name_of(account) == Some(new_name.as_str())
+        }) {
+            return Err(ConfigError::Edit("米游社昵称与 UID 尾号仍然冲突".into()));
+        }
+        let account = accounts[index]
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("账号节点必须是对象".into()))?;
+        account.insert(key("name"), Value::String(new_name.clone()));
+        let credentials = account
+            .entry(key("credentials"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("credentials 必须是对象".into()))?;
+        credentials.insert(key("cookie"), Value::String(cookie.to_owned()));
+        credentials.insert(key("stoken"), Value::String(stoken.to_owned()));
+        Ok(())
+    })?;
+    Ok(new_name)
+}
+
+pub fn set_notification_provider(
+    path: &Path,
+    index: Option<usize>,
+    provider_type: &str,
+    fields: &[(String, Option<String>)],
+) -> Result<(), ConfigError> {
+    mutate_raw(path, |root| {
+        let notifications = root
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("配置根节点无效".into()))?
+            .entry(key("notifications"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("notifications 必须是对象".into()))?;
+        let providers = notifications
+            .entry(key("providers"))
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut()
+            .ok_or_else(|| ConfigError::Edit("notifications.providers 必须是列表".into()))?;
+        let mut created = Mapping::new();
+        created.insert(key("type"), Value::String(provider_type.to_owned()));
+        let provider = if let Some(index) = index {
+            providers
+                .get_mut(index)
+                .and_then(Value::as_mapping_mut)
+                .ok_or_else(|| ConfigError::Edit("通知渠道不存在".into()))?
+        } else {
+            providers.push(Value::Mapping(created));
+            providers
+                .last_mut()
+                .and_then(Value::as_mapping_mut)
+                .expect("刚添加的通知渠道是对象")
+        };
+        provider.insert(key("type"), Value::String(provider_type.to_owned()));
+        for (field, value) in fields {
+            let Some(value) = value else { continue };
+            provider.insert(key(field), notification_field_value(field, value)?);
+        }
+        Ok(())
+    })
+}
+
+pub fn remove_notification_provider(path: &Path, index: usize) -> Result<(), ConfigError> {
+    mutate_raw(path, |root| {
+        let notifications = root
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("配置根节点无效".into()))?
+            .entry(key("notifications"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("notifications 必须是对象".into()))?;
+        let providers = notifications
+            .entry(key("providers"))
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut()
+            .ok_or_else(|| ConfigError::Edit("notifications.providers 必须是列表".into()))?;
+        if index >= providers.len() {
+            return Err(ConfigError::Edit("通知渠道不存在".into()));
+        }
+        providers.remove(index);
+        if providers.is_empty() {
+            notifications.insert(key("enabled"), Value::Bool(false));
+        }
+        Ok(())
+    })
+}
+
+fn notification_field_value(field: &str, raw: &str) -> Result<Value, ConfigError> {
+    if matches!(field, "uids" | "topic_ids") && raw.is_empty() {
+        return Ok(Value::Sequence(Vec::new()));
+    }
+    if raw.is_empty() {
+        return Ok(Value::Null);
+    }
+    match field {
+        "priority" => raw
+            .parse::<i64>()
+            .map(|value| Value::Number(value.into()))
+            .map_err(|_| ConfigError::Edit("priority 必须是整数".into())),
+        "topic_ids" => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .parse::<i64>()
+                    .map(|number| Value::Number(number.into()))
+                    .map_err(|_| ConfigError::Edit("topic_ids 必须是逗号分隔的整数".into()))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Sequence),
+        "uids" => Ok(Value::Sequence(
+            raw.split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| Value::String(value.to_owned()))
+                .collect(),
+        )),
+        _ => Ok(Value::String(raw.to_owned())),
+    }
+}
 pub fn set_captcha_endpoint(path: &Path, endpoint: Option<&str>) -> Result<(), ConfigError> {
     mutate_raw(path, |root| {
         let map = root
@@ -382,10 +647,22 @@ fn validate_and_serialize(value: &Value) -> Result<String, ConfigError> {
 fn empty_config_value() -> Value {
     let mut root = Mapping::new();
     root.insert(key("version"), Value::Number(CURRENT_CONFIG_VERSION.into()));
-    root.insert(key("runtime"), Value::Mapping(Mapping::new()));
-    root.insert(key("captcha"), Value::Mapping(Mapping::new()));
+    root.insert(
+        key("runtime"),
+        serde_yaml_ng::to_value(super::RuntimeConfig::default())
+            .expect("默认运行配置可序列化"),
+    );
+    root.insert(
+        key("captcha"),
+        serde_yaml_ng::to_value(super::CaptchaConfig::default())
+            .expect("默认验证码配置可序列化"),
+    );
     root.insert(key("accounts"), Value::Sequence(Vec::new()));
-    root.insert(key("notifications"), Value::Mapping(Mapping::new()));
+    root.insert(
+        key("notifications"),
+        serde_yaml_ng::to_value(super::NotificationsConfig::default())
+            .expect("默认通知配置可序列化"),
+    );
     Value::Mapping(root)
 }
 
@@ -459,7 +736,7 @@ mod tests {
             "account_id=123; account_mid_v2=mid; stoken=v2_secret",
         )
         .unwrap();
-        assert_eq!(name, "测试昵称");
+        assert_eq!(name, "mys用户:测试昵称");
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.config.accounts.len(), 1);
         assert_eq!(
@@ -471,7 +748,20 @@ mod tests {
             vec![super::super::Game::Genshin]
         );
         assert!(!loaded.config.accounts[0].tasks.bbs.read);
-        assert!(!fs::read_to_string(path).unwrap().contains("MIHOYO_COOKIE"));
+        let written = fs::read_to_string(path).unwrap();
+        assert!(!written.contains("MIHOYO_COOKIE"));
+        for field in [
+            "timezone:",
+            "logging:",
+            "endpoint:",
+            "stoken:",
+            "device:",
+            "proxy:",
+            "notifications:",
+            "providers:",
+        ] {
+            assert!(written.contains(field), "新配置缺少字段 {field}");
+        }
     }
 
     #[test]
@@ -480,5 +770,13 @@ mod tests {
         let path = temp.path().join("missing/config.yaml");
         assert!(add_account(&path, None, "invalid").is_err());
         assert!(!path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn nickname_endpoint_uses_public_profile_api() {
+        let url = profile_url("123456");
+        assert_eq!(url.path(), "/user/api/getUserFullInfo");
+        assert_eq!(url.query(), Some("uid=123456"));
+        assert_eq!(format_account_name(" 测试昵称 "), "mys用户:测试昵称");
     }
 }
