@@ -13,7 +13,8 @@ pub fn setup(path: &Path) -> Result<(), ConfigError> {
     loop {
         println!("配置节点：1.全局运行 2.验证码 3.账号 4.通知 5.校验 6.完整编辑 0.退出");
         match read_choice(6)? {
-            None | Some(ref v) if v == &[0] => return Ok(()),
+            None => return Ok(()),
+            Some(ref v) if v == &[0] => return Ok(()),
             Some(v) if v == [1] => runtime(path)?,
             Some(v) if v == [2] => captcha(path)?,
             Some(v) if v == [3] => accounts(path)?,
