@@ -10,6 +10,8 @@ use mihoyo_bbs_tools::{
 };
 use tracing_subscriber::EnvFilter;
 
+mod file_logging;
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -146,9 +148,9 @@ fn init_tracing(
         .unwrap_or_else(|| "info".into());
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
     if let Some(logging) = runtime.map(|r| &r.logging).filter(|v| v.enabled) {
-        if std::fs::create_dir_all(&logging.directory).is_ok() {
-            let appender =
-                tracing_appender::rolling::daily(&logging.directory, &logging.file_prefix);
+        if let Ok(appender) =
+            file_logging::DailyFileAppender::new(&logging.directory, &logging.file_prefix)
+        {
             let (writer, guard) = tracing_appender::non_blocking(appender);
             tracing_subscriber::fmt()
                 .with_env_filter(filter)

@@ -15,6 +15,9 @@ on:
       - ".cargo/**"
       - "tests/**"
       - ".github/workflows/ci.yml"
+      - ".github/workflows/release.yml"
+      - "docs/使用说明.md"
+      - "config/config.example.yaml"
   pull_request:
     paths:
       - "**/*.rs"
@@ -25,6 +28,9 @@ on:
       - ".cargo/**"
       - "tests/**"
       - ".github/workflows/ci.yml"
+      - ".github/workflows/release.yml"
+      - "docs/使用说明.md"
+      - "config/config.example.yaml"
 
 permissions:
   contents: read
@@ -109,3 +115,41 @@ jobs:
       - name: 编译 Release
         if: runner.os == 'Windows'
         run: cargo build --release --locked
+
+      - name: 打包 Linux 使用文件
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="mihoyo-bbs-tools-linux-x86_64"
+          package_dir="package/$package_name"
+          mkdir -p "$package_dir/config" dist
+          cp target/release/mihoyo-bbs-tools "$package_dir/"
+          cp docs/使用说明.md "$package_dir/使用说明.md"
+          cp config/config.example.yaml "$package_dir/config/"
+          tar -C package -czf "dist/$package_name.tar.gz" "$package_name"
+          cd dist
+          sha256sum "$package_name.tar.gz" > "$package_name.tar.gz.sha256"
+
+      - name: 打包 Windows 使用文件
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $packageName = "mihoyo-bbs-tools-windows-x86_64"
+          $packageDir = Join-Path package $packageName
+          New-Item -ItemType Directory -Path (Join-Path $packageDir config) -Force | Out-Null
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item -LiteralPath target/release/mihoyo-bbs-tools.exe -Destination $packageDir
+          Copy-Item -LiteralPath docs/使用说明.md -Destination (Join-Path $packageDir 使用说明.md)
+          Copy-Item -LiteralPath config/config.example.yaml -Destination (Join-Path $packageDir config)
+          $archive = "dist/$packageName.zip"
+          Compress-Archive -LiteralPath $packageDir -DestinationPath $archive
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          "$hash  $packageName.zip" | Set-Content -Encoding ascii "$archive.sha256"
+
+      - name: 上传完整使用包
+        uses: actions/upload-artifact@v4
+        with:
+          name: mihoyo-bbs-tools-${{ runner.os }}-x86_64
+          path: dist/*
+          if-no-files-found: error

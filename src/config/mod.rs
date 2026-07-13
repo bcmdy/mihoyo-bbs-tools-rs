@@ -132,7 +132,7 @@ fn default_log_directory() -> PathBuf {
     PathBuf::from("logs")
 }
 fn default_log_prefix() -> String {
-    "mihoyo-bbs-tools.log".to_owned()
+    "mihoyo-bbs-tools".to_owned()
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

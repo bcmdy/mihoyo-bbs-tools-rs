@@ -18,7 +18,7 @@ runtime:
   logging:
     enabled: true
     directory: logs
-    file_prefix: mihoyo-bbs-tools.log
+    file_prefix: mihoyo-bbs-tools
 
 captcha:
   endpoint: "${CAPTCHA_ENDPOINT}"

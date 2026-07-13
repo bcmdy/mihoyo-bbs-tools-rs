@@ -1,5 +1,7 @@
 # MihoyoBBSTools RS
 
+普通用户请优先阅读 [详细使用说明](docs/使用说明.md)。发布包已包含同名说明文件和完整 YAML 配置模板。
+
 MihoyoBBSTools 的 Rust 重构项目，目标是在保持主要配置和部署方式兼容的同时，提供更安全、可测试并可跨平台发布的米游社与 HoYoLAB 自动任务工具。
 
 > 当前项目已完成核心签到、米游社任务、验证码平台和首批推送渠道重构，仍按实施文档继续迁移云游戏、Web 活动和调度发布能力。实际进度以主分支代码和 GitHub Actions 结果为准。
@@ -46,7 +48,7 @@ mihoyo-bbs-tools config setup
 
 配置格式和环境变量规则见 [配置说明](docs/configuration.md)，凭据保护与日志要求见 [安全说明](docs/security.md)。
 
-新建账号默认仅执行原神游戏签到和米游社社区签到；阅读、点赞、取消点赞与分享默认关闭。文件日志默认写入 `logs` 目录并按天滚动，可通过 `runtime.logging` 修改或关闭。
+新建账号默认仅执行原神游戏签到和米游社社区签到；阅读、点赞、取消点赞与分享默认关闭。文件日志默认写入 `logs/mihoyo-bbs-tools_YYYY-MM-DD.log` 并按天滚动，可通过 `runtime.logging` 修改或关闭。
 
 `run --task` 可以临时缩小本次运行范围，可选值为 `china-checkin`、`hoyolab-checkin` 和 `bbs`；不提供时仍按原顺序尝试全部已实现任务。`checkin --region` 可选择 `china`、`hoyolab` 或 `all`，默认值为 `all`。这些命令行选项不会绕过配置文件中的账号、任务或游戏禁用状态。
 
