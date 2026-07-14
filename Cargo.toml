@@ -26,7 +26,7 @@ serde_yaml_ng = "0.10"
 sha2 = "0.10"
 thiserror = "2.0"
 time = { version = "0.3", features = ["formatting", "local-offset"] }
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1.0", features = ["macros", "rt", "time"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -38,5 +38,8 @@ tempfile = "3.0"
 wiremock = "0.6"
 
 [profile.release]
-lto = "thin"
-strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

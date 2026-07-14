@@ -12,7 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 mod file_logging;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let runtime =
