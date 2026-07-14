@@ -651,7 +651,7 @@ jobs:
 
 初期不加入第三方 Cargo 缓存 Action，先确保流程稳定。编译时间明显影响开发后，再评估缓存，并固定第三方 Action 的提交 SHA。
 
-当前 CI、Release 和 Docker 全部使用已提交的 `Cargo.lock` 与 `--locked`。CI 还检查普通依赖树，防止 AWS-LC 被间接依赖重新引入；Linux 和 Windows Release 构建会把原始程序与压缩包的精确字节数写入 Actions Summary。公开 HTTPS 握手测试保存在默认忽略的 `tests/tls_smoke.rs`，需要真实网络时单独执行，不混入普通离线测试。
+当前 CI、Release 和 Docker 全部使用已提交的 `Cargo.lock` 与 `--locked`。CI 还检查普通依赖树，防止 AWS-LC 被间接依赖重新引入；Linux 和 Windows Release 构建会把原始程序与压缩包的精确字节数写入 Actions Summary。公开 HTTPS 握手测试保存在默认忽略的 `tests/tls_smoke.rs`，由独立工作流在 Ubuntu 和 Windows 上执行，不混入普通离线测试。
 
 ### 10.2 Release 工作流
 

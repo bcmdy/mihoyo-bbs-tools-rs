@@ -8,7 +8,7 @@
 - Tokio 改用 current-thread runtime，仅保留 `macros`、`rt` 和 `time`。
 - reqwest 使用 `rustls-no-provider`，由项目显式安装 `ring` provider；CI 阻止 `aws-lc-rs` 和 `aws-lc-sys` 回归。
 - 昵称查询改为异步请求并复用统一 HTTP 客户端，移除 reqwest blocking client。
-- 日志只保留全局级别过滤，移除 `env-filter` 及其正则依赖。
+- 日志只保留全局级别过滤，从发布依赖链移除 `env-filter` 及其正则依赖；开发依赖 `wiremock` 仍会使用正则 crate。
 - 移除未使用的 `anyhow` 和 `secrecy`。
 - 提交 `Cargo.lock`，CI、Release 和 Docker 均使用锁定依赖。
 
@@ -34,9 +34,9 @@
 ## 验证结果
 
 - 最终精简阶段的格式、Clippy、单元测试、Ubuntu Release 和 Windows Release 均通过：[Rust CI 29346204731](https://github.com/bcmdy/mihoyo-bbs-tools-rs/actions/runs/29346204731)。
-- `ring`、平台证书验证器和生产 HTTPS 证书已通过无凭据的米游社公开端点测试：[TLS 真实握手测试 29346657444](https://github.com/bcmdy/mihoyo-bbs-tools-rs/actions/runs/29346657444)。
+- `ring`、Ubuntu 平台证书验证器和生产 HTTPS 证书已通过无凭据的米游社公开端点测试：[TLS 真实握手测试 29346657444](https://github.com/bcmdy/mihoyo-bbs-tools-rs/actions/runs/29346657444)。
 - 加入默认忽略的 TLS smoke 测试后，分支最终普通 CI 再次全部通过：[Rust CI 29346657535](https://github.com/bcmdy/mihoyo-bbs-tools-rs/actions/runs/29346657535)。
-- `tests/tls_smoke.rs` 默认忽略，普通离线测试不会访问生产网络；需要复核时由远程 CI 显式执行 ignored test。
+- `tests/tls_smoke.rs` 默认忽略，普通离线测试不会访问生产网络；独立工作流只允许手动触发，或在该测试和工作流自身发生变化时触发，并在 Ubuntu、Windows 上显式执行 ignored test。
 
 ## 取舍
 
