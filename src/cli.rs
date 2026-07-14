@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     name = "MihoyoBBSToolsRS",
     version = crate::VERSION,
     about = "米游社与 HoYoLAB 自动任务工具",
-    after_help = "示例：\n  MihoyoBBSToolsRS validate-config\n  MihoyoBBSToolsRS checkin --region china\n  MihoyoBBSToolsRS run --task china-checkin,bbs\n  MihoyoBBSToolsRS config setup\n\n使用 `MihoyoBBSToolsRS <COMMAND> --help` 查看子命令的详细说明。"
+    after_help = "示例：\n  MihoyoBBSToolsRS validate-config\n  MihoyoBBSToolsRS checkin --region china\n  MihoyoBBSToolsRS run --task china-checkin,bbs\n  MihoyoBBSToolsRS config setup\n  MihoyoBBSToolsRS create-launcher\n\n使用 `MihoyoBBSToolsRS <COMMAND> --help` 查看子命令的详细说明。"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -46,6 +46,15 @@ pub enum Command {
     MigrateConfig(MigrationArgs),
     /// 将完整的脱敏默认配置模板输出到标准输出
     PrintExampleConfig,
+    /// 在 Windows 创建可移动的异步启动 BAT
+    CreateLauncher {
+        /// BAT 输出路径；默认生成在当前 EXE 所在目录
+        #[arg(short, long, value_name = "BAT_PATH")]
+        output: Option<PathBuf>,
+        /// 覆盖已经存在的 BAT
+        #[arg(long)]
+        force: bool,
+    },
     /// 交互设置、编辑、添加或删除配置账号
     Config {
         #[command(subcommand)]
@@ -200,6 +209,7 @@ mod tests {
         assert!(help.contains("校验配置文件，不访问远程接口"));
         assert!(help.contains("执行游戏签到与米游社社区任务"));
         assert!(help.contains("交互设置、编辑、添加或删除配置账号"));
+        assert!(help.contains("创建可移动的异步启动 BAT"));
     }
 
     #[test]

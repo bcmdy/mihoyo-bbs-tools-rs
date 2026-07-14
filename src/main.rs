@@ -90,6 +90,13 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             println!("配置已迁移到 {}", output.display());
         }
         Command::PrintExampleConfig => print!("{}", config::EXAMPLE_CONFIG),
+        Command::CreateLauncher { output, force } => {
+            let path =
+                mihoyo_bbs_tools::launcher::create_windows_launcher(output.as_deref(), force)
+                    .map_err(|error| AppError::Task(error.to_string()))?;
+            println!("已创建异步启动 BAT：{}", path.display());
+            println!("该 BAT 可移动到其他位置，仍会从当前程序目录运行 MihoyoBBSToolsRS。");
+        }
         Command::Config { command } => match command {
             ConfigCommand::Setup { config: path } => config::interactive_setup(&path)?,
             ConfigCommand::Edit { config: path } => {
