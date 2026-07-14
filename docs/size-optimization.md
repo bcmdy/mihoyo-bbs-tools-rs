@@ -34,7 +34,7 @@
 ## 验证结果
 
 - 最终精简阶段的格式、Clippy、单元测试、Ubuntu Release 和 Windows Release 均通过：[Rust CI 29346204731](https://github.com/bcmdy/mihoyo-bbs-tools-rs/actions/runs/29346204731)。
-- `ring`、Ubuntu 平台证书验证器和生产 HTTPS 证书已通过无凭据的米游社公开端点测试：[TLS 真实握手测试 29346657444](https://github.com/bcmdy/mihoyo-bbs-tools-rs/actions/runs/29346657444)。
+- `ring`、Ubuntu/Windows 平台证书验证器和生产 HTTPS 证书已通过无凭据的米游社公开端点测试：[TLS 真实握手测试 29347447531](https://github.com/bcmdy/mihoyo-bbs-tools-rs/actions/runs/29347447531)。
 - 加入默认忽略的 TLS smoke 测试后，分支最终普通 CI 再次全部通过：[Rust CI 29346657535](https://github.com/bcmdy/mihoyo-bbs-tools-rs/actions/runs/29346657535)。
 - `tests/tls_smoke.rs` 默认忽略，普通离线测试不会访问生产网络；独立工作流只允许手动触发，或在该测试和工作流自身发生变化时触发，并在 Ubuntu、Windows 上显式执行 ignored test。
 
