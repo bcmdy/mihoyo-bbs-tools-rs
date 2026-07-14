@@ -76,12 +76,18 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: 生成首次依赖锁文件
-        if: ${{ hashFiles('Cargo.lock') == '' }}
-        run: cargo generate-lockfile
-
       - name: 检查格式
         run: cargo fmt --all -- --check
+
+      - name: 检查 TLS 依赖
+        shell: bash
+        run: |
+          tree=$(cargo tree --locked -e normal)
+          if grep -qE 'aws-lc-(rs|sys)' <<< "$tree"; then
+            echo "正常依赖中仍包含 AWS-LC" >&2
+            exit 1
+          fi
+          grep -q 'ring v' <<< "$tree"
 
       - name: Clippy 静态检查
         run: |
@@ -157,10 +163,6 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: 生成首次依赖锁文件
-        if: ${{ hashFiles('Cargo.lock') == '' }}
-        run: cargo generate-lockfile
-
       - name: 编译 Release
         if: runner.os == 'Linux'
         run: |
@@ -191,6 +193,15 @@ jobs:
           cp docs/快速开始.md "$package_dir/快速开始.md"
           cp config/config.example.yaml "$package_dir/config/"
           tar -C package -czf "dist/$package_name.tar.gz" "$package_name"
+          binary_bytes=$(stat -c %s "target/release/MihoyoBBSToolsRS")
+          archive_bytes=$(stat -c %s "dist/$package_name.tar.gz")
+          {
+            echo "### Linux x86_64 体积"
+            echo "| 文件 | 字节数 |"
+            echo "|---|---:|"
+            echo "| MihoyoBBSToolsRS | $binary_bytes |"
+            echo "| $package_name.tar.gz | $archive_bytes |"
+          } >> "$GITHUB_STEP_SUMMARY"
           cd dist
           sha256sum "$package_name.tar.gz" > "$package_name.tar.gz.sha256"
 
@@ -208,6 +219,15 @@ jobs:
           Copy-Item -LiteralPath config/config.example.yaml -Destination (Join-Path $packageDir config)
           $archive = "dist/$packageName.zip"
           Compress-Archive -LiteralPath $packageDir -DestinationPath $archive
+          $binaryBytes = (Get-Item -LiteralPath target/release/MihoyoBBSToolsRS.exe).Length
+          $archiveBytes = (Get-Item -LiteralPath $archive).Length
+          @"
+          ### Windows x86_64 体积
+          | 文件 | 字节数 |
+          |---|---:|
+          | MihoyoBBSToolsRS.exe | $binaryBytes |
+          | $packageName.zip | $archiveBytes |
+          "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
           "$hash  $packageName.zip" | Set-Content -Encoding ascii "$archive.sha256"
 

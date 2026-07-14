@@ -79,6 +79,8 @@ impl HttpClientBuilder {
     }
 
     pub fn build(self) -> Result<HttpClient, HttpError> {
+        // 库测试和外部调用不会经过二进制入口；重复安装只表示已有同一进程级 provider。
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let mut builder = reqwest::Client::builder()
             .timeout(self.timeout)
             .user_agent(self.user_agent);

@@ -88,6 +88,8 @@ device:
 
 真实接口测试必须与普通 CI 分离，只能手动触发，并应使用配置了人工批准的 GitHub Environment。普通测试只使用脱敏 Fixture 和 Mock HTTP 服务。
 
+依赖精简、TLS 后端选择和 Linux/Windows 实测数据见 [构建体积优化记录](docs/size-optimization.md)。
+
 ## Docker
 
 仓库中的 `Dockerfile` 用于构建最终运行镜像。镜像采用多阶段构建，运行阶段不包含 Rust 工具链。镜像应由 GitHub Actions 构建，不要求开发机执行 `docker build`。

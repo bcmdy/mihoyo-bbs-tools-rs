@@ -4,11 +4,10 @@ RUN apk add --no-cache musl-dev
 
 WORKDIR /app
 
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-RUN cargo generate-lockfile \
-    && cargo build --release --locked
+RUN cargo build --release --locked
 
 FROM alpine:3
 

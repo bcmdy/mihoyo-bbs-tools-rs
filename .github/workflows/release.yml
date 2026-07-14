@@ -56,10 +56,6 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: 生成首次依赖锁文件
-        if: ${{ hashFiles('Cargo.lock') == '' }}
-        run: cargo generate-lockfile
-
       - name: 编译 Release
         run: cargo build --release --locked
 
@@ -74,6 +70,15 @@ jobs:
           cp docs/快速开始.md "$package_dir/快速开始.md"
           cp config/config.example.yaml "$package_dir/config/"
           tar -C package -czf "dist/$package_name.tar.gz" "$package_name"
+          binary_bytes=$(stat -c %s "target/release/MihoyoBBSToolsRS")
+          archive_bytes=$(stat -c %s "dist/$package_name.tar.gz")
+          {
+            echo "### Linux x86_64 体积"
+            echo "| 文件 | 字节数 |"
+            echo "|---|---:|"
+            echo "| MihoyoBBSToolsRS | $binary_bytes |"
+            echo "| $package_name.tar.gz | $archive_bytes |"
+          } >> "$GITHUB_STEP_SUMMARY"
           cd dist
           sha256sum "$package_name.tar.gz" > "$package_name.tar.gz.sha256"
 
@@ -123,10 +128,6 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: 生成首次依赖锁文件
-        if: ${{ hashFiles('Cargo.lock') == '' }}
-        run: cargo generate-lockfile
-
       - name: 编译 Release
         run: cargo build --release --locked
 
@@ -143,6 +144,15 @@ jobs:
           Copy-Item -LiteralPath config/config.example.yaml -Destination (Join-Path $packageDir config)
           $archive = "dist/$packageName.zip"
           Compress-Archive -LiteralPath $packageDir -DestinationPath $archive
+          $binaryBytes = (Get-Item -LiteralPath target/release/MihoyoBBSToolsRS.exe).Length
+          $archiveBytes = (Get-Item -LiteralPath $archive).Length
+          @"
+          ### Windows x86_64 体积
+          | 文件 | 字节数 |
+          |---|---:|
+          | MihoyoBBSToolsRS.exe | $binaryBytes |
+          | $packageName.zip | $archiveBytes |
+          "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
           "$hash  $packageName.zip" | Set-Content -Encoding ascii "$archive.sha256"
 
