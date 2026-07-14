@@ -13,6 +13,7 @@ runtime:
   timezone: Asia/Shanghai
   request_timeout_seconds: 30
   retry_count: 3
+  game_checkin_max_attempts: 3
   random_delay_seconds: 10
   log_level: info
   logging:
@@ -109,7 +110,9 @@ MihoyoBBSToolsRS config setup --config config/config.yaml
 
 国内签到或米游社任务明确返回凭据失效时，程序会使用该账号的 SToken 自动刷新 `cookie_token`，每个任务流程至多尝试一次，然后重试原任务。普通 YAML Cookie 会原子写回；`${ENV_NAME}` 提供的 Cookie 只在本次运行内更新，程序不会把展开后的 Secret 写入配置文件，后续运行前应由用户更新对应环境变量或 Secret。HoYoLAB 使用独立国际服凭据体系，不套用国内 SToken 刷新。
 
-国内和 HoYoLAB 签到请求返回成功后会再次查询签到状态；确认今日已签到后，报告会显示累计天数和对应的当天奖励。奖励列表查询失败只影响详情文字，不会推翻已确认的签到结果。米游社社区签到、阅读、点赞和分享提交后也会再次读取任务状态，只有服务端确认奖励已领取（或今日已无可领取米游币）才输出成功。
+国内和 HoYoLAB 游戏签到由 `runtime.game_checkin_max_attempts` 控制最大尝试次数，默认 `3`，范围 `1..=10`。每次提交后都会重新查询该角色的签到状态；只有复查仍显示今日未签到、仍可领取时，才会再次提交该角色，已经确认完成的角色不会重复签到。复查请求本身失败时会立即停止，避免在状态未知时盲目提交。
+
+确认今日已签到后，报告会显示实际尝试次数、累计天数和对应的当天奖励。奖励列表查询失败只影响详情文字，不会推翻已确认的签到结果。米游社社区签到、阅读、点赞和分享提交后也会再次读取任务状态，只有服务端确认奖励已领取（或今日已无可领取米游币）才输出成功。
 
 ### 交互式设置
 

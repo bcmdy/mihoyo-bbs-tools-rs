@@ -120,6 +120,7 @@ async fn run_china_account(config: &Config, account: &AccountConfig) -> RunRepor
             captcha.as_ref(),
             &mut signer,
             game,
+            config.runtime.game_checkin_max_attempts,
         )
         .await;
     }
@@ -179,63 +180,14 @@ pub async fn run_hoyolab_checkin(config: &Config) -> RunReport {
         };
         let client = HoyolabCheckinClient::new(http, account.credentials.cookie.clone());
         for game in account.games.iter().filter_map(config_game_to_hoyolab) {
-            let subject = game.spec().display_name;
-            match client.info(game).await {
-                Ok(CheckinState::FirstBind) => report.push(record(
-                    &account.name,
-                    "HoYoLAB 签到",
-                    subject,
-                    TaskOutcome::Skipped,
-                    "首次绑定，请先手动签到一次",
-                )),
-                Ok(CheckinState::AlreadySigned { total_sign_day }) => {
-                    let rewards = client.home(game).await.ok();
-                    report.push(record(
-                        &account.name,
-                        "HoYoLAB 签到",
-                        subject,
-                        TaskOutcome::AlreadyCompleted,
-                        &with_reward(
-                            &format!("今日已签到，累计 {total_sign_day} 天"),
-                            rewards.as_deref(),
-                            total_sign_day,
-                        ),
-                    ));
-                }
-                Ok(CheckinState::Pending { .. }) => match client.sign_once(game).await {
-                    Ok(SignState::Success) => {
-                        confirm_hoyolab_sign(
-                            &mut report,
-                            &account.name,
-                            subject,
-                            &client,
-                            game,
-                            TaskOutcome::Success,
-                        )
-                        .await;
-                    }
-                    Ok(SignState::AlreadySigned) => {
-                        confirm_hoyolab_sign(
-                            &mut report,
-                            &account.name,
-                            subject,
-                            &client,
-                            game,
-                            TaskOutcome::AlreadyCompleted,
-                        )
-                        .await;
-                    }
-                    Ok(SignState::CaptchaRequired { .. }) => report.push(record(
-                        &account.name,
-                        "HoYoLAB 签到",
-                        subject,
-                        TaskOutcome::CaptchaRequired,
-                        "触发验证码，已停止重复请求",
-                    )),
-                    Err(error) => push_hoyolab_error(&mut report, &account.name, subject, error),
-                },
-                Err(error) => push_hoyolab_error(&mut report, &account.name, subject, error),
-            }
+            run_hoyolab_game(
+                &mut report,
+                &account.name,
+                &client,
+                game,
+                config.runtime.game_checkin_max_attempts,
+            )
+            .await;
         }
     }
     report
@@ -248,6 +200,7 @@ async fn run_game(
     captcha: Option<&CaptchaClient>,
     signer: &mut DsSigner<SystemClock, ThreadRandom>,
     game: ChinaGame,
+    max_attempts: u32,
 ) {
     let spec = game.spec();
     let roles = match client.roles(game, &signer.sign_web().to_string()).await {
@@ -271,96 +224,20 @@ async fn run_game(
 
     for role in roles {
         let subject = format!("{} / {}", spec.display_name, mask_uid(&role.uid));
-        match client
-            .status(
-                game,
-                &role.region,
-                &role.uid,
-                &signer.sign_web().to_string(),
-            )
-            .await
-        {
-            Ok(CheckinState::FirstBind) => report.push(record(
-                account,
-                "国内游戏签到",
-                &subject,
-                TaskOutcome::Skipped,
-                "首次绑定，请先手动签到一次",
-            )),
-            Ok(CheckinState::AlreadySigned { total_sign_day }) => report.push(record(
-                account,
-                "国内游戏签到",
-                &subject,
-                TaskOutcome::AlreadyCompleted,
-                &with_reward(
-                    &format!("今日已签到，累计 {total_sign_day} 天"),
-                    rewards.as_deref(),
-                    total_sign_day,
-                ),
-            )),
-            Ok(CheckinState::Pending { .. }) => match client
-                .sign_once(
-                    game,
-                    &role.region,
-                    &role.uid,
-                    &signer.sign_web().to_string(),
-                    None,
-                )
-                .await
-            {
-                Ok(SignState::Success) => {
-                    confirm_china_sign(
-                        report,
-                        account,
-                        &subject,
-                        client,
-                        signer,
-                        game,
-                        &role.region,
-                        &role.uid,
-                        rewards.as_deref(),
-                        TaskOutcome::Success,
-                        false,
-                    )
-                    .await
-                }
-                Ok(SignState::AlreadySigned) => {
-                    confirm_china_sign(
-                        report,
-                        account,
-                        &subject,
-                        client,
-                        signer,
-                        game,
-                        &role.region,
-                        &role.uid,
-                        rewards.as_deref(),
-                        TaskOutcome::AlreadyCompleted,
-                        false,
-                    )
-                    .await;
-                }
-                Ok(SignState::CaptchaRequired { gt, challenge }) => {
-                    solve_captcha_and_retry(
-                        report,
-                        account,
-                        &subject,
-                        client,
-                        captcha,
-                        signer,
-                        game,
-                        &role.region,
-                        &role.uid,
-                        &gt,
-                        &challenge,
-                        rewards.as_deref(),
-                    )
-                    .await;
-                }
-                Err(error) => push_error(report, account, &subject, error),
-            },
-            Err(error) => push_error(report, account, &subject, error),
-        }
+        run_china_role(
+            report,
+            account,
+            &subject,
+            client,
+            captcha,
+            signer,
+            game,
+            &role.region,
+            &role.uid,
+            rewards.as_deref(),
+            max_attempts,
+        )
+        .await;
     }
 }
 
@@ -437,8 +314,86 @@ fn mask_uid(uid: &str) -> String {
     format!("***{suffix}")
 }
 
+enum ChinaSubmitResult {
+    Submitted {
+        outcome: TaskOutcome,
+        captcha_solved: bool,
+    },
+    Failed(CheckinError),
+    CaptchaBlocked(String),
+}
+
+async fn submit_china_sign_once(
+    client: &ChinaCheckinClient,
+    captcha: Option<&CaptchaClient>,
+    signer: &mut DsSigner<SystemClock, ThreadRandom>,
+    game: ChinaGame,
+    region: &str,
+    uid: &str,
+) -> ChinaSubmitResult {
+    let state = match client
+        .sign_once(game, region, uid, &signer.sign_web().to_string(), None)
+        .await
+    {
+        Ok(state) => state,
+        Err(error) => return ChinaSubmitResult::Failed(error),
+    };
+    match state {
+        SignState::Success => ChinaSubmitResult::Submitted {
+            outcome: TaskOutcome::Success,
+            captcha_solved: false,
+        },
+        SignState::AlreadySigned => ChinaSubmitResult::Submitted {
+            outcome: TaskOutcome::AlreadyCompleted,
+            captcha_solved: false,
+        },
+        SignState::CaptchaRequired { gt, challenge } => {
+            let Some(captcha) = captcha else {
+                return ChinaSubmitResult::CaptchaBlocked(
+                    "触发验证码，但未配置 captcha.endpoint".to_owned(),
+                );
+            };
+            let solution = match captcha.solve(&gt, &challenge).await {
+                Ok(solution) => solution,
+                Err(error) => {
+                    return ChinaSubmitResult::CaptchaBlocked(format!(
+                        "验证码平台求解失败：{error}"
+                    ));
+                }
+            };
+            let headers = CaptchaHeaders {
+                challenge: &solution.challenge,
+                validate: &solution.validate,
+            };
+            match client
+                .sign_once(
+                    game,
+                    region,
+                    uid,
+                    &signer.sign_web().to_string(),
+                    Some(&headers),
+                )
+                .await
+            {
+                Ok(SignState::Success) => ChinaSubmitResult::Submitted {
+                    outcome: TaskOutcome::Success,
+                    captcha_solved: true,
+                },
+                Ok(SignState::AlreadySigned) => ChinaSubmitResult::Submitted {
+                    outcome: TaskOutcome::AlreadyCompleted,
+                    captcha_solved: true,
+                },
+                Ok(SignState::CaptchaRequired { .. }) => ChinaSubmitResult::CaptchaBlocked(
+                    "验证码校验后仍被要求验证，已停止本次签到".to_owned(),
+                ),
+                Err(error) => ChinaSubmitResult::Failed(error),
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-async fn solve_captcha_and_retry(
+async fn run_china_role(
     report: &mut RunReport,
     account: &str,
     subject: &str,
@@ -448,192 +403,334 @@ async fn solve_captcha_and_retry(
     game: ChinaGame,
     region: &str,
     uid: &str,
-    gt: &str,
-    challenge: &str,
     rewards: Option<&[Reward]>,
+    max_attempts: u32,
 ) {
-    let Some(captcha) = captcha else {
-        report.push(record(
-            account,
-            "国内游戏签到",
-            subject,
-            TaskOutcome::CaptchaRequired,
-            "触发验证码，但未配置 captcha.endpoint",
-        ));
-        return;
-    };
+    let max_attempts = max_attempts.max(1);
+    let mut attempts = 0;
+    let mut last_submission = None;
 
-    let solution = match captcha.solve(gt, challenge).await {
-        Ok(solution) => solution,
-        Err(error) => {
-            report.push(record(
-                account,
-                "国内游戏签到",
-                subject,
-                TaskOutcome::CaptchaRequired,
-                &format!("验证码平台求解失败：{error}"),
-            ));
-            return;
-        }
-    };
-    let headers = CaptchaHeaders {
-        challenge: &solution.challenge,
-        validate: &solution.validate,
-    };
-    match client
-        .sign_once(
-            game,
-            region,
-            uid,
-            &signer.sign_web().to_string(),
-            Some(&headers),
-        )
-        .await
-    {
-        Ok(SignState::Success) => {
-            confirm_china_sign(
-                report,
-                account,
-                subject,
-                client,
-                signer,
-                game,
-                region,
-                uid,
-                rewards,
-                TaskOutcome::Success,
-                true,
-            )
+    loop {
+        match client
+            .status(game, region, uid, &signer.sign_web().to_string())
             .await
+        {
+            Ok(CheckinState::FirstBind) if attempts == 0 => {
+                report.push(record(
+                    account,
+                    "国内游戏签到",
+                    subject,
+                    TaskOutcome::Skipped,
+                    "首次绑定，请先手动签到一次",
+                ));
+                return;
+            }
+            Ok(CheckinState::FirstBind) => {
+                report.push(record(
+                    account,
+                    "国内游戏签到",
+                    subject,
+                    TaskOutcome::NetworkFailed,
+                    "签到提交后复查显示需要首次手动签到，已停止重试",
+                ));
+                return;
+            }
+            Ok(CheckinState::AlreadySigned { total_sign_day }) if attempts == 0 => {
+                report.push(record(
+                    account,
+                    "国内游戏签到",
+                    subject,
+                    TaskOutcome::AlreadyCompleted,
+                    &with_reward(
+                        &format!("今日已签到，累计 {total_sign_day} 天"),
+                        rewards,
+                        total_sign_day,
+                    ),
+                ));
+                return;
+            }
+            Ok(CheckinState::AlreadySigned { total_sign_day }) => {
+                let (outcome, confirmation) = match last_submission.as_ref() {
+                    Some(ChinaSubmitResult::Submitted {
+                        outcome,
+                        captcha_solved,
+                    }) => (
+                        *outcome,
+                        format!(
+                            "{}签到成功，第 {attempts} 次尝试后复查确认今日已签到，累计 {total_sign_day} 天",
+                            if *captcha_solved {
+                                "验证码通过后"
+                            } else {
+                                ""
+                            }
+                        ),
+                    ),
+                    Some(ChinaSubmitResult::Failed(_)) => (
+                        TaskOutcome::Success,
+                        format!(
+                            "签到请求返回错误，但第 {attempts} 次尝试后复查确认今日已签到，累计 {total_sign_day} 天"
+                        ),
+                    ),
+                    Some(ChinaSubmitResult::CaptchaBlocked(_)) | None => {
+                        unreachable!("只有实际提交过签到请求后才会进入复查成功分支")
+                    }
+                };
+                report.push(record(
+                    account,
+                    "国内游戏签到",
+                    subject,
+                    outcome,
+                    &with_reward(&confirmation, rewards, total_sign_day),
+                ));
+                return;
+            }
+            Ok(CheckinState::Pending { .. }) if attempts >= max_attempts => {
+                push_china_attempts_exhausted(report, account, subject, attempts, last_submission);
+                return;
+            }
+            Ok(CheckinState::Pending { .. }) => {}
+            Err(error) if attempts == 0 => {
+                push_error(report, account, subject, error);
+                return;
+            }
+            Err(error) => {
+                report.push(record(
+                    account,
+                    "国内游戏签到",
+                    subject,
+                    TaskOutcome::NetworkFailed,
+                    &format!(
+                        "第 {attempts} 次签到提交后复查失败，未继续提交以避免重复签到：{error}"
+                    ),
+                ));
+                return;
+            }
         }
-        Ok(SignState::AlreadySigned) => {
-            confirm_china_sign(
-                report,
-                account,
-                subject,
-                client,
-                signer,
-                game,
-                region,
-                uid,
-                rewards,
-                TaskOutcome::AlreadyCompleted,
-                true,
-            )
-            .await;
+
+        attempts += 1;
+        match submit_china_sign_once(client, captcha, signer, game, region, uid).await {
+            result @ (ChinaSubmitResult::Submitted { .. } | ChinaSubmitResult::Failed(_)) => {
+                last_submission = Some(result);
+            }
+            ChinaSubmitResult::CaptchaBlocked(message) => {
+                report.push(record(
+                    account,
+                    "国内游戏签到",
+                    subject,
+                    TaskOutcome::CaptchaRequired,
+                    &message,
+                ));
+                return;
+            }
         }
-        Ok(SignState::CaptchaRequired { .. }) => report.push(record(
-            account,
-            "国内游戏签到",
-            subject,
-            TaskOutcome::CaptchaRequired,
-            "验证码校验后仍被要求验证，已停止重试",
-        )),
-        Err(error) => push_error(report, account, subject, error),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn confirm_china_sign(
+fn push_china_attempts_exhausted(
     report: &mut RunReport,
     account: &str,
     subject: &str,
-    client: &ChinaCheckinClient,
-    signer: &mut DsSigner<SystemClock, ThreadRandom>,
-    game: ChinaGame,
-    region: &str,
-    uid: &str,
-    rewards: Option<&[Reward]>,
-    confirmed_outcome: TaskOutcome,
-    captcha: bool,
+    attempts: u32,
+    last_submission: Option<ChinaSubmitResult>,
 ) {
-    match client
-        .status(game, region, uid, &signer.sign_web().to_string())
-        .await
-    {
-        Ok(CheckinState::AlreadySigned { total_sign_day }) => report.push(record(
-            account,
-            "国内游戏签到",
-            subject,
-            confirmed_outcome,
-            &with_reward(
-                &format!(
-                    "{}签到成功，已再次确认今日已签到，累计 {total_sign_day} 天",
-                    if captcha { "验证码通过后" } else { "" }
-                ),
-                rewards,
-                total_sign_day,
-            ),
-        )),
-        Ok(CheckinState::Pending { .. }) => report.push(record(
-            account,
-            "国内游戏签到",
-            subject,
+    let (outcome, detail) = match last_submission {
+        Some(ChinaSubmitResult::Failed(CheckinError::CookieInvalid)) => (
+            TaskOutcome::AuthenticationFailed,
+            "最后一次签到请求显示 Cookie 无效或已过期".to_owned(),
+        ),
+        Some(ChinaSubmitResult::Failed(CheckinError::Http(_))) => (
             TaskOutcome::NetworkFailed,
-            "签到接口返回成功，但再次查询仍显示未签到",
-        )),
-        Ok(CheckinState::FirstBind) => report.push(record(
-            account,
-            "国内游戏签到",
-            subject,
+            "最后一次签到请求网络失败".to_owned(),
+        ),
+        Some(ChinaSubmitResult::Failed(error)) => (
+            TaskOutcome::Failed,
+            format!("最后一次签到请求失败：{error}"),
+        ),
+        Some(ChinaSubmitResult::Submitted { .. }) | None => (
             TaskOutcome::NetworkFailed,
-            "签到接口返回成功，但再次查询显示需要首次手动签到",
-        )),
-        Err(error) => report.push(record(
-            account,
-            "国内游戏签到",
-            subject,
-            TaskOutcome::NetworkFailed,
-            &format!("签到接口返回成功，但再次确认失败：{error}"),
-        )),
-    }
+            "每次提交后复查都仍显示今日未签到".to_owned(),
+        ),
+        Some(ChinaSubmitResult::CaptchaBlocked(_)) => {
+            unreachable!("验证码阻断会立即生成报告")
+        }
+    };
+    report.push(record(
+        account,
+        "国内游戏签到",
+        subject,
+        outcome,
+        &format!("已达到配置的 {attempts} 次签到尝试；{detail}"),
+    ));
 }
 
-async fn confirm_hoyolab_sign(
+enum HoyolabSubmitResult {
+    Submitted(TaskOutcome),
+    Failed(HoyolabCheckinError),
+}
+
+async fn run_hoyolab_game(
     report: &mut RunReport,
     account: &str,
-    subject: &str,
     client: &HoyolabCheckinClient,
     game: HoyolabGame,
-    confirmed_outcome: TaskOutcome,
+    max_attempts: u32,
 ) {
-    match client.info(game).await {
-        Ok(CheckinState::AlreadySigned { total_sign_day }) => {
-            let rewards = client.home(game).await.ok();
-            report.push(record(
-                account,
-                "HoYoLAB 签到",
-                subject,
-                confirmed_outcome,
-                &with_reward(
-                    &format!("签到请求已提交，已再次确认今日已签到，累计 {total_sign_day} 天"),
-                    rewards.as_deref(),
-                    total_sign_day,
-                ),
-            ));
+    let subject = game.spec().display_name;
+    let max_attempts = max_attempts.max(1);
+    let mut attempts = 0;
+    let mut last_submission = None;
+
+    loop {
+        match client.info(game).await {
+            Ok(CheckinState::FirstBind) if attempts == 0 => {
+                report.push(record(
+                    account,
+                    "HoYoLAB 签到",
+                    subject,
+                    TaskOutcome::Skipped,
+                    "首次绑定，请先手动签到一次",
+                ));
+                return;
+            }
+            Ok(CheckinState::FirstBind) => {
+                report.push(record(
+                    account,
+                    "HoYoLAB 签到",
+                    subject,
+                    TaskOutcome::NetworkFailed,
+                    "签到提交后复查显示需要首次手动签到，已停止重试",
+                ));
+                return;
+            }
+            Ok(CheckinState::AlreadySigned { total_sign_day }) if attempts == 0 => {
+                let rewards = client.home(game).await.ok();
+                report.push(record(
+                    account,
+                    "HoYoLAB 签到",
+                    subject,
+                    TaskOutcome::AlreadyCompleted,
+                    &with_reward(
+                        &format!("今日已签到，累计 {total_sign_day} 天"),
+                        rewards.as_deref(),
+                        total_sign_day,
+                    ),
+                ));
+                return;
+            }
+            Ok(CheckinState::AlreadySigned { total_sign_day }) => {
+                let rewards = client.home(game).await.ok();
+                let (outcome, confirmation) = match last_submission.as_ref() {
+                    Some(HoyolabSubmitResult::Submitted(outcome)) => (
+                        *outcome,
+                        format!(
+                            "签到成功，第 {attempts} 次尝试后复查确认今日已签到，累计 {total_sign_day} 天"
+                        ),
+                    ),
+                    Some(HoyolabSubmitResult::Failed(_)) => (
+                        TaskOutcome::Success,
+                        format!(
+                            "签到请求返回错误，但第 {attempts} 次尝试后复查确认今日已签到，累计 {total_sign_day} 天"
+                        ),
+                    ),
+                    None => unreachable!("只有实际提交过签到请求后才会进入复查成功分支"),
+                };
+                report.push(record(
+                    account,
+                    "HoYoLAB 签到",
+                    subject,
+                    outcome,
+                    &with_reward(&confirmation, rewards.as_deref(), total_sign_day),
+                ));
+                return;
+            }
+            Ok(CheckinState::Pending { .. }) if attempts >= max_attempts => {
+                push_hoyolab_attempts_exhausted(
+                    report,
+                    account,
+                    subject,
+                    attempts,
+                    last_submission,
+                );
+                return;
+            }
+            Ok(CheckinState::Pending { .. }) => {}
+            Err(error) if attempts == 0 => {
+                push_hoyolab_error(report, account, subject, error);
+                return;
+            }
+            Err(error) => {
+                report.push(record(
+                    account,
+                    "HoYoLAB 签到",
+                    subject,
+                    TaskOutcome::NetworkFailed,
+                    &format!(
+                        "第 {attempts} 次签到提交后复查失败，未继续提交以避免重复签到：{error}"
+                    ),
+                ));
+                return;
+            }
         }
-        Ok(CheckinState::Pending { .. }) => report.push(record(
-            account,
-            "HoYoLAB 签到",
-            subject,
-            TaskOutcome::NetworkFailed,
-            "签到接口返回成功，但再次查询仍显示未签到",
-        )),
-        Ok(CheckinState::FirstBind) => report.push(record(
-            account,
-            "HoYoLAB 签到",
-            subject,
-            TaskOutcome::NetworkFailed,
-            "签到接口返回成功，但再次查询显示需要首次手动签到",
-        )),
-        Err(error) => report.push(record(
-            account,
-            "HoYoLAB 签到",
-            subject,
-            TaskOutcome::NetworkFailed,
-            &format!("签到接口返回成功，但再次确认失败：{error}"),
-        )),
+
+        attempts += 1;
+        match client.sign_once(game).await {
+            Ok(SignState::Success) => {
+                last_submission = Some(HoyolabSubmitResult::Submitted(TaskOutcome::Success));
+            }
+            Ok(SignState::AlreadySigned) => {
+                last_submission = Some(HoyolabSubmitResult::Submitted(
+                    TaskOutcome::AlreadyCompleted,
+                ));
+            }
+            Ok(SignState::CaptchaRequired { .. }) => {
+                report.push(record(
+                    account,
+                    "HoYoLAB 签到",
+                    subject,
+                    TaskOutcome::CaptchaRequired,
+                    "触发验证码，已停止本次签到",
+                ));
+                return;
+            }
+            Err(error) => {
+                last_submission = Some(HoyolabSubmitResult::Failed(error));
+            }
+        }
     }
+}
+
+fn push_hoyolab_attempts_exhausted(
+    report: &mut RunReport,
+    account: &str,
+    subject: &str,
+    attempts: u32,
+    last_submission: Option<HoyolabSubmitResult>,
+) {
+    let (outcome, detail) = match last_submission {
+        Some(HoyolabSubmitResult::Failed(HoyolabCheckinError::CookieInvalid)) => (
+            TaskOutcome::AuthenticationFailed,
+            "最后一次签到请求显示 Cookie 无效或已过期".to_owned(),
+        ),
+        Some(HoyolabSubmitResult::Failed(HoyolabCheckinError::Http(_))) => (
+            TaskOutcome::NetworkFailed,
+            "最后一次签到请求网络失败".to_owned(),
+        ),
+        Some(HoyolabSubmitResult::Failed(error)) => (
+            TaskOutcome::Failed,
+            format!("最后一次签到请求失败：{error}"),
+        ),
+        Some(HoyolabSubmitResult::Submitted(_)) | None => (
+            TaskOutcome::NetworkFailed,
+            "每次提交后复查都仍显示今日未签到".to_owned(),
+        ),
+    };
+    report.push(record(
+        account,
+        "HoYoLAB 签到",
+        subject,
+        outcome,
+        &format!("已达到配置的 {attempts} 次签到尝试；{detail}"),
+    ));
 }
 
 fn with_reward(base: &str, rewards: Option<&[Reward]>, total_sign_day: u32) -> String {
@@ -654,6 +751,18 @@ fn with_reward(base: &str, rewards: Option<&[Reward]>, total_sign_day: u32) -> S
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use reqwest::Url;
+    use serde_json::json;
+    use wiremock::{
+        Mock, MockServer, Request, ResponseTemplate,
+        matchers::{method, path},
+    };
+
     use super::*;
 
     #[test]
@@ -663,14 +772,86 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_captcha_endpoint_is_reported_without_retrying() {
+    async fn missing_captcha_endpoint_stops_before_captcha_submission() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/event/luna/sign"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": {"success": 1, "gt": "gt", "challenge": "challenge"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
         let http = HttpClient::builder().build().unwrap();
         let client =
-            ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id");
+            ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id")
+                .endpoint_override(Url::parse(&server.uri()).unwrap());
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let result = submit_china_sign_once(
+            &client,
+            None,
+            &mut signer,
+            ChinaGame::Genshin,
+            "cn_gf01",
+            "10001",
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            ChinaSubmitResult::CaptchaBlocked(message) if message.contains("captcha.endpoint")
+        ));
+    }
+
+    #[tokio::test]
+    async fn retries_only_while_status_still_reports_pending() {
+        let server = MockServer::start().await;
+        let status_count = Arc::new(AtomicUsize::new(0));
+        let responder_count = Arc::clone(&status_count);
+        Mock::given(method("GET"))
+            .and(path("/event/luna/info"))
+            .respond_with(move |_request: &Request| {
+                let request = responder_count.fetch_add(1, Ordering::SeqCst) + 1;
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": {
+                        "total_sign_day": if request >= 3 { 15 } else { 14 },
+                        "is_sign": request >= 3,
+                        "first_bind": false
+                    }
+                }))
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/event/luna/sign"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": {"success": 0, "gt": "", "challenge": ""}
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let http = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 1,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+        let client =
+            ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id")
+                .endpoint_override(Url::parse(&server.uri()).unwrap());
         let mut signer = DsSigner::new(SystemClock, ThreadRandom);
         let mut report = RunReport::default();
 
-        solve_captcha_and_retry(
+        run_china_role(
             &mut report,
             "account",
             "原神 / ***0001",
@@ -680,15 +861,128 @@ mod tests {
             ChinaGame::Genshin,
             "cn_gf01",
             "10001",
-            "gt",
-            "challenge",
             None,
+            3,
+        )
+        .await;
+
+        assert_eq!(status_count.load(Ordering::SeqCst), 3);
+        assert_eq!(report.records.len(), 1);
+        assert_eq!(report.records[0].outcome, TaskOutcome::Success);
+        assert!(report.records[0].message.contains("第 2 次尝试后复查确认"));
+    }
+
+    #[tokio::test]
+    async fn stops_after_configured_attempts_when_status_remains_pending() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/event/luna/info"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": {
+                    "total_sign_day": 14,
+                    "is_sign": false,
+                    "first_bind": false
+                }
+            })))
+            .expect(4)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/event/luna/sign"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": {"success": 0, "gt": "", "challenge": ""}
+            })))
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let http = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 1,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+        let client =
+            ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id")
+                .endpoint_override(Url::parse(&server.uri()).unwrap());
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut report = RunReport::default();
+
+        run_china_role(
+            &mut report,
+            "account",
+            "原神 / ***0001",
+            &client,
+            None,
+            &mut signer,
+            ChinaGame::Genshin,
+            "cn_gf01",
+            "10001",
+            None,
+            3,
         )
         .await;
 
         assert_eq!(report.records.len(), 1);
-        assert_eq!(report.records[0].outcome, TaskOutcome::CaptchaRequired);
-        assert!(report.records[0].message.contains("captcha.endpoint"));
+        assert_eq!(report.records[0].outcome, TaskOutcome::NetworkFailed);
+        assert!(report.records[0].message.contains("3 次签到尝试"));
+    }
+
+    #[tokio::test]
+    async fn hoyolab_retries_only_after_pending_confirmation() {
+        let server = MockServer::start().await;
+        let status_count = Arc::new(AtomicUsize::new(0));
+        let responder_count = Arc::clone(&status_count);
+        Mock::given(method("GET"))
+            .and(path("/info"))
+            .respond_with(move |_request: &Request| {
+                let request = responder_count.fetch_add(1, Ordering::SeqCst) + 1;
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": {
+                        "total_sign_day": if request >= 3 { 15 } else { 14 },
+                        "is_sign": request >= 3,
+                        "first_bind": false
+                    }
+                }))
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sign"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": null
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let http = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 1,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+        let client = HoyolabCheckinClient::new(http, SecretString::new("ltoken=secret"))
+            .endpoint_override(Url::parse(&server.uri()).unwrap());
+        let mut report = RunReport::default();
+
+        run_hoyolab_game(&mut report, "account", &client, HoyolabGame::Genshin, 3).await;
+
+        assert_eq!(status_count.load(Ordering::SeqCst), 3);
+        assert_eq!(report.records.len(), 1);
+        assert_eq!(report.records[0].outcome, TaskOutcome::Success);
+        assert!(report.records[0].message.contains("第 2 次尝试后复查确认"));
     }
 
     #[test]

@@ -312,6 +312,7 @@ mod tests {
         assert_eq!(account.device.model, "Fixture Model");
         assert_eq!(account.device.fp, "fixture-device-fp");
         assert_eq!(migrated.config.runtime.retry_count, 4);
+        assert_eq!(migrated.config.runtime.game_checkin_max_attempts, 3);
         assert!(!format!("{:?}", migrated.config).contains("fixture-cookie-token"));
         assert!(
             !migrated

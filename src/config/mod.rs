@@ -89,6 +89,8 @@ pub struct RuntimeConfig {
     pub request_timeout_seconds: u64,
     #[serde(default = "default_retry_count")]
     pub retry_count: u32,
+    #[serde(default = "default_game_checkin_max_attempts")]
+    pub game_checkin_max_attempts: u32,
     #[serde(default = "default_random_delay")]
     pub random_delay_seconds: u64,
     #[serde(default)]
@@ -103,6 +105,7 @@ impl Default for RuntimeConfig {
             timezone: default_timezone(),
             request_timeout_seconds: default_timeout(),
             retry_count: default_retry_count(),
+            game_checkin_max_attempts: default_game_checkin_max_attempts(),
             random_delay_seconds: default_random_delay(),
             log_level: LogLevel::default(),
             logging: LoggingConfig::default(),
@@ -604,6 +607,9 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     if config.runtime.retry_count > 10 {
         errors.push("runtime.retry_count 必须在 0..=10 之间".to_owned());
     }
+    if !(1..=10).contains(&config.runtime.game_checkin_max_attempts) {
+        errors.push("runtime.game_checkin_max_attempts 必须在 1..=10 之间".to_owned());
+    }
     if config.runtime.random_delay_seconds > 3600 {
         errors.push("runtime.random_delay_seconds 必须在 0..=3600 之间".to_owned());
     }
@@ -935,6 +941,7 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                 "timezone",
                 "request_timeout_seconds",
                 "retry_count",
+                "game_checkin_max_attempts",
                 "random_delay_seconds",
                 "log_level",
                 "logging",
@@ -1171,6 +1178,9 @@ const fn default_timeout() -> u64 {
 const fn default_retry_count() -> u32 {
     3
 }
+const fn default_game_checkin_max_attempts() -> u32 {
+    3
+}
 const fn default_random_delay() -> u64 {
     10
 }
@@ -1327,6 +1337,7 @@ accounts:
         let loaded = parse(MINIMAL).unwrap();
         assert_eq!(loaded.config.runtime.request_timeout_seconds, 30);
         assert_eq!(loaded.config.runtime.timezone, "Asia/Shanghai");
+        assert_eq!(loaded.config.runtime.game_checkin_max_attempts, 3);
         assert_eq!(
             loaded.config.accounts[0].credentials.cookie.expose_secret(),
             "account_id=123; cookie_token=secret"
@@ -1531,6 +1542,19 @@ accounts:
         assert!(
             matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.len() == 3)
         );
+    }
+
+    #[test]
+    fn rejects_game_checkin_attempts_outside_safe_range() {
+        for max_attempts in [0, 11] {
+            let source = MINIMAL.replace(
+                "accounts:",
+                &format!("runtime:\n  game_checkin_max_attempts: {max_attempts}\naccounts:"),
+            );
+            assert!(
+                matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("runtime.game_checkin_max_attempts")))
+            );
+        }
     }
 
     #[test]

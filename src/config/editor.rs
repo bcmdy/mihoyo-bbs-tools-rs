@@ -292,6 +292,7 @@ pub fn set_runtime(
     timezone: &str,
     timeout: u64,
     retry: u32,
+    game_checkin_max_attempts: u32,
     delay: u64,
     level: &str,
 ) -> Result<(), ConfigError> {
@@ -310,6 +311,10 @@ pub fn set_runtime(
             Value::Number(timeout.into()),
         );
         runtime.insert(key("retry_count"), Value::Number(retry.into()));
+        runtime.insert(
+            key("game_checkin_max_attempts"),
+            Value::Number(game_checkin_max_attempts.into()),
+        );
         runtime.insert(key("random_delay_seconds"), Value::Number(delay.into()));
         runtime.insert(key("log_level"), Value::String(level.into()));
         Ok(())
@@ -804,6 +809,7 @@ mod tests {
         assert!(!written.contains("MIHOYO_COOKIE"));
         for field in [
             "timezone:",
+            "game_checkin_max_attempts:",
             "logging:",
             "endpoint:",
             "stoken:",

@@ -43,6 +43,8 @@ fn runtime_request(path: &Path) -> Result<(), ConfigError> {
     let timezone = prompt_keep("时区", &c.timezone)?;
     let timeout = prompt_number_keep("请求超时秒数", c.request_timeout_seconds)?;
     let retry = prompt_u32_keep("重试次数", c.retry_count)?;
+    let game_checkin_max_attempts =
+        prompt_u32_keep("游戏签到最大尝试次数", c.game_checkin_max_attempts)?;
     let delay = prompt_number_keep("随机延迟秒数", c.random_delay_seconds)?;
     println!("日志级别：1.trace 2.debug 3.info 4.warn 5.error，留空保留当前值");
     let current_level = log_level_name(c.log_level);
@@ -54,7 +56,15 @@ fn runtime_request(path: &Path) -> Result<(), ConfigError> {
         Some(5) => "error",
         _ => current_level,
     };
-    set_runtime(path, &timezone, timeout, retry, delay, level)
+    set_runtime(
+        path,
+        &timezone,
+        timeout,
+        retry,
+        game_checkin_max_attempts,
+        delay,
+        level,
+    )
 }
 
 fn runtime_logging(path: &Path) -> Result<(), ConfigError> {
