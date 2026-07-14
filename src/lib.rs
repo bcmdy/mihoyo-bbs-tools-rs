@@ -6,6 +6,7 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod http;
+pub mod launcher;
 pub mod push;
 pub mod service;
 pub mod signing;
