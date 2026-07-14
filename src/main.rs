@@ -14,6 +14,9 @@ mod file_logging;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("安装 ring TLS provider");
     let cli = Cli::parse();
     let runtime =
         cli_config_path(&cli).and_then(|path| config::load(path).ok().map(|v| v.config.runtime));

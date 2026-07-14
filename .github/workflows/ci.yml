@@ -79,6 +79,16 @@ jobs:
       - name: 检查格式
         run: cargo fmt --all -- --check
 
+      - name: 检查 TLS 依赖
+        shell: bash
+        run: |
+          tree=$(cargo tree --locked -e normal)
+          if grep -qE 'aws-lc-(rs|sys)' <<< "$tree"; then
+            echo "正常依赖中仍包含 AWS-LC" >&2
+            exit 1
+          fi
+          grep -q 'ring v' <<< "$tree"
+
       - name: Clippy 静态检查
         run: |
           set +e
