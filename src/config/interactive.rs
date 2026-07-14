@@ -10,7 +10,7 @@ use std::{
     path::Path,
 };
 
-pub fn setup(path: &Path) -> Result<(), ConfigError> {
+pub async fn setup(path: &Path) -> Result<(), ConfigError> {
     if !io::stdin().is_terminal() {
         return Err(ConfigError::Edit("config setup 需要交互式终端".into()));
     }
@@ -20,7 +20,7 @@ pub fn setup(path: &Path) -> Result<(), ConfigError> {
             None | Some(0) => return Ok(()),
             Some(1) => runtime(path)?,
             Some(2) => captcha(path)?,
-            Some(3) => accounts(path)?,
+            Some(3) => accounts(path).await?,
             Some(4) => notifications(path)?,
             Some(5) => println!("配置有效：{} 个账号", load(path)?.config.accounts.len()),
             Some(6) => edit_file(path)?,
@@ -79,7 +79,7 @@ fn captcha(path: &Path) -> Result<(), ConfigError> {
     set_captcha_endpoint(path, endpoint.as_deref())
 }
 
-fn accounts(path: &Path) -> Result<(), ConfigError> {
+async fn accounts(path: &Path) -> Result<(), ConfigError> {
     loop {
         println!("账号：1.添加 2.基本信息 3.更新 Cookie 4.设备 5.代理 6.任务 7.游戏 8.删除 0.返回");
         match read_number(8)? {
@@ -87,11 +87,12 @@ fn accounts(path: &Path) -> Result<(), ConfigError> {
             Some(1) => {
                 let remark = prompt("可选备注(留空不设置)")?;
                 let name =
-                    add_account_from_stdin(path, (!remark.is_empty()).then_some(remark.as_str()))?;
+                    add_account_from_stdin(path, (!remark.is_empty()).then_some(remark.as_str()))
+                        .await?;
                 println!("已添加账号：{name}");
             }
             Some(2) => account_general(path)?,
-            Some(3) => account_cookie(path)?,
+            Some(3) => account_cookie(path).await?,
             Some(4) => account_device(path)?,
             Some(5) => account_proxy(path)?,
             Some(6) => tasks(path)?,
@@ -121,7 +122,7 @@ fn account_general(path: &Path) -> Result<(), ConfigError> {
     set_account_general(path, &name, enabled, remark.as_deref())
 }
 
-fn account_cookie(path: &Path) -> Result<(), ConfigError> {
+async fn account_cookie(path: &Path) -> Result<(), ConfigError> {
     let Some(name) = choose(path)? else {
         return Ok(());
     };
@@ -130,7 +131,7 @@ fn account_cookie(path: &Path) -> Result<(), ConfigError> {
     if cookie.is_empty() {
         return Ok(());
     }
-    let new_name = replace_account_cookie(path, &name, &cookie)?;
+    let new_name = replace_account_cookie(path, &name, &cookie).await?;
     println!("Cookie、SToken 与米游社昵称已更新：{new_name}");
     Ok(())
 }

@@ -9,7 +9,9 @@ use serde_yaml_ng::{Mapping, Value};
 
 use crate::auth::CookieJar;
 #[cfg(not(test))]
-use reqwest::header::{COOKIE, USER_AGENT};
+use crate::http::HttpClient;
+#[cfg(not(test))]
+use reqwest::header::{COOKIE, HeaderMap, HeaderValue, USER_AGENT};
 #[cfg(not(test))]
 use serde::Deserialize;
 use url::Url;
@@ -57,17 +59,24 @@ pub fn edit_file(path: &Path) -> Result<(), ConfigError> {
     replace_validated(path, &updated)
 }
 
-pub fn add_account_from_stdin(path: &Path, name: Option<&str>) -> Result<String, ConfigError> {
+pub async fn add_account_from_stdin(
+    path: &Path,
+    name: Option<&str>,
+) -> Result<String, ConfigError> {
     eprintln!("请输入完整 Cookie（输入内容不会写入日志）：");
     let mut cookie = String::new();
     io::stdin()
         .lock()
         .read_line(&mut cookie)
         .map_err(|_| ConfigError::Edit("无法从标准输入读取 Cookie".to_owned()))?;
-    add_account(path, name, cookie.trim())
+    add_account(path, name, cookie.trim()).await
 }
 
-pub fn add_account(path: &Path, name: Option<&str>, cookie: &str) -> Result<String, ConfigError> {
+pub async fn add_account(
+    path: &Path,
+    name: Option<&str>,
+    cookie: &str,
+) -> Result<String, ConfigError> {
     let jar =
         CookieJar::parse(cookie).map_err(|_| ConfigError::Edit("Cookie 格式无效".to_owned()))?;
     let stoken = jar
@@ -76,7 +85,7 @@ pub fn add_account(path: &Path, name: Option<&str>, cookie: &str) -> Result<Stri
         .ok_or_else(|| {
             ConfigError::Edit("Cookie 中缺少 stoken，请重新获取完整 Cookie".to_owned())
         })?;
-    let nickname = fetch_nickname(cookie, jar.uid().unwrap_or_default())?;
+    let nickname = fetch_nickname(cookie, jar.uid().unwrap_or_default()).await?;
     let mut account_name = format_account_name(&nickname);
 
     let existed = path.exists();
@@ -159,7 +168,7 @@ struct ProfileInfo {
 }
 
 #[cfg(test)]
-fn fetch_nickname(cookie: &str, _uid: &str) -> Result<String, ConfigError> {
+async fn fetch_nickname(cookie: &str, _uid: &str) -> Result<String, ConfigError> {
     if cookie.is_empty() {
         Err(ConfigError::Edit("Cookie 不能为空".to_owned()))
     } else {
@@ -168,15 +177,24 @@ fn fetch_nickname(cookie: &str, _uid: &str) -> Result<String, ConfigError> {
 }
 
 #[cfg(not(test))]
-fn fetch_nickname(cookie: &str, uid: &str) -> Result<String, ConfigError> {
+async fn fetch_nickname(cookie: &str, uid: &str) -> Result<String, ConfigError> {
     let url = profile_url(uid);
-    let response: ProfileEnvelope = reqwest::blocking::Client::new()
-        .get(url)
-        .header(COOKIE, cookie)
-        .header(USER_AGENT, "Mozilla/5.0 miHoYoBBS/2.84.1")
-        .send()
-        .and_then(|v| v.error_for_status())
-        .and_then(|v| v.json())
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        COOKIE,
+        HeaderValue::from_str(cookie)
+            .map_err(|_| ConfigError::Edit("Cookie 包含无效请求头字符".to_owned()))?,
+    );
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_static("Mozilla/5.0 miHoYoBBS/2.84.1"),
+    );
+    let client = HttpClient::builder()
+        .build()
+        .map_err(|_| ConfigError::Edit("昵称查询客户端初始化失败".to_owned()))?;
+    let response: ProfileEnvelope = client
+        .get_json_with(url, headers, &[])
+        .await
         .map_err(|_| ConfigError::Edit("无法获取米游社昵称，请检查 Cookie 和网络".to_owned()))?;
     let retcode = response.retcode;
     let nickname = response
@@ -408,7 +426,7 @@ pub fn set_account_proxy(path: &Path, name: &str, proxy: Option<&str>) -> Result
     })
 }
 
-pub fn replace_account_cookie(
+pub async fn replace_account_cookie(
     path: &Path,
     old_name: &str,
     cookie: &str,
@@ -419,7 +437,7 @@ pub fn replace_account_cookie(
         .get("stoken")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ConfigError::Edit("Cookie 中缺少 stoken".to_owned()))?;
-    let nickname = fetch_nickname(cookie, jar.uid().unwrap_or_default())?;
+    let nickname = fetch_nickname(cookie, jar.uid().unwrap_or_default()).await?;
     let mut new_name = format_account_name(&nickname);
     mutate_raw(path, |root| {
         let accounts = accounts_mut(root)?;
@@ -777,8 +795,8 @@ fn write_error(path: &Path, source: std::io::Error) -> ConfigError {
 mod tests {
     use super::*;
 
-    #[test]
-    fn add_account_creates_missing_parent_and_valid_config() {
+    #[tokio::test]
+    async fn add_account_creates_missing_parent_and_valid_config() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("nested/config.yaml");
         let name = add_account(
@@ -786,6 +804,7 @@ mod tests {
             Some("测试账号"),
             "account_id=123; account_mid_v2=mid; stoken=v2_secret",
         )
+        .await
         .unwrap();
         assert_eq!(name, "mys用户:测试昵称");
         let loaded = load(&path).unwrap();
@@ -817,11 +836,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn invalid_cookie_does_not_create_parent() {
+    #[tokio::test]
+    async fn invalid_cookie_does_not_create_parent() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("missing/config.yaml");
-        assert!(add_account(&path, None, "invalid").is_err());
+        assert!(add_account(&path, None, "invalid").await.is_err());
         assert!(!path.parent().unwrap().exists());
     }
 
@@ -833,8 +852,8 @@ mod tests {
         assert_eq!(format_account_name(" 测试昵称 "), "mys用户:测试昵称");
     }
 
-    #[test]
-    fn refreshed_cookie_is_persisted_without_changing_account_identity() {
+    #[tokio::test]
+    async fn refreshed_cookie_is_persisted_without_changing_account_identity() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.yaml");
         let name = add_account(
@@ -842,6 +861,7 @@ mod tests {
             Some("备注"),
             "account_id=123; account_mid_v2=mid; stoken=v2_secret; cookie_token=old",
         )
+        .await
         .unwrap();
 
         assert!(

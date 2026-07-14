@@ -8,7 +8,7 @@ use mihoyo_bbs_tools::{
     push::{self, DeliveryStatus},
     service,
 };
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
 
 mod file_logging;
 
@@ -101,13 +101,13 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             println!("该 BAT 可移动到其他位置，仍会从当前程序目录运行 MihoyoBBSToolsRS。");
         }
         Command::Config { command } => match command {
-            ConfigCommand::Setup { config: path } => config::interactive_setup(&path)?,
+            ConfigCommand::Setup { config: path } => config::interactive_setup(&path).await?,
             ConfigCommand::Edit { config: path } => {
                 config::edit_file(&path)?;
                 println!("配置已更新：{}", path.display());
             }
             ConfigCommand::AddAccount { config: path, name } => {
-                let added = config::add_account_from_stdin(&path, name.as_deref())?;
+                let added = config::add_account_from_stdin(&path, name.as_deref()).await?;
                 println!("已添加账号：{added}");
             }
             ConfigCommand::RemoveAccount { config: path, name } => {
@@ -157,17 +157,23 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
 fn init_tracing(
     runtime: Option<&config::RuntimeConfig>,
 ) -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    let level = runtime
-        .map(|r| format!("{:?}", r.log_level).to_lowercase())
-        .unwrap_or_else(|| "info".into());
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|value| value.parse::<LevelFilter>().ok())
+        .unwrap_or_else(|| match runtime.map(|value| value.log_level) {
+            Some(config::LogLevel::Trace) => LevelFilter::TRACE,
+            Some(config::LogLevel::Debug) => LevelFilter::DEBUG,
+            Some(config::LogLevel::Warn) => LevelFilter::WARN,
+            Some(config::LogLevel::Error) => LevelFilter::ERROR,
+            Some(config::LogLevel::Info) | None => LevelFilter::INFO,
+        });
     if let Some(logging) = runtime.map(|r| &r.logging).filter(|v| v.enabled) {
         if let Ok(appender) =
             file_logging::DailyFileAppender::new(&logging.directory, &logging.file_prefix)
         {
             let (writer, guard) = tracing_appender::non_blocking(appender);
             tracing_subscriber::fmt()
-                .with_env_filter(filter)
+                .with_max_level(level)
                 .with_target(false)
                 .with_ansi(false)
                 .with_writer(writer)
@@ -176,7 +182,7 @@ fn init_tracing(
         }
     }
     tracing_subscriber::fmt()
-        .with_env_filter(filter)
+        .with_max_level(level)
         .with_target(false)
         .without_time()
         .init();
