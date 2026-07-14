@@ -1,0 +1,28 @@
+name: TLS 真实握手测试
+
+on:
+  push:
+    branches:
+      - "codex/size-optimization"
+    paths:
+      - ".github/workflows/tls-smoke.yml"
+      - "tests/tls_smoke.rs"
+
+permissions:
+  contents: read
+
+jobs:
+  tls:
+    name: ring TLS 公开端点
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: 执行 HTTPS 握手测试
+        run: cargo test --locked --test tls_smoke -- --ignored --nocapture
