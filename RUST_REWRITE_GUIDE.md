@@ -14,7 +14,7 @@
 | 命令行可执行文件名 | `MihoyoBBSToolsRS` |
 | 默认本地目录名 | `mihoyo-bbs-tools-rs` |
 
-仓库名称中的 `-rs` 用于明确表示这是 Rust 重构项目；Cargo 包名和可执行文件名不重复添加 `-rs`，以保持命令简洁。
+仓库名称中的 `-rs` 用于明确表示这是 Rust 重构项目；Cargo 包名保持简洁，发布可执行文件统一命名为 `MihoyoBBSToolsRS`。
 
 README、发布说明和项目网站中必须包含以下非官方声明：
 
@@ -118,28 +118,54 @@ codex/docker
 | Cron 表达式 | `cron` |
 | 命令行 | `clap` |
 | 日志 | `tracing`、`tracing-subscriber` |
-| 错误类型 | `thiserror`、`anyhow` |
+| 错误类型 | `thiserror` |
 | 随机数 | `rand` |
 | UUID | `uuid` |
 | MD5 | `md-5` |
 | SHA256/HMAC | `sha2`、`hmac` |
 | Base64 | `base64` |
 | URL | `url` |
-| 敏感字符串 | `secrecy` |
+| 敏感字符串 | 项目自定义 `SecretString` |
 | 测试 HTTP 服务 | `wiremock`，仅开发依赖 |
 | 临时文件 | `tempfile`，仅开发依赖 |
 
-HTTP 客户端必须优先使用纯 Rust TLS：
+HTTP 客户端使用 `rustls`，并显式选择 `ring` 密码学 provider：
 
 ```toml
 reqwest = {
     version = "0.13",
     default-features = false,
-    features = ["json", "rustls", "socks"]
+    features = ["form", "json", "query", "rustls-no-provider", "socks"]
+}
+rustls = {
+    version = "0.23",
+    default-features = false,
+    features = ["ring", "std", "tls12"]
 }
 ```
 
-开始实施时应由 CI 确认各 crate 的实际兼容版本，并提交 `Cargo.lock`。应用程序仓库必须提交锁文件，以保证 Actions 构建可重复。
+程序入口和统一 HTTP 客户端都会确保进程级 `ring` provider 已安装，因而不经过二进制入口的库测试也可以正常建立 TLS 连接。CI 检查普通依赖树，发现 `aws-lc-rs` 或 `aws-lc-sys` 时直接失败。
+
+当前任务流程按顺序执行，没有依赖多线程调度器，因此 Tokio 仅启用 `macros`、`rt` 和 `time`，主入口使用 current-thread runtime。后续若引入并发任务，应重新评估这一选择。
+
+应用程序仓库必须提交 `Cargo.lock`，CI、Release 和 Docker 均使用锁定依赖，以保证 Actions 构建可重复。
+
+### 3.1 构建体积优化
+
+Release 构建使用以下配置：
+
+```toml
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+```
+
+该配置优先缩减发布体积。完整 LTO 和单 codegen unit 可能增加 CI 编译时间；`opt-level = "z"` 优先体积而非纯计算性能；`panic = "abort"` 会在 panic 时直接终止进程，不执行栈展开。项目主要受网络 I/O 限制，预计运行时影响有限，但引入 CPU 密集型功能时应重新测量。
+
+各阶段实测数据和取舍见 [构建体积优化记录](docs/size-optimization.md)。发布包不默认使用 UPX，以避免杀毒软件误报和启动时解压。
 
 ## 4. 推荐目录结构
 
@@ -392,12 +418,12 @@ pub trait Task {
 
 ### 当前实现进度
 
-截至当前 `main` 分支，各阶段状态如下。标记“已完成”表示代码、离线测试和普通 CI 已具备；真实接口、镜像或发布产物仍需人工验证的项目不会提前标记完成。
+截至 `codex/size-optimization` 实验分支，各阶段状态如下。本节中的依赖与体积优化尚未合并到 `main`，不代表主分支当前状态。标记“已完成”表示代码、离线测试和普通 CI 已具备；真实接口、镜像或发布产物仍需人工验证的项目不会提前标记完成。
 
 | 阶段 | 状态 | 说明 |
 |---|---|---|
-| 阶段 0：初始化仓库 | 部分完成 | Rust 2024 工程、README、许可证和普通 CI 已完成；`Cargo.lock` 尚未提交。 |
-| 阶段 1：配置、日志与 HTTP | 大部分完成 | YAML、多账号、环境变量替换、校验、代理、重试、运行时日志级别、按日文件日志和 Secret 脱敏已实现；HTTP 响应体限制及更完整的重试/超时合约测试仍需补齐。 |
+| 阶段 0：初始化仓库 | 已完成 | Rust 2024 工程、README、许可证、CI 与 `Cargo.lock` 已提交；CI、Release 和 Docker 均使用锁定依赖。 |
+| 阶段 1：配置、日志与 HTTP | 大部分完成 | YAML、多账号、环境变量替换、校验、代理、重试、全局日志级别、按日文件日志和 Secret 脱敏已实现；HTTP 响应体限制及更完整的重试/超时合约测试仍需补齐。`RUST_LOG` 仅接受全局级别，不支持模块过滤表达式。 |
 | 阶段 2：账号与认证 | 大部分完成 | Cookie、SToken、登录票据与 `cookie_token` 刷新、设备 ID/FP 请求契约、DS 与 MD5 已实现；HMAC-SHA256 已用于钉钉，通用签名抽象和固定测试向量仍待补充。 |
 | 阶段 3：国内游戏签到 | 代码完成，待真实验收 | 六款国服游戏、角色查询、状态查询、签到、成功复查、当天奖励详情、设备 ID 与错误分类已实现；真实账号仍需人工验证。 |
 | 阶段 4：HoYoLAB 国际服签到 | 代码完成，待真实验收 | 五款国际服游戏、多账号、独立接口、成功复查、当天奖励详情与统一报告已实现；真实账号仍需人工验证。 |
@@ -411,15 +437,14 @@ pub trait Task {
 
 按阻塞程度排序：
 
-1. 提交 `Cargo.lock`，让 CI、Release 和 Docker 使用可重复的锁定依赖。
-2. 增加手动真实接口测试工作流和人工验收记录，验证国内签到、HoYoLAB 与米游社任务。
-3. 使用真实账号验收验证码求解闭环和首批推送渠道。
-4. 迁移国内/国际云游戏和 Web 活动，并避免配置开启后被静默忽略。
-5. 按实际需求补充 SMTP 邮件和 Windows 本地通知。
-6. 增加 GitHub Actions 定时运行，并实际消费时区和随机延迟配置。
-7. 增加 Docker 构建/运行工作流，验证最终镜像可在无 Rust 环境运行。
-8. 补齐通用 SHA256/HMAC 签名抽象及固定测试向量、HTTP 响应体大小限制、重试/超时合约测试和多账号故障隔离测试。
-9. 增加 Secret 历史扫描、依赖许可证清单及 arm64/armv7 构建验证。
+1. 增加手动真实接口测试工作流和人工验收记录，验证国内签到、HoYoLAB 与米游社任务。
+2. 使用真实账号验收验证码求解闭环和首批推送渠道。
+3. 迁移国内/国际云游戏和 Web 活动，并避免配置开启后被静默忽略。
+4. 按实际需求补充 SMTP 邮件和 Windows 本地通知。
+5. 增加 GitHub Actions 定时运行，并实际消费时区和随机延迟配置。
+6. 增加 Docker 构建/运行工作流，验证最终镜像可在无 Rust 环境运行。
+7. 补齐通用 SHA256/HMAC 签名抽象及固定测试向量、HTTP 响应体大小限制、重试/超时合约测试和多账号故障隔离测试。
+8. 增加 Secret 历史扫描、依赖许可证清单及 arm64/armv7 构建验证。
 
 ### 已按实现完成的近期项目
 
@@ -428,6 +453,11 @@ pub trait Task {
 - [x] 米游社社区签到、阅读、点赞和分享提交后重新查询任务状态，避免仅凭动作接口误报成功。
 - [x] 社区签到板块支持账号级配置，默认顺序为大别野与原神，并迁移旧版 `checkin_list`。
 - [x] 国内签到发送设备 ID；米游社 App 类请求发送设备 ID/名称/型号及非空 FP；不需要设备字段的接口保持不发送。
+- [x] 提交 `Cargo.lock`，CI、Release 与 Docker 使用锁定依赖。
+- [x] TLS provider 切换为 `ring`，CI 阻止 AWS-LC 依赖回归，并通过公开端点真实 HTTPS 握手测试。
+- [x] 昵称查询改为异步请求并复用统一 HTTP 客户端，移除 `reqwest/blocking`。
+- [x] 精简 Tokio runtime、日志过滤依赖和未使用的错误/Secret 依赖。
+- [x] CI 输出 Linux、Windows 原始程序和发布压缩包体积。
 
 ### 阶段 0：初始化仓库
 
@@ -620,6 +650,8 @@ jobs:
 ```
 
 初期不加入第三方 Cargo 缓存 Action，先确保流程稳定。编译时间明显影响开发后，再评估缓存，并固定第三方 Action 的提交 SHA。
+
+当前 CI、Release 和 Docker 全部使用已提交的 `Cargo.lock` 与 `--locked`。CI 还检查普通依赖树，防止 AWS-LC 被间接依赖重新引入；Linux 和 Windows Release 构建会把原始程序与压缩包的精确字节数写入 Actions Summary。公开 HTTPS 握手测试保存在默认忽略的 `tests/tls_smoke.rs`，需要真实网络时单独执行，不混入普通离线测试。
 
 ### 10.2 Release 工作流
 
