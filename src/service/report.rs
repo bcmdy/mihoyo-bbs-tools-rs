@@ -1,6 +1,9 @@
 use std::fmt::Write;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+use serde::Serialize;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TaskOutcome {
     Success,
     AlreadyCompleted,
@@ -11,7 +14,7 @@ pub enum TaskOutcome {
     NetworkFailed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TaskRecord {
     pub account: String,
     pub task: String,
@@ -20,7 +23,7 @@ pub struct TaskRecord {
     pub message: String,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct RunReport {
     pub records: Vec<TaskRecord>,
 }
@@ -107,5 +110,15 @@ mod tests {
         report.push(record(TaskOutcome::AlreadyCompleted));
         report.push(record(TaskOutcome::Skipped));
         assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn json_report_has_stable_status_names_and_no_config_data() {
+        let mut report = RunReport::default();
+        report.push(record(TaskOutcome::AlreadyCompleted));
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains(r#""outcome":"already_completed""#));
+        assert!(!json.contains("cookie"));
+        assert!(!json.contains("stoken"));
     }
 }

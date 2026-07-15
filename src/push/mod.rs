@@ -44,14 +44,29 @@ impl Notification {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Telegram,
     Webhook,
     Pushplus,
+    Ftqq,
+    Pushme,
+    Cqhttp,
+    Wecom,
+    Wecomrobot,
+    Pushdeer,
+    Dingrobot,
+    Feishubot,
+    Bark,
+    Gotify,
+    Ifttt,
+    Qmsg,
+    Discord,
+    Wxpusher,
+    Serverchan3,
     Smtp,
     WindowsToast,
-    Other,
 }
 
 impl ProviderKind {
@@ -60,27 +75,42 @@ impl ProviderKind {
             Self::Telegram => "telegram",
             Self::Webhook => "webhook",
             Self::Pushplus => "pushplus",
+            Self::Ftqq => "ftqq",
+            Self::Pushme => "pushme",
+            Self::Cqhttp => "cqhttp",
+            Self::Wecom => "wecom",
+            Self::Wecomrobot => "wecomrobot",
+            Self::Pushdeer => "pushdeer",
+            Self::Dingrobot => "dingrobot",
+            Self::Feishubot => "feishubot",
+            Self::Bark => "bark",
+            Self::Gotify => "gotify",
+            Self::Ifttt => "ifttt",
+            Self::Qmsg => "qmsg",
+            Self::Discord => "discord",
+            Self::Wxpusher => "wxpusher",
+            Self::Serverchan3 => "serverchan3",
             Self::Smtp => "smtp",
             Self::WindowsToast => "windows_toast",
-            Self::Other => "other",
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DeliveryStatus {
     Sent,
     Failed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DeliveryResult {
     pub provider: ProviderKind,
     pub status: DeliveryStatus,
     pub message: String,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct PushReport {
     pub deliveries: Vec<DeliveryResult>,
 }
@@ -297,9 +327,23 @@ fn configured_kind(provider: &NotificationProvider) -> ProviderKind {
         NotificationProvider::Telegram { .. } => ProviderKind::Telegram,
         NotificationProvider::Webhook { .. } => ProviderKind::Webhook,
         NotificationProvider::Pushplus { .. } => ProviderKind::Pushplus,
+        NotificationProvider::Ftqq { .. } => ProviderKind::Ftqq,
+        NotificationProvider::Pushme { .. } => ProviderKind::Pushme,
+        NotificationProvider::Cqhttp { .. } => ProviderKind::Cqhttp,
+        NotificationProvider::Wecom { .. } => ProviderKind::Wecom,
+        NotificationProvider::Wecomrobot { .. } => ProviderKind::Wecomrobot,
+        NotificationProvider::Pushdeer { .. } => ProviderKind::Pushdeer,
+        NotificationProvider::Dingrobot { .. } => ProviderKind::Dingrobot,
+        NotificationProvider::Feishubot { .. } => ProviderKind::Feishubot,
+        NotificationProvider::Bark { .. } => ProviderKind::Bark,
+        NotificationProvider::Gotify { .. } => ProviderKind::Gotify,
+        NotificationProvider::Ifttt { .. } => ProviderKind::Ifttt,
+        NotificationProvider::Qmsg { .. } => ProviderKind::Qmsg,
+        NotificationProvider::Discord { .. } => ProviderKind::Discord,
+        NotificationProvider::Wxpusher { .. } => ProviderKind::Wxpusher,
+        NotificationProvider::Serverchan3 { .. } => ProviderKind::Serverchan3,
         NotificationProvider::Smtp { .. } => ProviderKind::Smtp,
         NotificationProvider::WindowsToast { .. } => ProviderKind::WindowsToast,
-        _ => ProviderKind::Other,
     }
 }
 
@@ -317,7 +361,7 @@ impl std::fmt::Debug for CompatProvider {
 
 impl Provider for CompatProvider {
     fn kind(&self) -> ProviderKind {
-        ProviderKind::Other
+        configured_kind(&self.config)
     }
     fn send<'a>(&'a self, n: &'a Notification) -> SendFuture<'a> {
         Box::pin(async move { self.send_inner(n).await })
@@ -848,5 +892,19 @@ mod tests {
         let debug = format!("{provider:?}");
         assert!(!debug.contains(token));
         assert!(!debug.contains("sensitive-chat-id"));
+    }
+
+    #[test]
+    fn structured_delivery_uses_specific_provider_name() {
+        let report = PushReport {
+            deliveries: vec![DeliveryResult {
+                provider: ProviderKind::Ftqq,
+                status: DeliveryStatus::Sent,
+                message: "推送成功".to_owned(),
+            }],
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains(r#""provider":"ftqq""#));
+        assert!(json.contains(r#""status":"sent""#));
     }
 }

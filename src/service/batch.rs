@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde::Serialize;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigDirectoryError {
     #[error("无法读取配置目录 {path}: {source}")]
@@ -73,14 +75,14 @@ pub fn discover_config_files(
     Ok(files)
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct BatchEntry {
     pub source: String,
     pub exit_code: u8,
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct BatchReport {
     pub entries: Vec<BatchEntry>,
 }
