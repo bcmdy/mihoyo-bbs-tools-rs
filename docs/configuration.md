@@ -1,127 +1,254 @@
-# 配置说明
+# YAML 配置参考
 
-MihoyoBBSTools RS 使用 YAML 配置，并支持通过 `${ENV_NAME}` 从环境变量或 GitHub Secrets 注入敏感值。配置加载后会先转换为统一的内部模型，业务模块不得直接依赖旧版配置结构。
+MihoyoBBSTools RS 使用 YAML 配置，默认路径是 `config/config.yaml`。本文按节点说明全部字段、默认值和取值范围；首次使用无需手写 YAML，直接执行：
 
-`runtime.random_delay_seconds` 会在每轮 `run` 或 `checkin` 开始前生成一次 `0..=配置值` 秒的随机等待；同一轮不会按账号重复累计。设为 `0` 可完全关闭随机延迟。
-
-> 当前项目仍在分阶段实现配置功能。本文档描述目标格式和兼容约束，具体可用字段以对应版本的程序校验结果为准。
-
-## 新版配置示例
-
-```yaml
-version: 1
-
-runtime:
-  timezone: Asia/Shanghai
-  request_timeout_seconds: 30
-  retry_count: 3
-  game_checkin_max_attempts: 3
-  random_delay_seconds: 10
-  log_level: info
-  logging:
-    enabled: true
-    directory: logs
-    file_prefix: mihoyo-bbs-tools
-  schedule:
-    enabled: false
-    interval_minutes: 720
-    run_on_start: true
-
-captcha:
-  endpoint: "${CAPTCHA_ENDPOINT}"
-
-accounts:
-  - name: example
-    enabled: true
-
-    credentials:
-      cookie: "${MIHOYO_COOKIE}"
-
-    device:
-      name: "Xiaomi MI 6"
-      model: "Mi 6"
-      id: ""
-      fp: ""
-
-    proxy:
-      url: null
-
-    china_checkin:
-      user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0"
-      role_blacklist:
-        genshin: []
-        honkai2: []
-        honkai3rd: []
-        tears_of_themis: []
-        star_rail: []
-        zenless_zone_zero: []
-
-    hoyolab:
-      cookie: "${HOYOLAB_COOKIE}"
-      language: zh-cn
-      user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36"
-      games:
-        - genshin
-
-    cloud_games:
-      china:
-        genshin:
-          enabled: false
-          token: null
-        zenless_zone_zero:
-          enabled: false
-          token: null
-      overseas:
-        language: zh-cn
-        genshin:
-          enabled: false
-          token: null
-
-    tasks:
-      china_game_checkin: true
-      hoyolab_checkin: false
-      bbs:
-        enabled: true
-        sign: true
-        forums:
-          - 5
-          - 2
-        read: true
-        like: true
-        cancel_like: true
-        share: true
-      china_cloud_game: false
-      overseas_cloud_game: false
-      web_activity:
-        enabled: false
-        activities:
-          - genshin_mizone
-
-    games:
-      - genshin
-      - star_rail
-      - zenless_zone_zero
-
-notifications:
-  enabled: true
-  error_only: false
-  block_keywords: []
-  providers:
-    - type: telegram
-      bot_token: "${TELEGRAM_BOT_TOKEN}"
-      chat_id: "${TELEGRAM_CHAT_ID}"
-      api_url: "https://api.telegram.org"
-      proxy: null
-
-    - type: webhook
-      url: "${WEBHOOK_URL}"
-
-    - type: pushplus
-      token: "${PUSHPLUS_TOKEN}"
-      topic: null
+```text
+MihoyoBBSToolsRS config add-account
+MihoyoBBSToolsRS config setup
 ```
 
-除 Telegram、Webhook、PushPlus 外，通知还支持：`ftqq`、`pushme`、`cqhttp`、`wecom`、`wecomrobot`、`pushdeer`、`dingrobot`、`feishubot`、`bark`、`gotify`、`ifttt`、`qmsg`、`discord`、`wxpusher`、`serverchan3`、`smtp` 和 `windows_toast`。各渠道使用与服务商对应的字段；所有凭据均建议使用环境变量注入。`error_only: true` 时仅在核心任务非成功时推送，`block_keywords` 会在发送前将正文中的指定关键词替换为等长星号。
+发布包中的 `config/config.example.yaml` 是当前版本的完整模板，包含所有配置名称和通知渠道示例。也可以随时输出与程序版本匹配的模板：
+
+```text
+MihoyoBBSToolsRS print-example-config > config.example.yaml
+```
+
+建议保留模板中的字段名，只修改值。修改后运行 `MihoyoBBSToolsRS validate-config`；该命令只读取并校验配置，不访问远程接口。
+
+## 默认行为
+
+`config add-account` 创建的新配置与完整模板默认启用原神国内游戏签到，以及大别野、原神社区签到。阅读、点赞、取消点赞、分享、HoYoLAB、云游戏、Web 活动和通知默认关闭。
+
+需要特别注意：
+
+- `run` 只执行配置中已经启用的项目；`--task` 只能缩小本次范围。
+- `runtime.random_delay_seconds` 在每轮 `run` 或 `checkin` 开始前只随机等待一次，不会按账号重复累计；设为 `0` 可关闭。
+- `${ENV_NAME}` 会在读取 YAML 时替换为同名环境变量，适合注入 Cookie、Token 和 GitHub Secrets。
+- `null`、空字符串 `""`、空列表 `[]` 含义不同，应按字段表填写。
+- YAML 必须使用空格缩进，不能使用 Tab。同级字段必须保持相同缩进。
+
+## 配置结构
+
+```text
+version
+runtime
+├── logging
+└── schedule
+captcha
+accounts[]
+├── credentials
+├── device
+├── proxy
+├── china_checkin
+│   └── role_blacklist
+├── hoyolab
+├── cloud_games
+├── tasks
+│   ├── bbs
+│   └── web_activity
+└── games
+notifications
+└── providers[]
+```
+
+字段的完整 YAML 写法以发布包中的 `config/config.example.yaml` 为准；下面的章节解释每个节点的行为。通知支持 `telegram`、`webhook`、`pushplus`、`ftqq`、`pushme`、`cqhttp`、`wecom`、`wecomrobot`、`pushdeer`、`dingrobot`、`feishubot`、`bark`、`gotify`、`ifttt`、`qmsg`、`discord`、`wxpusher`、`serverchan3`、`smtp` 和 `windows_toast`。
+
+## 全部字段与默认值
+
+### 顶层节点
+
+| 字段 | 类型 | 默认/要求 | 中文说明 |
+|---|---|---|---|
+| `version` | 整数 | 必填，固定 `1` | 配置格式版本，不要自行修改。 |
+| `runtime` | 对象 | 可省略 | 全局网络、日志和常驻调度设置。 |
+| `captcha` | 对象 | 可省略 | 验证码求解平台设置。 |
+| `accounts` | 对象列表 | 至少一个 | 账号及各账号任务设置。 |
+| `notifications` | 对象 | 默认关闭 | 所有账号结束后统一发送的通知。 |
+
+### `runtime`
+
+| 字段 | 类型 | 默认值/范围 | 中文说明 |
+|---|---|---|---|
+| `timezone` | 字符串 | `Asia/Shanghai` | IANA 时区名称，例如 `Asia/Shanghai`、`UTC`。 |
+| `request_timeout_seconds` | 整数 | `30`，1–300 | 单次网络请求超时秒数。 |
+| `retry_count` | 整数 | `3`，0–10 | GET 类读取请求的最大尝试次数（包含首次，`0` 仍至少请求一次）；可能产生副作用的 POST 由任务状态复查控制。 |
+| `game_checkin_max_attempts` | 整数 | `3`，1–10 | 国内与 HoYoLAB 游戏签到的最大提交次数；每次提交后先复查。 |
+| `random_delay_seconds` | 整数 | `10`，0–3600 | 每轮开始前在 `0..=该值` 秒中随机等待；`0` 关闭。 |
+| `log_level` | 字符串 | `info` | `trace`、`debug`、`info`、`warn`、`error`。 |
+| `logging` | 对象 | 默认启用 | 文件日志设置，见下表。 |
+| `schedule` | 对象 | 默认关闭 | `schedule` 常驻运行设置，见下表。 |
+
+`runtime.logging`：
+
+| 字段 | 类型 | 默认值 | 中文说明 |
+|---|---|---|---|
+| `enabled` | 布尔 | `true` | 是否写入日志文件。 |
+| `directory` | 路径字符串 | `logs` | 日志目录；相对路径以运行工作目录为基准。 |
+| `file_prefix` | 字符串 | `mihoyo-bbs-tools` | 文件名前缀，最终生成 `<前缀>_YYYY-MM-DD.log`。 |
+
+`runtime.schedule`：
+
+| 字段 | 类型 | 默认值/范围 | 中文说明 |
+|---|---|---|---|
+| `enabled` | 布尔 | `false` | 是否允许启动 `schedule` 命令。 |
+| `interval_minutes` | 整数 | `720`，1–10080 | 一轮完成到下一轮开始的等待分钟数。 |
+| `run_on_start` | 布尔 | `true` | `true` 启动后立即执行；`false` 先等待一个间隔。 |
+
+### `captcha`
+
+| 字段 | 类型 | 默认值 | 中文说明 |
+|---|---|---|---|
+| `endpoint` | HTTP/HTTPS URL 或 `null` | `null` | pass_nine 兼容的完整求解地址；不使用时为 `null`。 |
+
+### `accounts[]`
+
+| 字段 | 类型 | 默认/要求 | 中文说明 |
+|---|---|---|---|
+| `name` | 字符串 | 必填且唯一 | 账号显示名；自动添加时为 `mys用户:<昵称>`。 |
+| `remark` | 字符串或 `null` | `null` | 只用于区分账号的备注。 |
+| `enabled` | 布尔 | `true` | 整个账号的总开关。 |
+| `credentials` | 对象 | 必填 | 国内 Cookie 与 `stoken`。 |
+| `device` | 对象 | 有默认值 | 设备名称、型号、ID 和 FP。 |
+| `proxy` | 对象 | `url: null` | 该账号业务请求使用的代理。 |
+| `china_checkin` | 对象 | 有默认值 | 国内签到 User-Agent 与角色黑名单。 |
+| `hoyolab` | 对象 | 新账号完整写出 | HoYoLAB 独立凭据、语言和游戏。 |
+| `cloud_games` | 对象 | 默认全部关闭 | 国内与国际服云游戏设置。 |
+| `tasks` | 对象 | 建议保留全部字段 | 该账号的任务开关。 |
+| `games` | 字符串列表 | 模板为 `[genshin]` | 参与国内签到的游戏。 |
+
+`accounts[].credentials`：
+
+| 字段 | 类型 | 默认/要求 | 中文说明 |
+|---|---|---|---|
+| `cookie` | 字符串 | 必填 | 国内签到、米游社社区和 Web 活动使用的完整 Cookie。 |
+| `stoken` | 字符串 | 社区任务需要 | `config add-account` 或菜单更新 Cookie 时自动提取。 |
+
+`accounts[].device`：
+
+| 字段 | 类型 | 默认值 | 中文说明 |
+|---|---|---|---|
+| `name` | 字符串 | `Xiaomi MI 6` | 上报的设备名称。 |
+| `model` | 字符串 | `Mi 6` | 上报的设备型号。 |
+| `id` | 字符串 | `""` | 留空时按账号 Cookie 确定性生成；需要稳定设备身份时填写固定值。 |
+| `fp` | 字符串 | `""` | 米游社 App 类社区请求使用的设备指纹；留空时不发送。 |
+
+`accounts[].proxy`：
+
+| 字段 | 类型 | 默认值 | 中文说明 |
+|---|---|---|---|
+| `url` | URL 或 `null` | `null` | 支持 HTTP、HTTPS、SOCKS5、SOCKS5H；省略协议按 HTTP。 |
+
+`accounts[].china_checkin`：
+
+| 字段 | 类型 | 默认值 | 中文说明 |
+|---|---|---|---|
+| `user_agent` | 字符串 | 内置米游社移动端 UA | 国内游戏签到请求使用的 User-Agent。 |
+| `role_blacklist.genshin` | UID 列表 | `[]` | 跳过的原神完整角色 UID。 |
+| `role_blacklist.honkai2` | UID 列表 | `[]` | 跳过的崩坏学园2完整角色 UID。 |
+| `role_blacklist.honkai3rd` | UID 列表 | `[]` | 跳过的崩坏3完整角色 UID。 |
+| `role_blacklist.tears_of_themis` | UID 列表 | `[]` | 跳过的未定事件簿完整角色 UID。 |
+| `role_blacklist.star_rail` | UID 列表 | `[]` | 跳过的崩坏：星穹铁道完整角色 UID。 |
+| `role_blacklist.zenless_zone_zero` | UID 列表 | `[]` | 跳过的绝区零完整角色 UID。 |
+
+`accounts[].hoyolab`：
+
+| 字段 | 类型 | 默认/要求 | 中文说明 |
+|---|---|---|---|
+| `cookie` | 字符串 | 启用时必填 | HoYoLAB 国际服独立 Cookie。 |
+| `language` | 字符串 | `zh-cn` | `zh-cn`、`en-us`、`ja-jp`、`ko-kr`。 |
+| `user_agent` | 字符串 | 内置移动端 UA | HoYoLAB 请求使用的 User-Agent。 |
+| `games` | 字符串列表 | 启用时至少一个 | 不支持 `honkai2`，其他可用值见游戏表。 |
+
+`accounts[].cloud_games`：
+
+| 字段 | 类型 | 模板值 | 中文说明 |
+|---|---|---|---|
+| `china.genshin.enabled` | 布尔 | `false` | 国内云原神单游戏开关。 |
+| `china.genshin.token` | 字符串或 `null` | `null` | 国内云原神 Token。 |
+| `china.zenless_zone_zero.enabled` | 布尔 | `false` | 国内云绝区零单游戏开关。 |
+| `china.zenless_zone_zero.token` | 字符串或 `null` | `null` | 国内云绝区零 Token。 |
+| `overseas.language` | 字符串 | `zh-cn` | 国际服语言，可选值同 HoYoLAB。 |
+| `overseas.genshin.enabled` | 布尔 | `false` | 国际服云原神单游戏开关。 |
+| `overseas.genshin.token` | 字符串或 `null` | `null` | 国际服云原神 Token。 |
+
+`accounts[].tasks`：
+
+| 字段 | 类型 | 模板值 | 中文说明 |
+|---|---|---|---|
+| `china_game_checkin` | 布尔 | `true` | 国内游戏签到。 |
+| `hoyolab_checkin` | 布尔 | `false` | HoYoLAB 国际服签到。 |
+| `bbs` | 对象 | 见下表 | 米游社社区任务。不要写成空对象 `{}`。 |
+| `china_cloud_game` | 布尔 | `false` | 国内云游戏区域总开关。 |
+| `overseas_cloud_game` | 布尔 | `false` | 国际服云游戏区域总开关。 |
+| `web_activity` | 对象 | 见下表 | Web 活动状态处理。 |
+
+`accounts[].tasks.bbs`：
+
+| 字段 | 类型 | 模板值 | 中文说明 |
+|---|---|---|---|
+| `enabled` | 布尔 | `true` | 米游社社区任务总开关。 |
+| `sign` | 布尔 | `true` | 社区板块签到。 |
+| `forums` | 整数列表 | `[5, 2]` | 默认依次为大别野、原神；首项也用于获取帖子。 |
+| `read` | 布尔 | `false` | 阅读帖子。 |
+| `like` | 布尔 | `false` | 点赞帖子。 |
+| `cancel_like` | 布尔 | `false` | 点赞成功后取消点赞，仅在 `like: true` 时有意义。 |
+| `share` | 布尔 | `false` | 分享帖子。 |
+
+`forums` 的板块 ID：`1` 崩坏3、`2` 原神、`3` 崩坏学园2、`4` 未定事件簿、`5` 大别野、`6` 崩坏：星穹铁道、`8` 绝区零、`9` 崩坏：因缘精灵、`10` 星布谷地。列表不能包含未知或重复 ID。
+
+`accounts[].tasks.web_activity`：
+
+| 字段 | 类型 | 模板值 | 中文说明 |
+|---|---|---|---|
+| `enabled` | 布尔 | `false` | 是否处理活动状态。 |
+| `activities` | 字符串列表 | `[genshin_mizone]` | 当前只识别已结束的 `genshin_mizone`；启用后输出 `Skipped`。 |
+
+`accounts[].games` 国内签到可用值：
+
+| 值 | 游戏 |
+|---|---|
+| `genshin` | 原神 |
+| `honkai2` | 崩坏学园2 |
+| `honkai3rd` | 崩坏3 |
+| `tears_of_themis` | 未定事件簿 |
+| `star_rail` | 崩坏：星穹铁道 |
+| `zenless_zone_zero` | 绝区零 |
+
+### `notifications`
+
+| 字段 | 类型 | 默认值 | 中文说明 |
+|---|---|---|---|
+| `enabled` | 布尔 | `false` | 通知总开关；启用时至少配置一个渠道。 |
+| `error_only` | 布尔 | `false` | 只在核心任务出现失败时推送。 |
+| `block_keywords` | 字符串列表 | `[]` | 推送前替换为等长星号的关键词。 |
+| `providers` | 对象列表 | `[]` | 通知渠道列表，可同时配置多个。 |
+
+每个 `providers[]` 都必须有 `type`。各渠道字段：
+
+| `type` | 必填字段 | 可选字段 |
+|---|---|---|
+| `telegram` | `bot_token`、`chat_id` | `api_url`、`proxy` |
+| `webhook` | `url` | 无 |
+| `pushplus` | `token` | `topic` |
+| `ftqq` | `sendkey` | `api_url` |
+| `pushme` | `token` | `api_url` |
+| `cqhttp` | `url`，`qq`/`group` 二选一 | 无 |
+| `wecom` | `corp_id`、`agent_id`、`secret` | `to_user`、`api_url` |
+| `wecomrobot` | `url` | `mobile` |
+| `pushdeer` | `token` | `api_url` |
+| `dingrobot` | `webhook` | `secret` |
+| `feishubot` | `webhook` | 无 |
+| `bark` | `token` | `api_url`、`icon` |
+| `gotify` | `token`、`api_url` | `priority` |
+| `ifttt` | `event`、`key` | `api_url` |
+| `qmsg` | `key` | `api_url` |
+| `discord` | `webhook` | 无 |
+| `wxpusher` | `app_token`，`uids`/`topic_ids` 至少一项 | `api_url` |
+| `serverchan3` | `sendkey` | `tags` |
+| `smtp` | `host`、`port`、`from`、`to`、`username`、`password`、`subject` | `tls`、`timeout_seconds` |
+| `windows_toast` | 无 | `title_prefix` |
+
+通知字段的逐项用途、Telegram/微信/SMTP 设置流程见 [使用说明](使用说明.md#12-通知)。
 
 ## 验证码与推送
 
@@ -142,7 +269,7 @@ SMTP 使用 `host`、`port`、`from`、`to`、`username`、`password`、`subject
 ```text
 MihoyoBBSToolsRS config edit --config config/config.yaml
 MihoyoBBSToolsRS config add-account --config config/config.yaml --name "备注"
-MihoyoBBSToolsRS config remove-account --config config/config.yaml "备注"
+MihoyoBBSToolsRS config remove-account --config config/config.yaml "mys用户:昵称"
 MihoyoBBSToolsRS config setup --config config/config.yaml
 ```
 
@@ -160,7 +287,7 @@ MihoyoBBSToolsRS config setup --config config/config.yaml
 
 ### 交互式设置
 
-`config setup` 显式进入数字菜单，可设置请求与重试、文件日志、验证码端点、账号启用状态与备注、Cookie/SToken、设备、账号代理、国内签到 User-Agent 与角色黑名单、HoYoLAB 独立 Cookie/语言/User-Agent/游戏、云游戏、任务以及全部通知渠道。通知渠道支持在菜单中添加、编辑和删除，Telegram 的 API 地址与独立代理也可直接设置，不再要求跳转编辑器。`高级 YAML 编辑` 仅作为可选入口保留。
+`config setup` 显式进入数字菜单，可设置请求与重试、文件日志、常驻调度、验证码端点、账号启用状态与备注、Cookie/SToken、设备、账号代理、国内签到 User-Agent 与角色黑名单、HoYoLAB 独立 Cookie/语言/User-Agent/游戏、云游戏、任务以及全部通知渠道。通知渠道支持在菜单中添加、编辑和删除，Telegram 的 API 地址与独立代理也可直接设置，不再要求跳转编辑器。`高级 YAML 编辑` 仅作为可选入口保留。
 
 多选支持连续数字（如 `123`）或逗号分隔（如 `1,2,3`），重复编号会自动去重；`0` 取消当前操作且不写配置。无效、越界或空输入会提示重新输入，EOF 会安全退出。该命令只适用于交互终端；标准输入不可用或不是交互终端时会明确失败，不会无限等待。菜单和错误信息不会显示 Cookie、SToken、通知 Token 或代理认证信息。
 
@@ -194,10 +321,9 @@ MihoyoBBSToolsRS run --config - --read-only --no-notify --output json
 ## 环境变量替换
 
 - `${ENV_NAME}` 表示读取名为 `ENV_NAME` 的环境变量。
-- 环境变量不存在时，配置加载必须返回明确错误。
-- 错误信息可以包含环境变量名称，但不能包含变量值。
-- 示例配置和仓库文档只能提交占位符，不能提交真实 Secret。
-- 首版不应隐式提供敏感字段默认值。
+- 环境变量不存在时，程序会报告配置错误，并显示变量名称但不显示变量值。
+- 示例配置和公开文档只能使用占位符，不能包含真实 Secret。
+- Cookie、Token 等敏感字段没有可用的隐式默认值；启用对应功能前必须显式配置。
 
 在 GitHub Actions 中，应将 GitHub Secrets 映射为同名环境变量，而不是动态生成并上传包含明文凭据的配置 Artifact。
 
@@ -213,13 +339,13 @@ MihoyoBBSToolsRS run --config - --read-only --no-notify --output json
 - 游戏名称和推送提供商类型可识别。
 - 环境变量占位符均可解析。
 
-未知的普通字段应产生警告，可能影响认证、任务选择或网络安全的未知值必须报错。校验失败时进程退出码为 `2`。
+普通未知字段会产生警告；无法识别的认证、任务、游戏、通知或网络安全相关值会直接报错。校验失败时进程退出码为 `2`。
 
 ## 多账号
 
-每个账号拥有独立的名称、启用状态、国内凭据、HoYoLAB 凭据、设备信息、代理、任务开关和区域游戏列表。不同账号的 HTTP 客户端和认证上下文必须隔离，不能复用另一个账号的 Cookie、设备信息或代理认证信息。
+每个账号拥有独立的名称、启用状态、国内凭据、HoYoLAB 凭据、设备信息、代理、任务开关和区域游戏列表。程序不会把一个账号的 Cookie、设备信息或代理认证信息用于另一个账号。
 
-单个账号失败不应阻止其他安全任务执行，但遇到验证码时应停止该账号的高风险重复请求。全部任务结束后，由统一报告聚合每个账号的成功、已完成、跳过、失败和验证码状态。
+单个账号失败不会阻止其他可安全执行的账号任务。遇到验证码时，程序会停止无意义的高风险重复请求；全部任务结束后统一汇总成功、已完成、跳过、失败和验证码状态。
 
 ## 设备信息
 
@@ -272,7 +398,7 @@ accounts:
 
 ## 旧版配置兼容
 
-兼容层负责读取经过支持的 Python 版单账号和多账号 YAML，并转换为统一内部模型。兼容过程遵循以下规则：
+程序可以读取受支持的 Python 版单账号和多账号 YAML。兼容规则如下：
 
 - 缺失字段使用经过文档确认的安全默认值。
 - 旧版顶层 `device` 会迁移到对应账号的 `device`，保留 `name`、`model`、`id` 和 `fp`。
@@ -280,20 +406,18 @@ accounts:
 - 旧版 `games.os` 的独立 Cookie、语言和游戏选择会迁移到 `hoyolab`；旧 Python 实际未执行国际服 UID 黑名单，因此该字段只产生明确警告，不会伪装成已支持。
 - 旧版国内/国际云游戏总开关、单游戏开关、Token 和国际服语言会迁移到账号的 `cloud_games`。
 - 无法迁移的字段产生明确警告。
-- 旧格式解析完成后，业务代码只使用新版内部模型。
-- `migrate-config` 输出新版 YAML，输出内容不得包含额外日志或未脱敏 Secret。
-- 转换后的配置再次读取时应得到等价内部结果。
+- `migrate-config` 输出可直接使用的新版 YAML；生成文件包含迁移后的真实凭据，应按敏感文件保管。
 - 直接运行 Python v11–v15 配置时只进行内存迁移，凭据刷新不会写回旧文件；使用 `migrate-config` 生成的新版 YAML 后才允许安全写回。
 
 ## DaCapo JSON 适配
+
+DaCapo 是可选的第三方 JSON 配置入口。普通用户无需使用，可以忽略本节、`dacapo` 命令和发布包中的 `dacapo` 目录。
 
 `dacapo JSON_PATH` 读取 DaCapo 传入的 JSON，叶子字段同时兼容直接标量和 `{ "value": ... }`。转换全程在内存完成，不生成含 Cookie、Token 的临时 YAML 或 INI，也不会把自动刷新的凭据写回 DaCapo 输入。
 
 独立 `stuid` 和 `mid` 会在 Cookie 缺少对应值时分别补为 `account_id` 和 `account_mid_v2`；独立 `stoken` 写入统一凭据模型。`国服游戏.重试次数` 映射到 `runtime.game_checkin_max_attempts`，不是 HTTP 重试次数。国内角色黑名单完整迁移；DaCapo/原 Python 的国际服黑名单从未在实际签到中执行，因此只产生明确警告。未知 Web 活动直接报错，不会静默忽略。
 
 新版 `integrations/dacapo/template.yml` 为所有可选通知补充了必要的次级字段。启用通知后，缺少 Chat ID、API 地址、SMTP 主机/邮箱或 WxPusher 接收目标等必要字段会在联网前报错。JSON 字符串同样支持 `${ENV_NAME}`，环境变量缺失时不会回显对应 Secret。
-
-兼容测试使用从旧项目抽取并人工脱敏的 Fixture，不得提交真实账号配置或历史日志。
 
 ## 配置文件保护
 

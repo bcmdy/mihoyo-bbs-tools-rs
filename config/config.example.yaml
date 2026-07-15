@@ -84,71 +84,8 @@ accounts:
     games:
       - genshin
 
-  # 添加更多账号时复制完整账号块。保持注释可避免未设置的环境变量影响校验。
-  # - name: "账号二"
-  #   remark: null
-  #   enabled: true
-  #   credentials:
-  #     cookie: "${MIHOYO_COOKIE_2}"
-  #     stoken: ""
-  #   device:
-  #     name: "Xiaomi MI 6"
-  #     model: "Mi 6"
-  #     id: ""
-  #     fp: ""
-  #   proxy:
-  #     url: null
-  #   china_checkin:
-  #     user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0"
-  #     role_blacklist:
-  #       genshin: []
-  #       honkai2: []
-  #       honkai3rd: []
-  #       tears_of_themis: []
-  #       star_rail: []
-  #       zenless_zone_zero: []
-  #   hoyolab:
-  #     cookie: ""
-  #     language: zh-cn
-  #     user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36"
-  #     games:
-  #       - genshin
-  #   cloud_games:
-  #     china:
-  #       genshin:
-  #         enabled: false
-  #         token: null
-  #       zenless_zone_zero:
-  #         enabled: false
-  #         token: null
-  #     overseas:
-  #       language: zh-cn
-  #       genshin:
-  #         enabled: false
-  #         token: null
-  #   tasks:
-  #     china_game_checkin: true
-  #     hoyolab_checkin: false
-  #     bbs:
-  #       enabled: true
-  #       sign: true
-  #       forums:
-  #         - 5
-  #         - 2
-  #       read: false
-  #       like: false
-  #       cancel_like: false
-  #       share: false
-  #     china_cloud_game: false
-  #     overseas_cloud_game: false
-  #     web_activity:
-  #       enabled: false
-  #       activities:
-  #         - genshin_mizone
-  #   games:
-  #     - genshin
-  #     - star_rail
-  #     - zenless_zone_zero
+  # 添加更多账号时推荐执行 `MihoyoBBSToolsRS config add-account`，
+  # 程序会自动复制完整默认节点并提取 Cookie 中的 stoken。
 
 notifications:
   enabled: false

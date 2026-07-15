@@ -13,6 +13,9 @@ spec:
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mihoyo-bbs-tools-rs
     spec:
       backoffLimit: 0
       activeDeadlineSeconds: 1800
