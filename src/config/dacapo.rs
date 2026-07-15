@@ -79,7 +79,7 @@ fn parse_dacapo(source: &str, account_name: &str) -> Result<LoadedConfig, Dacapo
         "国服游戏.重试次数",
         3,
     )?;
-    let retries = u8::try_from(retries).map_err(|_| DacapoError::Field {
+    let retries = u32::try_from(retries).map_err(|_| DacapoError::Field {
         field: "国服游戏.重试次数",
         message: "必须在 1 到 10 之间",
     })?;

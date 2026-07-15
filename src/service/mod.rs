@@ -31,8 +31,8 @@ pub enum CredentialPersistence<'a> {
     CurrentConfig(&'a Path),
 }
 
-impl CredentialPersistence<'_> {
-    fn path(self) -> Option<&Path> {
+impl<'a> CredentialPersistence<'a> {
+    fn path(self) -> Option<&'a Path> {
         match self {
             Self::ReadOnly => None,
             Self::CurrentConfig(path) => Some(path),

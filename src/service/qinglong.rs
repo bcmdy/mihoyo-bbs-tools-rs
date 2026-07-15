@@ -22,7 +22,7 @@ pub enum QinglongError {
 }
 
 pub fn qinglong_settings() -> Result<QinglongSettings, QinglongError> {
-    resolve_with(env::var_os)
+    resolve_with(|name| env::var_os(name))
 }
 
 fn resolve_with(
