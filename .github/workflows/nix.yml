@@ -1,0 +1,50 @@
+name: Nix 构建
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "codex/**"
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "config/config.example.yaml"
+      - "integrations/**"
+      - "docs/**"
+      - ".github/workflows/nix.yml"
+  pull_request:
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "config/config.example.yaml"
+      - "integrations/**"
+      - "docs/**"
+      - ".github/workflows/nix.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 检查 x86_64-linux 包
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: 检查锁文件与构建包
+        run: nix flake check --print-build-logs --no-write-lock-file

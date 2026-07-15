@@ -29,6 +29,8 @@ on:
       - "deploy/**"
       - "README.md"
       - "docs/**"
+      - "flake.nix"
+      - "flake.lock"
   pull_request:
     paths:
       - "**/*.rs"
@@ -48,6 +50,8 @@ on:
       - "deploy/**"
       - "README.md"
       - "docs/**"
+      - "flake.nix"
+      - "flake.lock"
 
 permissions:
   contents: read
