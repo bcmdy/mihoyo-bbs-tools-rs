@@ -359,12 +359,68 @@ pub struct TaskConfig {
     #[serde(default)]
     pub overseas_cloud_game: bool,
     #[serde(default)]
-    pub web_activity: bool,
+    pub web_activity: WebActivityTaskConfig,
 }
 
 impl TaskConfig {
     fn requires_primary_cookie(&self) -> bool {
-        self.china_game_checkin || self.bbs.is_enabled() || self.web_activity
+        self.china_game_checkin || self.bbs.is_enabled() || self.web_activity.enabled
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct WebActivityTaskConfig {
+    pub enabled: bool,
+    pub activities: Vec<WebActivity>,
+}
+
+impl Default for WebActivityTaskConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            activities: vec![WebActivity::GenshinMizone],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebActivity {
+    GenshinMizone,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WebActivityTaskConfigInput {
+    Bool(bool),
+    Detail(WebActivityTaskConfigDetail),
+}
+
+#[derive(Deserialize)]
+struct WebActivityTaskConfigDetail {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default = "default_web_activities")]
+    activities: Vec<WebActivity>,
+}
+
+impl<'de> Deserialize<'de> for WebActivityTaskConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(
+            match WebActivityTaskConfigInput::deserialize(deserializer)? {
+                WebActivityTaskConfigInput::Bool(enabled) => Self {
+                    enabled,
+                    activities: default_web_activities(),
+                },
+                WebActivityTaskConfigInput::Detail(detail) => Self {
+                    enabled: detail.enabled,
+                    activities: detail.activities,
+                },
+            },
+        )
     }
 }
 
@@ -795,6 +851,14 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 ));
             } else if !forums.insert(*forum) {
                 errors.push(format!("{path}.tasks.bbs.forums 包含重复的板块 ID {forum}"));
+            }
+        }
+        let mut activities = HashSet::new();
+        for activity in &account.tasks.web_activity.activities {
+            if !activities.insert(*activity) {
+                errors.push(format!(
+                    "{path}.tasks.web_activity.activities 包含重复活动 {activity:?}"
+                ));
             }
         }
     }
@@ -1368,6 +1432,13 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                             ],
                             &mut warnings,
                         );
+                        inspect_named_child(
+                            tasks,
+                            "web_activity",
+                            &format!("{base}.tasks.web_activity"),
+                            &["enabled", "activities"],
+                            &mut warnings,
+                        );
                         if get(tasks, "hoyolab_checkin").and_then(Value::as_bool) == Some(true)
                             && get(account_map, "hoyolab").is_none()
                         {
@@ -1632,6 +1703,9 @@ impl<'de> Deserialize<'de> for BbsTaskConfig {
 }
 fn default_bbs_forums() -> Vec<u8> {
     vec![5, 2]
+}
+fn default_web_activities() -> Vec<WebActivity> {
+    vec![WebActivity::GenshinMizone]
 }
 fn default_device_name() -> String {
     "Xiaomi MI 6".to_owned()
@@ -1909,6 +1983,51 @@ accounts:
         assert!(bbs.enabled && bbs.read);
         assert_eq!(bbs.forums, vec![2, 6]);
         assert!(!bbs.sign && !bbs.like && !bbs.cancel_like && !bbs.share);
+    }
+
+    #[test]
+    fn web_activity_boolean_and_detailed_forms_are_compatible() {
+        let boolean = parse(&MINIMAL.replace(
+            "      bbs: true",
+            "      bbs: true\n      web_activity: true",
+        ))
+        .unwrap();
+        assert!(boolean.config.accounts[0].tasks.web_activity.enabled);
+        assert_eq!(
+            boolean.config.accounts[0].tasks.web_activity.activities,
+            vec![WebActivity::GenshinMizone]
+        );
+
+        let detailed = parse(&MINIMAL.replace(
+            "      bbs: true",
+            "      bbs: true\n      web_activity:\n        enabled: true\n        activities: []",
+        ))
+        .unwrap();
+        assert!(detailed.config.accounts[0].tasks.web_activity.enabled);
+        assert!(
+            detailed.config.accounts[0]
+                .tasks
+                .web_activity
+                .activities
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn web_activity_rejects_unknown_and_duplicate_names() {
+        let unknown = MINIMAL.replace(
+            "      bbs: true",
+            "      bbs: true\n      web_activity:\n        enabled: true\n        activities: [unknown_activity]",
+        );
+        assert!(matches!(parse(&unknown), Err(ConfigError::Yaml(_))));
+
+        let duplicate = MINIMAL.replace(
+            "      bbs: true",
+            "      bbs: true\n      web_activity:\n        enabled: true\n        activities: [genshin_mizone, genshin_mizone]",
+        );
+        assert!(
+            matches!(parse(&duplicate), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("重复活动")))
+        );
     }
 
     #[test]

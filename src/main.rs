@@ -87,6 +87,9 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                     service::run_cloud_games(&loaded.config, china_cloud, overseas_cloud).await,
                 );
             }
+            if all || tasks.contains(&RunTask::WebActivity) {
+                report.extend(service::run_web_activities(&loaded.config));
+            }
             return Ok(finish_report(&loaded.config, &report).await);
         }
         Command::MigrateConfig(args) => {

@@ -33,7 +33,7 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = CheckinRegion::All)]
         region: CheckinRegion,
     },
-    /// 执行游戏签到、米游社社区任务与云游戏签到
+    /// 执行游戏签到、米游社社区任务、云游戏签到与 Web 活动状态处理
     Run {
         /// 配置文件路径
         #[arg(short, long, default_value = "config/config.yaml")]
@@ -118,6 +118,8 @@ pub enum RunTask {
     ChinaCloudGame,
     /// 国际服云原神签到
     OverseasCloudGame,
+    /// 已配置的 Web 活动；过期活动只生成跳过报告
+    WebActivity,
 }
 
 #[derive(Debug, Args)]
@@ -211,7 +213,7 @@ mod tests {
     fn top_level_help_contains_command_descriptions() {
         let help = Cli::command().render_help().to_string();
         assert!(help.contains("校验配置文件，不访问远程接口"));
-        assert!(help.contains("执行游戏签到与米游社社区任务"));
+        assert!(help.contains("执行游戏签到、米游社社区任务、云游戏签到与 Web 活动状态处理"));
         assert!(help.contains("交互设置、编辑、添加或删除配置账号"));
         assert!(help.contains("创建可移动的异步启动 BAT"));
     }

@@ -296,7 +296,16 @@ pub fn set_account_tasks(
             key("overseas_cloud_game"),
             Value::Bool(selected.contains(&5)),
         );
-        tasks.insert(key("web_activity"), Value::Bool(selected.contains(&6)));
+        let activities = tasks
+            .get(key("web_activity"))
+            .and_then(Value::as_mapping)
+            .and_then(|web| web.get(key("activities")))
+            .cloned()
+            .unwrap_or_else(default_web_activities);
+        let mut web_activity = Mapping::new();
+        web_activity.insert(key("enabled"), Value::Bool(selected.contains(&6)));
+        web_activity.insert(key("activities"), activities);
+        tasks.insert(key("web_activity"), Value::Mapping(web_activity));
         Ok(())
     })
 }
@@ -913,12 +922,19 @@ fn default_tasks() -> Value {
     tasks.insert(key("bbs"), Value::Mapping(bbs));
     tasks.insert(key("china_cloud_game"), Value::Bool(false));
     tasks.insert(key("overseas_cloud_game"), Value::Bool(false));
-    tasks.insert(key("web_activity"), Value::Bool(false));
+    let mut web_activity = Mapping::new();
+    web_activity.insert(key("enabled"), Value::Bool(false));
+    web_activity.insert(key("activities"), default_web_activities());
+    tasks.insert(key("web_activity"), Value::Mapping(web_activity));
     Value::Mapping(tasks)
 }
 
 fn default_games() -> Value {
     Value::Sequence(vec![Value::String("genshin".to_owned())])
+}
+
+fn default_web_activities() -> Value {
+    Value::Sequence(vec![Value::String("genshin_mizone".to_owned())])
 }
 
 fn uid_suffix(uid: &str) -> String {
@@ -992,6 +1008,7 @@ mod tests {
             "language:",
             "token:",
             "forums:",
+            "activities:",
             "notifications:",
             "providers:",
         ] {
@@ -1022,7 +1039,7 @@ mod tests {
         let tasks = load(&path).unwrap().config.accounts[0].tasks.clone();
         assert!(tasks.china_cloud_game);
         assert!(tasks.overseas_cloud_game);
-        assert!(tasks.web_activity);
+        assert!(tasks.web_activity.enabled);
         assert!(!tasks.china_game_checkin);
         assert!(!tasks.bbs.enabled);
     }

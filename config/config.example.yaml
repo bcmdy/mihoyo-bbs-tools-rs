@@ -73,7 +73,10 @@ accounts:
         share: false
       china_cloud_game: false
       overseas_cloud_game: false
-      web_activity: false
+      web_activity:
+        enabled: false
+        activities:
+          - genshin_mizone
     games:
       - genshin
 
@@ -134,7 +137,10 @@ accounts:
   #       share: false
   #     china_cloud_game: false
   #     overseas_cloud_game: false
-  #     web_activity: false
+  #     web_activity:
+  #       enabled: false
+  #       activities:
+  #         - genshin_mizone
   #   games:
   #     - genshin
   #     - star_rail

@@ -8,6 +8,7 @@ use super::{
     ChinaCloudGamesConfig, CloudGameEntryConfig, CloudGamesConfig, Config, ConfigError,
     CredentialConfig, DeviceConfig, Game, HoyolabConfig, LoadedConfig, NotificationsConfig,
     OverseasCloudGamesConfig, ProxyConfig, RoleBlacklistConfig, RuntimeConfig, TaskConfig,
+    WebActivity, WebActivityTaskConfig,
 };
 use crate::auth::SecretString;
 
@@ -136,9 +137,7 @@ pub(super) fn migrate_value(
             genshin: migrate_cloud_entry(cloud_os_genshin, "cloud_games.os.genshin", &mut warnings),
         },
     };
-    let web_activity_enabled = mapping(root, "web_activity")
-        .and_then(|map| boolean(map, "enable"))
-        .unwrap_or(false);
+    let web_activity = migrate_web_activity(root, &mut warnings);
 
     warn_about_lossy_fields(root, &mut warnings);
 
@@ -180,7 +179,7 @@ pub(super) fn migrate_value(
                 },
                 china_cloud_game: cloud_cn_enabled,
                 overseas_cloud_game: cloud_os_enabled,
-                web_activity: web_activity_enabled,
+                web_activity,
             },
             games: selected_games,
         }],
@@ -340,6 +339,34 @@ fn migrate_hoyolab_language(value: Option<&Mapping>, warnings: &mut Vec<String>)
             "旧版 games.os.lang={language:?} 不受支持，已改为 zh-cn"
         ));
         super::default_hoyolab_language()
+    }
+}
+
+fn migrate_web_activity(root: &Mapping, warnings: &mut Vec<String>) -> WebActivityTaskConfig {
+    let web = mapping(root, "web_activity");
+    let enabled = web.and_then(|map| boolean(map, "enable")).unwrap_or(false);
+    let mut activities = Vec::new();
+    if let Some(values) = web
+        .and_then(|map| get(map, "activities"))
+        .and_then(Value::as_sequence)
+    {
+        for value in values {
+            match value.as_str() {
+                Some("genshin_mizone") if !activities.contains(&WebActivity::GenshinMizone) => {
+                    activities.push(WebActivity::GenshinMizone);
+                }
+                Some("genshin_mizone") => {
+                    warnings.push("旧版 web_activity.activities 包含重复活动，已去重".to_owned())
+                }
+                Some(name) => warnings.push(format!("旧版 Web 活动 {name:?} 不受支持，未迁移")),
+                None => warnings
+                    .push("旧版 web_activity.activities 包含无效活动名称，未迁移".to_owned()),
+            }
+        }
+    }
+    WebActivityTaskConfig {
+        enabled,
+        activities,
     }
 }
 
@@ -600,6 +627,32 @@ cloud_games:
                 .as_ref()
                 .map(SecretString::expose_secret),
             Some("fixture-os-token")
+        );
+    }
+
+    #[test]
+    fn migrates_known_web_activity_and_warns_about_unknown_names() {
+        let source = r#"
+version: 15
+account:
+  cookie: fixture-cookie
+  stoken: fixture-stoken
+mihoyobbs:
+  enable: false
+web_activity:
+  enable: true
+  activities: [genshin_mizone, unknown_activity]
+"#;
+        let value: Value = serde_yaml_ng::from_str(source).unwrap();
+        let migrated = migrate_value(&value, "web").unwrap();
+        let web = &migrated.config.accounts[0].tasks.web_activity;
+        assert!(web.enabled);
+        assert_eq!(web.activities, vec![WebActivity::GenshinMizone]);
+        assert!(
+            migrated
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("unknown_activity"))
         );
     }
 

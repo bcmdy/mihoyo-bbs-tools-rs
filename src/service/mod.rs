@@ -3,6 +3,7 @@ mod cloud_runner;
 mod credential_refresh;
 mod report;
 mod runner;
+mod web_activity_runner;
 
 use uuid::Uuid;
 
@@ -10,6 +11,7 @@ pub use bbs_runner::{run_bbs, run_bbs_with_refresh};
 pub use cloud_runner::run_cloud_games;
 pub use report::{RunReport, TaskOutcome, TaskRecord};
 pub use runner::{run_china_checkin, run_china_checkin_with_refresh, run_hoyolab_checkin};
+pub use web_activity_runner::run_web_activities;
 
 fn resolve_device_id(configured: &str, cookie: &str) -> String {
     if configured.is_empty() {

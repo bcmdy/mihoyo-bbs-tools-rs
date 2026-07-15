@@ -131,7 +131,8 @@ MihoyoBBSToolsRS checkin --region all
   - `bbs`
   - `china-cloud-game`
   - `overseas-cloud-game`
-- `china-cloud-game` 与 `overseas-cloud-game` 已有运行器并暴露为可执行参数；`web-activity` 在运行器完成前不应暴露为可执行参数。
+  - `web-activity`
+- `china-cloud-game`、`overseas-cloud-game` 与 `web-activity` 已有运行器并暴露为可执行参数。
 - 未提供 `--task` 时保持当前 `run` 行为。
 - `checkin --region` 可选值为 `china`、`hoyolab`、`all`，默认 `all`，与当前实际行为兼容。
 - CLI 选择只用于缩小本次执行范围，不能绕过 YAML 中账号、任务或游戏的禁用状态。

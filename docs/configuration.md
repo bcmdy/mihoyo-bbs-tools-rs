@@ -86,7 +86,10 @@ accounts:
         share: true
       china_cloud_game: false
       overseas_cloud_game: false
-      web_activity: false
+      web_activity:
+        enabled: false
+        activities:
+          - genshin_mizone
 
     games:
       - genshin
@@ -156,14 +159,14 @@ MihoyoBBSToolsRS config setup --config config/config.yaml
 可以在不修改 YAML 的情况下缩小本次运行范围：
 
 ```text
-MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs,china-cloud-game,overseas-cloud-game
+MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs,china-cloud-game,overseas-cloud-game,web-activity
 MihoyoBBSToolsRS run --task bbs
 MihoyoBBSToolsRS checkin --region china
 MihoyoBBSToolsRS checkin --region hoyolab
 MihoyoBBSToolsRS checkin --region all
 ```
 
-`run --task` 可选择 `china-checkin`、`hoyolab-checkin`、`bbs`、`china-cloud-game`、`overseas-cloud-game`，支持重复使用参数或逗号分隔多值。Web 活动尚未作为可选值暴露。省略 `--task` 时依次尝试所有已实现且在账号配置中启用的任务。
+`run --task` 可选择 `china-checkin`、`hoyolab-checkin`、`bbs`、`china-cloud-game`、`overseas-cloud-game`、`web-activity`，支持重复使用参数或逗号分隔多值。省略 `--task` 时依次尝试所有已实现且在账号配置中启用的任务。
 
 `checkin --region` 的可选值为 `china`、`hoyolab`、`all`，默认 `all`。CLI 筛选只会缩小本次执行范围，并继续与账号 `enabled`、任务开关和游戏列表取交集，不能通过命令行重新启用 YAML 中已禁用的内容；未选择的任务也不会作为失败项写入报告。
 
@@ -241,6 +244,10 @@ accounts:
 云游戏签到报告包含本次增加的免费分钟数、当前总免费时长、畅玩卡状态和米云币或邦邦点数量。接口返回 Token 失效时退出码为 `3`，网络失败为 `5`；本次未增加免费时长会标记为 `AlreadyCompleted`。
 
 国内云游戏首次响应未显示新增时长且总免费时长低于 600 分钟时，会等待 3–6 秒后再次查询，并用前后总时长差确认异步到账。接口返回 `-100` 既可能表示 Token 失效，也可能表示防沉迷限制，因此程序只报告认证失败，不会自动删除 Token 或改写开关；请确认原因后在设置菜单中更新或清空。
+
+## Web 活动
+
+`tasks.web_activity.enabled` 控制 Web 活动，`activities` 是活动标识列表。目前原 Python 唯一实现的 `genshin_mizone` 已于 `2025-10-31` 结束；启用后程序会生成明确的 `Skipped` 报告并且不会请求失效接口。未知活动名在配置解析阶段直接报错，空列表也会生成明确跳过记录，不再静默忽略。
 
 ## 旧版配置兼容
 
