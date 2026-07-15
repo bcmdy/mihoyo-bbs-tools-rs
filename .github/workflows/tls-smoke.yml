@@ -21,6 +21,7 @@ jobs:
   tls:
     name: ring TLS ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -38,4 +39,31 @@ jobs:
           rustup default stable
 
       - name: 执行 HTTPS 握手测试
-        run: cargo test --locked --test tls_smoke -- --ignored --nocapture
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set +e
+          cargo test --locked --test tls_smoke -- --ignored --nocapture 2>&1 | tee tls-smoke.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            details=$(tail -n 80 tls-smoke.log)
+            details="${details//'%'/'%25'}"
+            details="${details//$'\r'/'%0D'}"
+            details="${details//$'\n'/'%0A'}"
+            echo "::error title=Linux TLS 握手失败::$details"
+          fi
+          exit "$code"
+
+      - name: 执行 HTTPS 握手测试
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --locked --test tls_smoke -- --ignored --nocapture 2>&1 |
+            Tee-Object -FilePath tls-smoke.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $details = (Get-Content -LiteralPath tls-smoke.log -Tail 80) -join "`n"
+            $details = $details.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Windows TLS 握手失败::$details"
+          }
+          exit $code
