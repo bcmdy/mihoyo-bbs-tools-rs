@@ -860,7 +860,7 @@ fn parse_source(
     migration_requested: bool,
     current_source: ConfigSource,
 ) -> Result<LoadedConfig, ConfigError> {
-    let mut value: Value = serde_yaml_ng::from_str(&source)?;
+    let mut value: Value = serde_yaml_ng::from_str(source)?;
     expand_environment(&mut value, &|name| env::var(name).ok())?;
     if let Some(11..=15) = config_version(&value) {
         let loaded = legacy::migrate_value(&value, account_name)?;

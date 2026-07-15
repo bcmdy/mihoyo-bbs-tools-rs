@@ -134,20 +134,17 @@ async fn run_china_account(config: &Config, account: &AccountConfig) -> RunRepor
         let Some(game) = config_game_to_china(configured_game) else {
             continue;
         };
-        run_game(
-            &mut report,
-            &account.name,
-            &client,
-            captcha.as_ref(),
-            &mut signer,
-            game,
-            account
+        let context = ChinaGameContext {
+            account: &account.name,
+            client: &client,
+            captcha: captcha.as_ref(),
+            role_blacklist: account
                 .china_checkin
                 .role_blacklist
                 .for_game(*configured_game),
-            config.runtime.game_checkin_max_attempts,
-        )
-        .await;
+            max_attempts: config.runtime.game_checkin_max_attempts,
+        };
+        run_game(&mut report, &mut signer, game, context).await;
     }
     report
 }
@@ -234,21 +231,29 @@ pub async fn run_hoyolab_checkin(config: &Config) -> RunReport {
     report
 }
 
+struct ChinaGameContext<'a> {
+    account: &'a str,
+    client: &'a ChinaCheckinClient,
+    captcha: Option<&'a CaptchaClient>,
+    role_blacklist: &'a [String],
+    max_attempts: u32,
+}
+
 async fn run_game(
     report: &mut RunReport,
-    account: &str,
-    client: &ChinaCheckinClient,
-    captcha: Option<&CaptchaClient>,
     signer: &mut DsSigner<SystemClock, ThreadRandom>,
     game: ChinaGame,
-    role_blacklist: &[String],
-    max_attempts: u32,
+    context: ChinaGameContext<'_>,
 ) {
     let spec = game.spec();
-    let roles = match client.roles(game, &signer.sign_web().to_string()).await {
+    let roles = match context
+        .client
+        .roles(game, &signer.sign_web().to_string())
+        .await
+    {
         Ok(RoleState::NoRole) => {
             report.push(record(
-                account,
+                context.account,
                 "国内游戏签到",
                 spec.display_name,
                 TaskOutcome::Skipped,
@@ -258,17 +263,21 @@ async fn run_game(
         }
         Ok(RoleState::Available(roles)) => roles,
         Err(error) => {
-            push_error(report, account, spec.display_name, error);
+            push_error(report, context.account, spec.display_name, error);
             return;
         }
     };
-    let rewards = client.home(game, &signer.sign_web().to_string()).await.ok();
+    let rewards = context
+        .client
+        .home(game, &signer.sign_web().to_string())
+        .await
+        .ok();
 
     for role in roles {
         let subject = format!("{} / {}", spec.display_name, mask_uid(&role.uid));
-        if role_is_excluded(role_blacklist, &role.uid) {
+        if role_is_excluded(context.role_blacklist, &role.uid) {
             report.push(record(
-                account,
+                context.account,
                 "国内游戏签到",
                 &subject,
                 TaskOutcome::Skipped,
@@ -278,16 +287,16 @@ async fn run_game(
         }
         run_china_role(
             report,
-            account,
+            context.account,
             &subject,
-            client,
-            captcha,
+            context.client,
+            context.captcha,
             signer,
             game,
             &role.region,
             &role.uid,
             rewards.as_deref(),
-            max_attempts,
+            context.max_attempts,
         )
         .await;
     }
