@@ -61,6 +61,8 @@
 - 发布产物必须提供 SHA256 校验文件。
 - 发布前应确认 Git 历史和构建产物中不存在真实凭据。
 - DaCapo JSON 只允许在内存中转换，不得生成或上传含 Cookie、Token 的临时 YAML、INI 或调试快照。
+- Kubernetes 完整配置必须保存在 Secret 中，不得使用 ConfigMap，也不得提交渲染后的 Secret 清单。
+- Kubernetes Pod 应只读挂载配置、禁用 ServiceAccount Token、以非 root 和只读根文件系统运行。
 
 ## 安全问题报告
 

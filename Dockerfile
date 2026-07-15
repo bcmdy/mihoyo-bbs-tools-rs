@@ -5,6 +5,8 @@ RUN apk add --no-cache musl-dev
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
+COPY config ./config
+COPY integrations ./integrations
 COPY src ./src
 
 RUN cargo build --release --locked
@@ -12,8 +14,8 @@ RUN cargo build --release --locked
 FROM alpine:3
 
 RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -S app \
-    && adduser -S -G app app
+    && addgroup -S -g 10001 app \
+    && adduser -S -D -H -u 10001 -G app app
 
 ENV TZ=Asia/Shanghai
 WORKDIR /app

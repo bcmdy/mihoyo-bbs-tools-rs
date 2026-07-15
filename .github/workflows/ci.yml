@@ -24,6 +24,11 @@ on:
       - "docs/快速开始.md"
       - "config/config.example.yaml"
       - "integrations/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "deploy/**"
+      - "README.md"
+      - "docs/**"
   pull_request:
     paths:
       - "**/*.rs"
@@ -38,6 +43,11 @@ on:
       - "docs/快速开始.md"
       - "config/config.example.yaml"
       - "integrations/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "deploy/**"
+      - "README.md"
+      - "docs/**"
 
 permissions:
   contents: read

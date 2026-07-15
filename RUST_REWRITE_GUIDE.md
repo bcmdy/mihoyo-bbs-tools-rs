@@ -941,6 +941,7 @@ linux/arm/v7
 - [x] 增加 DaCapo JSON 内存适配和发布模板，不落地含凭据的临时配置。
 - [x] 增加云函数友好的标准输入只读模式、通知副作用开关与结构化 JSON 输出。
 - [x] 添加带仓库变量保护的 GitHub Actions 定时工作流。
+- [x] 增加 Kubernetes CronJob 示例，以只读 Secret 挂载配置并禁止任务重叠。
 
 ## 17. 每次提交前的远程检查
 

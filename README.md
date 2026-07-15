@@ -121,6 +121,8 @@ MihoyoBBSToolsRS run
 
 真实配置和凭据必须在运行时通过受控配置文件、环境变量或 Secret 注入，不能写入镜像。
 
+Kubernetes 用户可使用 [CronJob 示例](deploy/kubernetes/README.md)。清单默认按北京时间每日 `00:05` 运行，禁止任务重叠，并把名为 `mihoyo-bbs-tools-config` 的 Secret 只读挂载为配置。生产部署应固定已发布的镜像版本，不要长期跟随 `latest`。
+
 ## 许可证
 
 本项目采用 [MIT License](LICENSE)。从原 MihoyoBBSTools 迁移或改写的部分保留原项目版权声明。

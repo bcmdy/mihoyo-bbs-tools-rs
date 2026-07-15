@@ -1,0 +1,8 @@
+.git
+.github
+target
+logs
+*.log
+config/config.yaml
+config/*.migrated.yaml
+config/*.migrated.yml
