@@ -30,6 +30,21 @@ accounts:
       fp: ""
     proxy:
       url: null
+    china_checkin:
+      user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0"
+      role_blacklist:
+        genshin: []
+        honkai2: []
+        honkai3rd: []
+        tears_of_themis: []
+        star_rail: []
+        zenless_zone_zero: []
+    hoyolab:
+      cookie: ""
+      language: zh-cn
+      user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36"
+      games:
+        - genshin
     cloud_games:
       china:
         genshin:
@@ -76,6 +91,21 @@ accounts:
   #     fp: ""
   #   proxy:
   #     url: null
+  #   china_checkin:
+  #     user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0"
+  #     role_blacklist:
+  #       genshin: []
+  #       honkai2: []
+  #       honkai3rd: []
+  #       tears_of_themis: []
+  #       star_rail: []
+  #       zenless_zone_zero: []
+  #   hoyolab:
+  #     cookie: ""
+  #     language: zh-cn
+  #     user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36"
+  #     games:
+  #       - genshin
   #   cloud_games:
   #     china:
   #       genshin:

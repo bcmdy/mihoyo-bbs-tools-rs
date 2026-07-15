@@ -253,6 +253,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn configured_user_agent_is_sent() {
+        let http = HttpClient::builder().build().unwrap();
+        let client = HoyolabCheckinClient::new(http, SecretString::new("ltoken=test"))
+            .language("ja-jp")
+            .user_agent("configured-hoyolab-agent");
+        let headers = client.headers(HoyolabGame::Genshin).unwrap();
+        assert_eq!(headers["user-agent"], "configured-hoyolab-agent");
+        assert_eq!(client.language, "ja-jp");
+    }
+
     #[tokio::test]
     async fn info_maps_already_signed_and_first_bind() {
         let signed_server = MockServer::start().await;

@@ -309,6 +309,22 @@ accounts:
     proxy:
       url: null
 
+    china_checkin:
+      user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0"
+      role_blacklist:
+        genshin: []
+        honkai2: []
+        honkai3rd: []
+        tears_of_themis: []
+        star_rail: []
+        zenless_zone_zero: []
+
+    hoyolab:
+      cookie: "${HOYOLAB_COOKIE}"
+      language: zh-cn
+      user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36"
+      games: [genshin]
+
     tasks:
       china_game_checkin: true
       hoyolab_checkin: false
@@ -427,7 +443,7 @@ pub trait Task {
 | 阶段 1：配置、日志与 HTTP | 大部分完成 | YAML、多账号、环境变量替换、校验、代理、重试、全局日志级别、按日文件日志和 Secret 脱敏已实现；HTTP 响应体限制及更完整的重试/超时合约测试仍需补齐。`RUST_LOG` 仅接受全局级别，不支持模块过滤表达式。 |
 | 阶段 2：账号与认证 | 大部分完成 | Cookie、SToken、登录票据与 `cookie_token` 刷新、设备 ID/FP 请求契约、DS 与 MD5 已实现；HMAC-SHA256 已用于钉钉，通用签名抽象和固定测试向量仍待补充。 |
 | 阶段 3：国内游戏签到 | 代码完成，待真实验收 | 六款国服游戏、角色查询、状态查询、签到、成功复查、仅重试复查后仍未完成的角色、当天奖励详情、设备 ID 与错误分类已实现；真实账号仍需人工验证。 |
-| 阶段 4：HoYoLAB 国际服签到 | 代码完成，待真实验收 | 五款国际服游戏、多账号、独立接口、成功复查、仅重试复查后仍未完成的角色、当天奖励详情与统一报告已实现；真实账号仍需人工验证。 |
+| 阶段 4：HoYoLAB 国际服签到 | 代码完成，待真实验收 | 五款国际服游戏、多账号、独立 Cookie/语言/User-Agent/游戏选择、成功复查、仅重试复查后仍未完成的角色、当天奖励详情与统一报告已实现；真实账号仍需人工验证。 |
 | 阶段 5：米游社社区任务和验证码 | 代码完成，待真实验收 | 可配置社区板块、签到、阅读、点赞、取消点赞、分享、动作后任务状态确认、设备 FP、米游币汇总及验证码闭环已实现；真实账号仍需人工验收。 |
 | 阶段 6：云游戏与 Web 活动 | 进行中 | 国内云原神、云绝区零和国际服云原神已迁移；Web 活动尚未迁移。 |
 | 阶段 7：推送 | 部分完成 | 已实现 Telegram、Webhook、PushPlus、Server酱、企业微信、钉钉、飞书、Bark、Gotify、Discord、WxPusher 等主要网络通知渠道；SMTP 与 Windows 本地通知待补充。 |
@@ -509,6 +525,7 @@ pub trait Task {
 - 签到执行。
 - 已签到、Cookie 失效、无角色、验证码等状态分类。
 - 至少覆盖原神、星穹铁道和绝区零，再补其他游戏。
+- [x] 按游戏执行角色 UID 黑名单，并为被排除角色生成明确跳过记录。
 
 ### 阶段 4：HoYoLAB 国际服签到
 
@@ -517,6 +534,7 @@ pub trait Task {
 - 原神、崩坏3、星穹铁道、未定事件簿、绝区零。
 - 多账号和每账号启用游戏列表。
 - 与国内签到共享报告模型，但不共享错误的请求头和接口常量。
+- [x] 每个账号使用独立 HoYoLAB Cookie、语言、User-Agent 和游戏列表。
 
 ### 阶段 5：米游社社区任务和验证码
 

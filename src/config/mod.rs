@@ -18,10 +18,10 @@ mod interactive;
 mod legacy;
 pub use editor::{
     add_account_from_stdin, edit_file, persist_refreshed_cookie, remove_account,
-    remove_notification_provider, replace_account_cookie, set_account_cloud_games,
-    set_account_device, set_account_games, set_account_general, set_account_proxy,
-    set_account_tasks, set_captcha_endpoint, set_logging, set_notification_options,
-    set_notification_provider, set_runtime,
+    remove_notification_provider, replace_account_cookie, set_account_china_checkin,
+    set_account_cloud_games, set_account_device, set_account_games, set_account_general,
+    set_account_hoyolab, set_account_proxy, set_account_tasks, set_captcha_endpoint, set_logging,
+    set_notification_options, set_notification_provider, set_runtime,
 };
 pub use interactive::setup as interactive_setup;
 
@@ -169,6 +169,10 @@ pub struct AccountConfig {
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
+    pub china_checkin: ChinaCheckinConfig,
+    #[serde(default)]
+    pub hoyolab: Option<HoyolabConfig>,
+    #[serde(default)]
     pub cloud_games: CloudGamesConfig,
     #[serde(default)]
     pub tasks: TaskConfig,
@@ -222,6 +226,79 @@ pub struct ProxyConfig {
         serialize_with = "serialize_optional_secret"
     )]
     pub url: Option<SecretString>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ChinaCheckinConfig {
+    #[serde(default = "default_china_user_agent")]
+    pub user_agent: String,
+    #[serde(default)]
+    pub role_blacklist: RoleBlacklistConfig,
+}
+
+impl Default for ChinaCheckinConfig {
+    fn default() -> Self {
+        Self {
+            user_agent: default_china_user_agent(),
+            role_blacklist: RoleBlacklistConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RoleBlacklistConfig {
+    #[serde(default)]
+    pub genshin: Vec<String>,
+    #[serde(default)]
+    pub honkai2: Vec<String>,
+    #[serde(default)]
+    pub honkai3rd: Vec<String>,
+    #[serde(default)]
+    pub tears_of_themis: Vec<String>,
+    #[serde(default)]
+    pub star_rail: Vec<String>,
+    #[serde(default)]
+    pub zenless_zone_zero: Vec<String>,
+}
+
+impl RoleBlacklistConfig {
+    pub fn for_game(&self, game: Game) -> &[String] {
+        match game {
+            Game::Genshin => &self.genshin,
+            Game::Honkai2 => &self.honkai2,
+            Game::Honkai3rd => &self.honkai3rd,
+            Game::TearsOfThemis => &self.tears_of_themis,
+            Game::StarRail => &self.star_rail,
+            Game::ZenlessZoneZero => &self.zenless_zone_zero,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HoyolabConfig {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_secret",
+        serialize_with = "serialize_secret"
+    )]
+    pub cookie: SecretString,
+    #[serde(default = "default_hoyolab_language")]
+    pub language: String,
+    #[serde(default = "default_hoyolab_user_agent")]
+    pub user_agent: String,
+    #[serde(default)]
+    pub games: Vec<Game>,
+}
+
+impl Default for HoyolabConfig {
+    fn default() -> Self {
+        Self {
+            cookie: SecretString::default(),
+            language: default_hoyolab_language(),
+            user_agent: default_hoyolab_user_agent(),
+            games: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -287,10 +364,7 @@ pub struct TaskConfig {
 
 impl TaskConfig {
     fn requires_primary_cookie(&self) -> bool {
-        self.china_game_checkin
-            || self.hoyolab_checkin
-            || self.bbs.is_enabled()
-            || self.web_activity
+        self.china_game_checkin || self.bbs.is_enabled() || self.web_activity
     }
 }
 
@@ -695,6 +769,7 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             );
         }
         validate_cloud_games(account, &path, &mut errors);
+        validate_checkin_regions(account, &path, &mut errors);
         if account.enabled
             && account.tasks.requires_primary_cookie()
             && account.credentials.cookie.is_empty()
@@ -764,6 +839,110 @@ fn validate_cloud_games(account: &AccountConfig, path: &str, errors: &mut Vec<St
         errors.push(format!(
             "{path}.cloud_games.overseas.language 必须是 zh-cn、en-us、ja-jp 或 ko-kr"
         ));
+    }
+}
+
+fn validate_checkin_regions(account: &AccountConfig, path: &str, errors: &mut Vec<String>) {
+    if account.china_checkin.user_agent.trim().is_empty() {
+        errors.push(format!("{path}.china_checkin.user_agent 不能为空"));
+    }
+    validate_game_list(&account.games, &format!("{path}.games"), true, errors);
+    for (game, values) in [
+        ("genshin", &account.china_checkin.role_blacklist.genshin),
+        ("honkai2", &account.china_checkin.role_blacklist.honkai2),
+        ("honkai3rd", &account.china_checkin.role_blacklist.honkai3rd),
+        (
+            "tears_of_themis",
+            &account.china_checkin.role_blacklist.tears_of_themis,
+        ),
+        ("star_rail", &account.china_checkin.role_blacklist.star_rail),
+        (
+            "zenless_zone_zero",
+            &account.china_checkin.role_blacklist.zenless_zone_zero,
+        ),
+    ] {
+        let mut seen = HashSet::new();
+        for uid in values {
+            if uid.trim().is_empty() {
+                errors.push(format!(
+                    "{path}.china_checkin.role_blacklist.{game} 不能包含空 UID"
+                ));
+            } else if uid.trim() != uid {
+                errors.push(format!(
+                    "{path}.china_checkin.role_blacklist.{game} 的 UID 不能包含首尾空白"
+                ));
+            } else if !uid.chars().all(|character| character.is_ascii_digit()) {
+                errors.push(format!(
+                    "{path}.china_checkin.role_blacklist.{game} 的 UID 必须只包含数字"
+                ));
+            } else if !seen.insert(uid) {
+                errors.push(format!(
+                    "{path}.china_checkin.role_blacklist.{game} 包含重复 UID {uid}"
+                ));
+            }
+        }
+    }
+
+    match &account.hoyolab {
+        Some(hoyolab) => {
+            if hoyolab.user_agent.trim().is_empty() {
+                errors.push(format!("{path}.hoyolab.user_agent 不能为空"));
+            }
+            if !matches!(
+                hoyolab.language.as_str(),
+                "zh-cn" | "en-us" | "ja-jp" | "ko-kr"
+            ) {
+                errors.push(format!(
+                    "{path}.hoyolab.language 必须是 zh-cn、en-us、ja-jp 或 ko-kr"
+                ));
+            }
+            validate_game_list(
+                &hoyolab.games,
+                &format!("{path}.hoyolab.games"),
+                false,
+                errors,
+            );
+            if !hoyolab.cookie.is_empty() && hoyolab.cookie.expose_secret().trim().is_empty() {
+                errors.push(format!("{path}.hoyolab.cookie 不能只包含空白"));
+            }
+            if account.enabled
+                && account.tasks.hoyolab_checkin
+                && hoyolab.cookie.expose_secret().trim().is_empty()
+            {
+                errors.push(format!(
+                    "{path}.tasks.hoyolab_checkin 已启用，但 hoyolab.cookie 为空"
+                ));
+            }
+            if account.enabled && account.tasks.hoyolab_checkin && hoyolab.games.is_empty() {
+                errors.push(format!(
+                    "{path}.tasks.hoyolab_checkin 已启用，但 hoyolab.games 为空"
+                ));
+            }
+        }
+        None if account.enabled && account.tasks.hoyolab_checkin => {
+            if account.credentials.cookie.is_empty() {
+                errors.push(format!(
+                    "{path}.tasks.hoyolab_checkin 使用兼容配置，但 credentials.cookie 为空"
+                ));
+            }
+            if account.games.is_empty() {
+                errors.push(format!(
+                    "{path}.tasks.hoyolab_checkin 使用兼容配置，但 games 为空"
+                ));
+            }
+        }
+        None => {}
+    }
+}
+
+fn validate_game_list(games: &[Game], path: &str, allow_honkai2: bool, errors: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    for game in games {
+        if !allow_honkai2 && *game == Game::Honkai2 {
+            errors.push(format!("{path} 不支持 honkai2"));
+        } else if !seen.insert(*game) {
+            errors.push(format!("{path} 包含重复游戏 {game:?}"));
+        }
     }
 }
 
@@ -1052,6 +1231,8 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                         "credentials",
                         "device",
                         "proxy",
+                        "china_checkin",
+                        "hoyolab",
                         "cloud_games",
                         "tasks",
                         "games",
@@ -1129,6 +1310,36 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                     );
                     inspect_named_child(
                         account_map,
+                        "china_checkin",
+                        &format!("{base}.china_checkin"),
+                        &["user_agent", "role_blacklist"],
+                        &mut warnings,
+                    );
+                    if let Some(Value::Mapping(china_checkin)) = get(account_map, "china_checkin") {
+                        inspect_named_child(
+                            china_checkin,
+                            "role_blacklist",
+                            &format!("{base}.china_checkin.role_blacklist"),
+                            &[
+                                "genshin",
+                                "honkai2",
+                                "honkai3rd",
+                                "tears_of_themis",
+                                "star_rail",
+                                "zenless_zone_zero",
+                            ],
+                            &mut warnings,
+                        );
+                    }
+                    inspect_named_child(
+                        account_map,
+                        "hoyolab",
+                        &format!("{base}.hoyolab"),
+                        &["cookie", "language", "user_agent", "games"],
+                        &mut warnings,
+                    );
+                    inspect_named_child(
+                        account_map,
                         "tasks",
                         &format!("{base}.tasks"),
                         &[
@@ -1157,6 +1368,13 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                             ],
                             &mut warnings,
                         );
+                        if get(tasks, "hoyolab_checkin").and_then(Value::as_bool) == Some(true)
+                            && get(account_map, "hoyolab").is_none()
+                        {
+                            warnings.push(format!(
+                                "{base}.hoyolab 未配置，HoYoLAB 暂按兼容模式复用 credentials.cookie 和 games；建议补充独立配置"
+                            ));
+                        }
                     }
                 }
             }
@@ -1421,6 +1639,13 @@ fn default_device_name() -> String {
 fn default_device_model() -> String {
     "Mi 6".to_owned()
 }
+fn default_china_user_agent() -> String {
+    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0"
+        .to_owned()
+}
+fn default_hoyolab_user_agent() -> String {
+    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36".to_owned()
+}
 fn default_telegram_api_url() -> Url {
     Url::parse("https://api.telegram.org").expect("valid Telegram API URL")
 }
@@ -1475,7 +1700,72 @@ accounts:
             "account_id=123; cookie_token=secret"
         );
         assert_eq!(loaded.config.accounts[0].device, DeviceConfig::default());
+        assert_eq!(
+            loaded.config.accounts[0].china_checkin,
+            ChinaCheckinConfig::default()
+        );
+        assert!(loaded.config.accounts[0].hoyolab.is_none());
         assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn explicit_hoyolab_config_uses_independent_cookie_games_and_headers() {
+        let source = MINIMAL
+            .replace(
+                "    tasks:",
+                "    hoyolab:\n      cookie: overseas-secret\n      language: ja-jp\n      user_agent: custom-hoyolab-agent\n      games: [genshin, star_rail]\n    tasks:",
+            )
+            .replace("      bbs: true", "      bbs: true\n      hoyolab_checkin: true");
+        let loaded = parse(&source).unwrap();
+        let hoyolab = loaded.config.accounts[0].hoyolab.as_ref().unwrap();
+        assert_eq!(hoyolab.cookie.expose_secret(), "overseas-secret");
+        assert_eq!(hoyolab.language, "ja-jp");
+        assert_eq!(hoyolab.user_agent, "custom-hoyolab-agent");
+        assert_eq!(hoyolab.games, vec![Game::Genshin, Game::StarRail]);
+        assert!(!format!("{:?}", loaded.config).contains("overseas-secret"));
+        assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn missing_hoyolab_node_uses_compatible_cookie_and_games_with_warning() {
+        let source = MINIMAL
+            .replace("    tasks:", "    games: [genshin]\n    tasks:")
+            .replace(
+                "      bbs: true",
+                "      bbs: true\n      hoyolab_checkin: true",
+            );
+        let loaded = parse(&source).unwrap();
+        assert!(loaded.config.accounts[0].hoyolab.is_none());
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("兼容模式"))
+        );
+    }
+
+    #[test]
+    fn hoyolab_rejects_missing_cookie_empty_games_and_unsupported_game() {
+        let source = MINIMAL
+            .replace(
+                "    tasks:",
+                "    hoyolab:\n      cookie: ''\n      language: zh-cn\n      user_agent: agent\n      games: [honkai2]\n    tasks:",
+            )
+            .replace("      bbs: true", "      bbs: true\n      hoyolab_checkin: true");
+        assert!(
+            matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("hoyolab.cookie")) && errors.iter().any(|error| error.contains("不支持 honkai2")))
+        );
+    }
+
+    #[test]
+    fn china_role_blacklist_rejects_blank_and_duplicate_uids() {
+        let source = MINIMAL.replace(
+            "    tasks:",
+            "    china_checkin:\n      role_blacklist:\n        genshin: ['10001', '10001', '   ']\n    tasks:",
+        );
+        assert!(
+            matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("重复 UID")) && errors.iter().any(|error| error.contains("空 UID")))
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use super::{
-    ConfigError, LogLevel, NotificationProvider, add_account_from_stdin, edit_file, load,
-    remove_account, remove_notification_provider, replace_account_cookie, set_account_cloud_games,
-    set_account_device, set_account_games, set_account_general, set_account_proxy,
+    ConfigError, HoyolabConfig, LogLevel, NotificationProvider, RoleBlacklistConfig,
+    add_account_from_stdin, edit_file, load, remove_account, remove_notification_provider,
+    replace_account_cookie, set_account_china_checkin, set_account_cloud_games, set_account_device,
+    set_account_games, set_account_general, set_account_hoyolab, set_account_proxy,
     set_account_tasks, set_captcha_endpoint, set_logging, set_notification_options,
     set_notification_provider, set_runtime,
 };
@@ -92,9 +93,9 @@ fn captcha(path: &Path) -> Result<(), ConfigError> {
 async fn accounts(path: &Path) -> Result<(), ConfigError> {
     loop {
         println!(
-            "账号：1.添加 2.基本信息 3.更新 Cookie 4.设备 5.代理 6.云游戏 7.任务 8.游戏 9.删除 0.返回"
+            "账号：1.添加 2.基本信息 3.更新 Cookie 4.设备 5.代理 6.国内签到 7.HoYoLAB 8.云游戏 9.任务 10.国内游戏 11.删除 0.返回"
         );
-        match read_number(9)? {
+        match read_number(11)? {
             None | Some(0) => return Ok(()),
             Some(1) => {
                 let remark = prompt("可选备注(留空不设置)")?;
@@ -107,10 +108,12 @@ async fn accounts(path: &Path) -> Result<(), ConfigError> {
             Some(3) => account_cookie(path).await?,
             Some(4) => account_device(path)?,
             Some(5) => account_proxy(path)?,
-            Some(6) => account_cloud_games(path)?,
-            Some(7) => tasks(path)?,
-            Some(8) => games(path)?,
-            Some(9) => {
+            Some(6) => account_china_checkin(path)?,
+            Some(7) => account_hoyolab(path)?,
+            Some(8) => account_cloud_games(path)?,
+            Some(9) => tasks(path)?,
+            Some(10) => games(path)?,
+            Some(11) => {
                 if let Some(name) = choose(path)? {
                     remove_account(path, &name)?;
                 }
@@ -226,6 +229,78 @@ fn account_cloud_games(path: &Path) -> Result<(), ConfigError> {
         overseas_genshin_enabled,
         overseas_genshin_token.as_deref(),
     )
+}
+
+fn account_china_checkin(path: &Path) -> Result<(), ConfigError> {
+    let Some(name) = choose(path)? else {
+        return Ok(());
+    };
+    let current = load(path)?
+        .config
+        .accounts
+        .into_iter()
+        .find(|account| account.name == name)
+        .expect("已选择的账号存在")
+        .china_checkin;
+    let user_agent = prompt_keep("国内签到 User-Agent", &current.user_agent)?;
+    println!("角色黑名单填写完整 UID，多个 UID 使用逗号分隔；留空保留，- 清空");
+    let role_blacklist = RoleBlacklistConfig {
+        genshin: prompt_list_keep("原神 UID 黑名单", &current.role_blacklist.genshin)?,
+        honkai2: prompt_list_keep("崩坏学园2 UID 黑名单", &current.role_blacklist.honkai2)?,
+        honkai3rd: prompt_list_keep("崩坏3 UID 黑名单", &current.role_blacklist.honkai3rd)?,
+        tears_of_themis: prompt_list_keep(
+            "未定事件簿 UID 黑名单",
+            &current.role_blacklist.tears_of_themis,
+        )?,
+        star_rail: prompt_list_keep(
+            "崩坏：星穹铁道 UID 黑名单",
+            &current.role_blacklist.star_rail,
+        )?,
+        zenless_zone_zero: prompt_list_keep(
+            "绝区零 UID 黑名单",
+            &current.role_blacklist.zenless_zone_zero,
+        )?,
+    };
+    set_account_china_checkin(path, &name, &user_agent, &role_blacklist)
+}
+
+fn account_hoyolab(path: &Path) -> Result<(), ConfigError> {
+    let Some(name) = choose(path)? else {
+        return Ok(());
+    };
+    let account = load(path)?
+        .config
+        .accounts
+        .into_iter()
+        .find(|account| account.name == name)
+        .expect("已选择的账号存在");
+    let current = account.hoyolab.unwrap_or_else(|| HoyolabConfig {
+        cookie: account.credentials.cookie,
+        language: "en-us".to_owned(),
+        games: account.games,
+        ..HoyolabConfig::default()
+    });
+    println!("已保存的 HoYoLAB Cookie 不会作为当前值回显；新输入内容由终端正常显示");
+    let current_cookie = (!current.cookie.is_empty()).then_some(&current.cookie);
+    let cookie = prompt_secret("HoYoLAB 独立 Cookie", current_cookie)?.unwrap_or_default();
+    let language = prompt_keep("HoYoLAB 语言(zh-cn/en-us/ja-jp/ko-kr)", &current.language)?;
+    let user_agent = prompt_keep("HoYoLAB User-Agent", &current.user_agent)?;
+    println!("HoYoLAB 游戏：1.原神 2.崩坏3 3.未定事件簿 4.星穹铁道 5.绝区零；留空取消");
+    let Some(selected) = read_choice(5)? else {
+        return Ok(());
+    };
+    if selected == [0] {
+        return Ok(());
+    }
+    let games = selected
+        .into_iter()
+        .filter_map(|number| {
+            [1, 3, 4, 5, 6]
+                .get((number as usize).saturating_sub(1))
+                .copied()
+        })
+        .collect::<Vec<_>>();
+    set_account_hoyolab(path, &name, &cookie, &language, &user_agent, &games)
 }
 
 fn notifications(path: &Path) -> Result<(), ConfigError> {
@@ -637,6 +712,25 @@ fn prompt_secret(
         Ok(None)
     } else {
         Ok(Some(value))
+    }
+}
+
+fn prompt_list_keep(label: &str, current: &[String]) -> Result<Vec<String>, ConfigError> {
+    let value = prompt(&format!(
+        "{label}[{}] (逗号分隔，留空保留，- 清空)",
+        current.join(",")
+    ))?;
+    if value.is_empty() {
+        Ok(current.to_vec())
+    } else if value == "-" {
+        Ok(Vec::new())
+    } else {
+        Ok(value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect())
     }
 }
 

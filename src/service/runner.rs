@@ -109,10 +109,14 @@ async fn run_china_account(config: &Config, account: &AccountConfig) -> RunRepor
         .endpoint
         .clone()
         .map(|endpoint| CaptchaClient::new(http.clone(), endpoint));
-    let client = ChinaCheckinClient::new(http, cookie, device_id);
+    let client = ChinaCheckinClient::new(http, cookie, device_id)
+        .user_agent(account.china_checkin.user_agent.clone());
     let mut signer = DsSigner::new(SystemClock, ThreadRandom);
 
-    for game in account.games.iter().filter_map(config_game_to_china) {
+    for configured_game in &account.games {
+        let Some(game) = config_game_to_china(configured_game) else {
+            continue;
+        };
         run_game(
             &mut report,
             &account.name,
@@ -120,6 +124,10 @@ async fn run_china_account(config: &Config, account: &AccountConfig) -> RunRepor
             captcha.as_ref(),
             &mut signer,
             game,
+            account
+                .china_checkin
+                .role_blacklist
+                .for_game(*configured_game),
             config.runtime.game_checkin_max_attempts,
         )
         .await;
@@ -178,8 +186,24 @@ pub async fn run_hoyolab_checkin(config: &Config) -> RunReport {
                 continue;
             }
         };
-        let client = HoyolabCheckinClient::new(http, account.credentials.cookie.clone());
-        for game in account.games.iter().filter_map(config_game_to_hoyolab) {
+        let (cookie, language, user_agent, games) = match &account.hoyolab {
+            Some(hoyolab) => (
+                hoyolab.cookie.clone(),
+                hoyolab.language.as_str(),
+                hoyolab.user_agent.as_str(),
+                hoyolab.games.as_slice(),
+            ),
+            None => (
+                account.credentials.cookie.clone(),
+                "en-us",
+                "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36",
+                account.games.as_slice(),
+            ),
+        };
+        let client = HoyolabCheckinClient::new(http, cookie)
+            .language(language)
+            .user_agent(user_agent);
+        for game in games.iter().filter_map(config_game_to_hoyolab) {
             run_hoyolab_game(
                 &mut report,
                 &account.name,
@@ -200,6 +224,7 @@ async fn run_game(
     captcha: Option<&CaptchaClient>,
     signer: &mut DsSigner<SystemClock, ThreadRandom>,
     game: ChinaGame,
+    role_blacklist: &[String],
     max_attempts: u32,
 ) {
     let spec = game.spec();
@@ -224,6 +249,16 @@ async fn run_game(
 
     for role in roles {
         let subject = format!("{} / {}", spec.display_name, mask_uid(&role.uid));
+        if role_is_excluded(role_blacklist, &role.uid) {
+            report.push(record(
+                account,
+                "国内游戏签到",
+                &subject,
+                TaskOutcome::Skipped,
+                "角色 UID 在配置黑名单中",
+            ));
+            continue;
+        }
         run_china_role(
             report,
             account,
@@ -239,6 +274,10 @@ async fn run_game(
         )
         .await;
     }
+}
+
+fn role_is_excluded(role_blacklist: &[String], uid: &str) -> bool {
+    role_blacklist.iter().any(|excluded| excluded == uid)
 }
 
 fn config_game_to_china(game: &Game) -> Option<ChinaGame> {
@@ -1007,5 +1046,12 @@ mod tests {
             with_reward("签到成功", None, 2),
             "签到成功；奖励详情获取失败"
         );
+    }
+
+    #[test]
+    fn role_blacklist_matches_complete_uid_only() {
+        let blacklist = vec!["123456789".to_owned()];
+        assert!(role_is_excluded(&blacklist, "123456789"));
+        assert!(!role_is_excluded(&blacklist, "6789"));
     }
 }

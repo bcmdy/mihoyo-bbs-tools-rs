@@ -53,7 +53,7 @@ MihoyoBBSToolsRS config setup
 
 `run --task` 可以临时缩小本次运行范围，可选值为 `china-checkin`、`hoyolab-checkin`、`bbs`、`china-cloud-game` 和 `overseas-cloud-game`；不提供时仍按原顺序尝试全部已实现任务。`checkin --region` 可选择 `china`、`hoyolab` 或 `all`，默认值为 `all`。这些命令行选项不会绕过配置文件中的账号、任务或游戏禁用状态。
 
-首次使用时可以直接运行 `config add-account`。即使默认的 `config/config.yaml` 及其父目录尚不存在，程序也会在 Cookie 和账号信息校验成功后创建只包含该账号的新配置，并以 `mys用户:<米游社昵称>` 作为账号名称。`config setup` 提供完整的数字设置菜单，可配置运行、日志、验证码、账号凭据、设备、代理、任务、游戏及通知渠道；普通运行命令不会自动进入交互界面，因此不会阻塞 CI、Docker 或计划任务。
+首次使用时可以直接运行 `config add-account`。即使默认的 `config/config.yaml` 及其父目录尚不存在，程序也会在 Cookie 和账号信息校验成功后创建只包含该账号的新配置，并以 `mys用户:<米游社昵称>` 作为账号名称。`config setup` 提供完整的数字设置菜单，可配置运行、日志、验证码、国内凭据、HoYoLAB 独立 Cookie/语言/游戏、角色黑名单、设备、代理、任务、云游戏及通知渠道；普通运行命令不会自动进入交互界面，因此不会阻塞 CI、Docker 或计划任务。
 
 Windows 可执行 `MihoyoBBSToolsRS create-launcher`，在 EXE 同目录生成 `MihoyoBBSToolsRS-run.bat`。BAT 固定记录生成时的 EXE 绝对路径与工作目录，因此移动到桌面或其他目录后仍能异步启动原程序；已有文件默认不会覆盖，需要覆盖时添加 `--force`，也可用 `--output` 指定 BAT 输出位置。
 

@@ -133,6 +133,16 @@ pub async fn add_account(
             serde_yaml_ng::to_value(super::ProxyConfig::default()).expect("默认代理配置可序列化"),
         );
         account.insert(
+            key("china_checkin"),
+            serde_yaml_ng::to_value(super::ChinaCheckinConfig::default())
+                .expect("默认国内签到配置可序列化"),
+        );
+        account.insert(
+            key("hoyolab"),
+            serde_yaml_ng::to_value(super::HoyolabConfig::default())
+                .expect("默认 HoYoLAB 配置可序列化"),
+        );
+        account.insert(
             key("cloud_games"),
             serde_yaml_ng::to_value(super::CloudGamesConfig::default())
                 .expect("默认云游戏配置可序列化"),
@@ -373,6 +383,70 @@ pub fn set_account_games(path: &Path, name: &str, games: &[u8]) -> Result<(), Co
                     .iter()
                     .filter_map(|n| NAMES.get((*n as usize).saturating_sub(1)))
                     .map(|v| Value::String((*v).to_owned()))
+                    .collect(),
+            ),
+        );
+        Ok(())
+    })
+}
+
+pub fn set_account_china_checkin(
+    path: &Path,
+    name: &str,
+    user_agent: &str,
+    role_blacklist: &super::RoleBlacklistConfig,
+) -> Result<(), ConfigError> {
+    mutate_raw(path, |root| {
+        let account = find_account_mut(root, name)?;
+        let china = account
+            .entry(key("china_checkin"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("china_checkin 必须是对象".to_owned()))?;
+        china.insert(key("user_agent"), Value::String(user_agent.to_owned()));
+        china.insert(
+            key("role_blacklist"),
+            serde_yaml_ng::to_value(role_blacklist)
+                .map_err(|error| ConfigError::Edit(error.to_string()))?,
+        );
+        Ok(())
+    })
+}
+
+pub fn set_account_hoyolab(
+    path: &Path,
+    name: &str,
+    cookie: &str,
+    language: &str,
+    user_agent: &str,
+    games: &[u8],
+) -> Result<(), ConfigError> {
+    const NAMES: [&str; 6] = [
+        "genshin",
+        "honkai2",
+        "honkai3rd",
+        "tears_of_themis",
+        "star_rail",
+        "zenless_zone_zero",
+    ];
+    mutate_raw(path, |root| {
+        let account = find_account_mut(root, name)?;
+        let hoyolab = account
+            .entry(key("hoyolab"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("hoyolab 必须是对象".to_owned()))?;
+        hoyolab.insert(key("cookie"), Value::String(cookie.to_owned()));
+        hoyolab.insert(key("language"), Value::String(language.to_owned()));
+        hoyolab.insert(key("user_agent"), Value::String(user_agent.to_owned()));
+        hoyolab.insert(
+            key("games"),
+            Value::Sequence(
+                games
+                    .iter()
+                    .filter_map(|number| NAMES.get((*number as usize).saturating_sub(1)))
+                    .filter(|name| **name != "honkai2")
+                    .map(|name| Value::String((*name).to_owned()))
                     .collect(),
             ),
         );
@@ -909,6 +983,9 @@ mod tests {
             "stoken:",
             "device:",
             "proxy:",
+            "china_checkin:",
+            "role_blacklist:",
+            "hoyolab:",
             "cloud_games:",
             "china:",
             "overseas:",
@@ -1009,6 +1086,51 @@ mod tests {
                 .token
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn region_editors_persist_user_agents_blacklists_and_hoyolab_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        let name = add_account(
+            &path,
+            None,
+            "account_id=123; account_mid_v2=mid; stoken=v2_secret",
+        )
+        .await
+        .unwrap();
+        let blacklist = super::super::RoleBlacklistConfig {
+            genshin: vec!["10001".to_owned()],
+            star_rail: vec!["20002".to_owned()],
+            ..Default::default()
+        };
+        set_account_china_checkin(&path, &name, "custom-cn-agent", &blacklist).unwrap();
+        set_account_hoyolab(
+            &path,
+            &name,
+            "overseas-cookie",
+            "ko-kr",
+            "custom-os-agent",
+            &[1, 3, 5],
+        )
+        .unwrap();
+
+        let loaded = load(&path).unwrap();
+        let account = &loaded.config.accounts[0];
+        assert_eq!(account.china_checkin.user_agent, "custom-cn-agent");
+        assert_eq!(account.china_checkin.role_blacklist, blacklist);
+        let hoyolab = account.hoyolab.as_ref().unwrap();
+        assert_eq!(hoyolab.cookie.expose_secret(), "overseas-cookie");
+        assert_eq!(hoyolab.language, "ko-kr");
+        assert_eq!(
+            hoyolab.games,
+            vec![
+                super::super::Game::Genshin,
+                super::super::Game::Honkai3rd,
+                super::super::Game::StarRail,
+            ]
+        );
+        assert!(!format!("{account:?}").contains("overseas-cookie"));
     }
 
     #[test]

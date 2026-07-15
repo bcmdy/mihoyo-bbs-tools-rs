@@ -4,10 +4,10 @@ use serde_yaml_ng::{Mapping, Value};
 use url::Url;
 
 use super::{
-    AccountConfig, CURRENT_CONFIG_VERSION, CaptchaConfig, ChinaCloudGamesConfig,
-    CloudGameEntryConfig, CloudGamesConfig, Config, ConfigError, CredentialConfig, DeviceConfig,
-    Game, LoadedConfig, NotificationsConfig, OverseasCloudGamesConfig, ProxyConfig, RuntimeConfig,
-    TaskConfig,
+    AccountConfig, CURRENT_CONFIG_VERSION, CaptchaConfig, ChinaCheckinConfig,
+    ChinaCloudGamesConfig, CloudGameEntryConfig, CloudGamesConfig, Config, ConfigError,
+    CredentialConfig, DeviceConfig, Game, HoyolabConfig, LoadedConfig, NotificationsConfig,
+    OverseasCloudGamesConfig, ProxyConfig, RoleBlacklistConfig, RuntimeConfig, TaskConfig,
 };
 use crate::auth::SecretString;
 
@@ -82,22 +82,25 @@ pub(super) fn migrate_value(
             3
         });
 
-    let mut selected_games = Vec::new();
-    let mut seen = HashSet::new();
-    for (legacy_name, game) in [
-        ("genshin", Game::Genshin),
-        ("honkai2", Game::Honkai2),
-        ("honkai3rd", Game::Honkai3rd),
-        ("tears_of_themis", Game::TearsOfThemis),
-        ("honkai_sr", Game::StarRail),
-        ("zzz", Game::ZenlessZoneZero),
-    ] {
-        let enabled = (cn_enabled && game_checkin(cn, legacy_name))
-            || (overseas_enabled && game_checkin(overseas, legacy_name));
-        if enabled && seen.insert(game) {
-            selected_games.push(game);
-        }
-    }
+    let selected_games = legacy_selected_games(cn, cn_enabled, true);
+    let hoyolab_games = legacy_selected_games(overseas, overseas_enabled, false);
+    let china_checkin = ChinaCheckinConfig {
+        user_agent: cn
+            .and_then(|map| scalar_string(map, "useragent"))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(super::default_china_user_agent),
+        role_blacklist: migrate_role_blacklist(cn, &mut warnings),
+    };
+    let hoyolab = HoyolabConfig {
+        cookie: SecretString::new(
+            overseas
+                .and_then(|map| scalar_string(map, "cookie"))
+                .unwrap_or_default(),
+        ),
+        language: migrate_hoyolab_language(overseas, &mut warnings),
+        user_agent: super::default_hoyolab_user_agent(),
+        games: hoyolab_games,
+    };
 
     let bbs = mapping(root, "mihoyobbs");
     let bbs_enabled = bbs.and_then(|map| boolean(map, "enable")).unwrap_or(true);
@@ -158,6 +161,8 @@ pub(super) fn migrate_value(
             },
             device,
             proxy: ProxyConfig::default(),
+            china_checkin,
+            hoyolab: Some(hoyolab),
             cloud_games: cloud_games_config,
             tasks: TaskConfig {
                 china_game_checkin: cn_enabled,
@@ -233,29 +238,109 @@ fn warn_about_lossy_fields(root: &Mapping, warnings: &mut Vec<String>) {
         warnings.push("旧版 push.ini 文件引用无法转换为内联通知配置，未迁移".to_owned());
     }
     if let Some(games) = mapping(root, "games") {
-        if mapping(games, "os")
-            .and_then(|map| scalar_string(map, "cookie"))
-            .is_some_and(|value| !value.is_empty())
-        {
-            warnings.push("旧版国际服独立 Cookie 尚无对应凭据字段，未迁移".to_owned());
-        }
-        if has_blacklists(games) {
-            warnings.push("旧版游戏角色黑名单尚无对应的新模型，未迁移".to_owned());
+        if mapping(games, "os").is_some_and(has_blacklists) {
+            warnings.push(
+                "旧版国际服角色黑名单未迁移：原 Python 国际服签到接口未按 UID 执行黑名单"
+                    .to_owned(),
+            );
         }
     }
 }
 
-fn has_blacklists(games: &Mapping) -> bool {
-    ["cn", "os"].iter().any(|region| {
-        mapping(games, region).is_some_and(|region| {
-            region.values().any(|game| {
-                game.as_mapping()
-                    .and_then(|game| get(game, "black_list"))
-                    .and_then(Value::as_sequence)
-                    .is_some_and(|items| !items.is_empty())
-            })
-        })
+fn has_blacklists(region: &Mapping) -> bool {
+    region.values().any(|game| {
+        game.as_mapping()
+            .and_then(|game| get(game, "black_list"))
+            .and_then(Value::as_sequence)
+            .is_some_and(|items| !items.is_empty())
     })
+}
+
+fn legacy_selected_games(
+    region: Option<&Mapping>,
+    enabled: bool,
+    include_honkai2: bool,
+) -> Vec<Game> {
+    if !enabled {
+        return Vec::new();
+    }
+    [
+        ("genshin", Game::Genshin),
+        ("honkai2", Game::Honkai2),
+        ("honkai3rd", Game::Honkai3rd),
+        ("tears_of_themis", Game::TearsOfThemis),
+        ("honkai_sr", Game::StarRail),
+        ("zzz", Game::ZenlessZoneZero),
+    ]
+    .into_iter()
+    .filter(|(_, game)| include_honkai2 || *game != Game::Honkai2)
+    .filter(|(name, _)| game_checkin(region, name))
+    .map(|(_, game)| game)
+    .collect()
+}
+
+fn migrate_role_blacklist(
+    region: Option<&Mapping>,
+    warnings: &mut Vec<String>,
+) -> RoleBlacklistConfig {
+    RoleBlacklistConfig {
+        genshin: legacy_blacklist(region, "genshin", warnings),
+        honkai2: legacy_blacklist(region, "honkai2", warnings),
+        honkai3rd: legacy_blacklist(region, "honkai3rd", warnings),
+        tears_of_themis: legacy_blacklist(region, "tears_of_themis", warnings),
+        star_rail: legacy_blacklist(region, "honkai_sr", warnings),
+        zenless_zone_zero: legacy_blacklist(region, "zzz", warnings),
+    }
+}
+
+fn legacy_blacklist(
+    region: Option<&Mapping>,
+    game: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let Some(items) = region
+        .and_then(|region| mapping(region, game))
+        .and_then(|game| get(game, "black_list"))
+        .and_then(Value::as_sequence)
+    else {
+        return Vec::new();
+    };
+    let mut output = Vec::new();
+    for item in items {
+        let Some(uid) = (match item {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        }) else {
+            warnings.push(format!(
+                "旧版 games.cn.{game}.black_list 包含无效 UID，已忽略"
+            ));
+            continue;
+        };
+        let uid = uid.trim();
+        if uid.is_empty() {
+            warnings.push(format!(
+                "旧版 games.cn.{game}.black_list 包含空 UID，已忽略"
+            ));
+        } else if !output.iter().any(|value| value == uid) {
+            output.push(uid.to_owned());
+        }
+    }
+    output
+}
+
+fn migrate_hoyolab_language(value: Option<&Mapping>, warnings: &mut Vec<String>) -> String {
+    let language = value
+        .and_then(|map| scalar_string(map, "lang"))
+        .unwrap_or_else(super::default_hoyolab_language);
+    if matches!(language.as_str(), "zh-cn" | "en-us" | "ja-jp" | "ko-kr") {
+        language
+    } else {
+        warnings.push(format!(
+            "旧版 games.os.lang={language:?} 不受支持，已改为 zh-cn"
+        ));
+        super::default_hoyolab_language()
+    }
 }
 
 fn migrate_cloud_entry(
@@ -396,6 +481,64 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("Token 尚无对应"))
+        );
+        assert_eq!(
+            migrated.config.accounts[0]
+                .china_checkin
+                .role_blacklist
+                .genshin,
+            vec!["999999"]
+        );
+    }
+
+    #[test]
+    fn migrates_region_specific_games_cookie_language_and_user_agent() {
+        let source = r#"
+version: 15
+account:
+  cookie: domestic-cookie
+  stoken: domestic-stoken
+games:
+  cn:
+    enable: true
+    useragent: custom-cn-agent
+    genshin:
+      checkin: true
+      black_list: [10001]
+    honkai_sr:
+      checkin: false
+  os:
+    enable: true
+    cookie: overseas-cookie
+    lang: ja-jp
+    genshin:
+      checkin: false
+    honkai_sr:
+      checkin: true
+      black_list: [20002]
+"#;
+        let value: Value = serde_yaml_ng::from_str(source).unwrap();
+        let migrated = migrate_value(&value, "regions").unwrap();
+        let account = &migrated.config.accounts[0];
+        assert_eq!(account.games, vec![Game::Genshin]);
+        assert_eq!(account.china_checkin.user_agent, "custom-cn-agent");
+        assert_eq!(account.china_checkin.role_blacklist.genshin, vec!["10001"]);
+        let hoyolab = account.hoyolab.as_ref().unwrap();
+        assert_eq!(hoyolab.games, vec![Game::StarRail]);
+        assert_eq!(hoyolab.language, "ja-jp");
+        assert_eq!(hoyolab.cookie.expose_secret(), "overseas-cookie");
+        assert!(!format!("{account:?}").contains("overseas-cookie"));
+        assert!(
+            migrated
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("国际服角色黑名单未迁移"))
+        );
+        assert!(
+            !migrated
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("独立 Cookie"))
         );
     }
 

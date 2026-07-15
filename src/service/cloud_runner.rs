@@ -261,6 +261,8 @@ mod tests {
             },
             device: DeviceConfig::default(),
             proxy: ProxyConfig::default(),
+            china_checkin: Default::default(),
+            hoyolab: None,
             cloud_games: Default::default(),
             tasks: TaskConfig::default(),
             games: Vec::new(),

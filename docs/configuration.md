@@ -40,6 +40,23 @@ accounts:
     proxy:
       url: null
 
+    china_checkin:
+      user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0"
+      role_blacklist:
+        genshin: []
+        honkai2: []
+        honkai3rd: []
+        tears_of_themis: []
+        star_rail: []
+        zenless_zone_zero: []
+
+    hoyolab:
+      cookie: "${HOYOLAB_COOKIE}"
+      language: zh-cn
+      user_agent: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36"
+      games:
+        - genshin
+
     cloud_games:
       china:
         genshin:
@@ -130,7 +147,7 @@ MihoyoBBSToolsRS config setup --config config/config.yaml
 
 ### 交互式设置
 
-`config setup` 显式进入数字菜单，可设置请求与重试、文件日志、验证码端点、账号启用状态与备注、Cookie/SToken、设备、账号代理、任务、米游社社区板块、游戏以及全部通知渠道。通知渠道支持在菜单中添加、编辑和删除，Telegram 的 API 地址与独立代理也可直接设置，不再要求跳转编辑器。`高级 YAML 编辑` 仅作为可选入口保留。
+`config setup` 显式进入数字菜单，可设置请求与重试、文件日志、验证码端点、账号启用状态与备注、Cookie/SToken、设备、账号代理、国内签到 User-Agent 与角色黑名单、HoYoLAB 独立 Cookie/语言/User-Agent/游戏、云游戏、任务以及全部通知渠道。通知渠道支持在菜单中添加、编辑和删除，Telegram 的 API 地址与独立代理也可直接设置，不再要求跳转编辑器。`高级 YAML 编辑` 仅作为可选入口保留。
 
 多选支持连续数字（如 `123`）或逗号分隔（如 `1,2,3`），重复编号会自动去重；`0` 取消当前操作且不写配置。无效、越界或空输入会提示重新输入，EOF 会安全退出。该命令只适用于交互终端；标准输入不可用或不是交互终端时会明确失败，不会无限等待。菜单和错误信息不会显示 Cookie、SToken、通知 Token 或代理认证信息。
 
@@ -176,7 +193,7 @@ MihoyoBBSToolsRS checkin --region all
 
 ## 多账号
 
-每个账号拥有独立的名称、启用状态、凭据、设备信息、代理、任务开关和游戏列表。不同账号的 HTTP 客户端和认证上下文必须隔离，不能复用另一个账号的 Cookie、设备信息或代理认证信息。
+每个账号拥有独立的名称、启用状态、国内凭据、HoYoLAB 凭据、设备信息、代理、任务开关和区域游戏列表。不同账号的 HTTP 客户端和认证上下文必须隔离，不能复用另一个账号的 Cookie、设备信息或代理认证信息。
 
 单个账号失败不应阻止其他安全任务执行，但遇到验证码时应停止该账号的高风险重复请求。全部任务结束后，由统一报告聚合每个账号的成功、已完成、跳过、失败和验证码状态。
 
@@ -207,6 +224,14 @@ accounts:
 
 未配置代理时使用直接连接。代理连接失败应分类为网络或代理故障，对应退出码 `5`。
 
+## 国内与 HoYoLAB 区域配置
+
+`accounts[].games` 只控制国内游戏签到。`china_checkin.user_agent` 控制国内签到请求头，`china_checkin.role_blacklist` 按游戏保存完整角色 UID；命中黑名单的角色会显示 `Skipped`，其他角色仍正常执行。
+
+`accounts[].hoyolab` 使用独立 Cookie、语言、User-Agent 和游戏列表，不再与国内签到共用 `credentials.cookie` 或 `games`。HoYoLAB 支持原神、崩坏3、未定事件簿、崩坏：星穹铁道和绝区零，不支持崩坏学园2。语言可选 `zh-cn`、`en-us`、`ja-jp`、`ko-kr`。HoYoLAB Cookie 不参与国内 SToken 自动刷新。
+
+为兼容此前生成的 version 1 配置，账号缺少整个 `hoyolab` 节点且启用了 HoYoLAB 时，程序会临时复用 `credentials.cookie` 和 `games` 并输出迁移警告；新配置和菜单添加的账号都会写出完整 `hoyolab` 节点，应直接填写独立凭据。
+
 ## 云游戏
 
 `tasks.china_cloud_game` 和 `tasks.overseas_cloud_game` 是区域总开关；`cloud_games` 保存每个云游戏的独立开关和 Token。国内支持云原神与云绝区零，国际服支持云原神。配置示例中的 `token: null` 表示未配置，Token 已保存但临时停用时只需把对应的 `enabled` 改为 `false`。
@@ -223,6 +248,8 @@ accounts:
 
 - 缺失字段使用经过文档确认的安全默认值。
 - 旧版顶层 `device` 会迁移到对应账号的 `device`，保留 `name`、`model`、`id` 和 `fp`。
+- 旧版 `games.cn` 的 User-Agent、游戏选择和角色黑名单会迁移到国内签到配置。
+- 旧版 `games.os` 的独立 Cookie、语言和游戏选择会迁移到 `hoyolab`；旧 Python 实际未执行国际服 UID 黑名单，因此该字段只产生明确警告，不会伪装成已支持。
 - 旧版国内/国际云游戏总开关、单游戏开关、Token 和国际服语言会迁移到账号的 `cloud_games`。
 - 无法迁移的字段产生明确警告。
 - 旧格式解析完成后，业务代码只使用新版内部模型。
