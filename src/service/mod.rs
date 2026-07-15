@@ -1,3 +1,4 @@
+mod batch;
 mod bbs_runner;
 mod cloud_runner;
 mod credential_refresh;
@@ -10,6 +11,7 @@ mod web_activity_runner;
 use std::path::Path;
 use uuid::Uuid;
 
+pub use batch::{BatchEntry, BatchReport, ConfigDirectoryError, discover_config_files};
 pub use bbs_runner::{run_bbs, run_bbs_with_persistence, run_bbs_with_refresh};
 pub use cloud_runner::run_cloud_games;
 pub use report::{RunReport, TaskOutcome, TaskRecord};
