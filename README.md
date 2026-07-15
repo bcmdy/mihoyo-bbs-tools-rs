@@ -125,7 +125,7 @@ MihoyoBBSToolsRS run
 
 Kubernetes 用户可使用 [CronJob 示例](deploy/kubernetes/README.md)。清单默认按北京时间每日 `00:05` 运行，禁止任务重叠，并把名为 `mihoyo-bbs-tools-config` 的 Secret 只读挂载为配置。生产部署应固定已发布的镜像版本，不要长期跟随 `latest`。
 
-NixOS 或启用 Flakes 的 Linux 可执行 `nix run github:bcmdy/mihoyo-bbs-tools-rs -- run`，也可在仓库中使用 `nix build`。Nix 包支持 `x86_64-linux` 与 `aarch64-linux`，安装用户文档和配置模板，并为 HTTPS 设置 Nix 的 CA 证书路径。
+NixOS 或启用 Flakes 的 Linux 可执行 `nix run github:bcmdy/mihoyo-bbs-tools-rs -- run`，也可在仓库中使用 `nix build`。Nix 包支持并在原生 Actions runner 验证 `x86_64-linux` 与 `aarch64-linux`，安装用户文档和配置模板，并为 HTTPS 设置 Nix 的 CA 证书路径。
 
 ## 许可证
 

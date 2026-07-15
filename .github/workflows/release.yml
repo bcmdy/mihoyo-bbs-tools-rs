@@ -17,7 +17,7 @@ permissions:
 jobs:
   build-linux:
     name: 构建 Linux ${{ matrix.package_arch }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 60
     outputs:
       tag: ${{ steps.version.outputs.tag }}
@@ -27,20 +27,27 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             package_arch: x86_64
+            runs_on: ubuntu-latest
             cross_cc: ""
+            cross_ar: ""
             apt_package: ""
           - target: aarch64-unknown-linux-gnu
             package_arch: arm64
-            cross_cc: aarch64-linux-gnu-gcc
-            apt_package: gcc-aarch64-linux-gnu
+            runs_on: ubuntu-24.04-arm
+            cross_cc: ""
+            cross_ar: ""
+            apt_package: ""
           - target: armv7-unknown-linux-gnueabihf
             package_arch: armv7
+            runs_on: ubuntu-latest
             cross_cc: arm-linux-gnueabihf-gcc
-            apt_package: gcc-arm-linux-gnueabihf
+            cross_ar: arm-linux-gnueabihf-ar
+            apt_package: gcc-arm-linux-gnueabihf qemu-user
     env:
       CARGO_TARGET: ${{ matrix.target }}
       PACKAGE_ARCH: ${{ matrix.package_arch }}
       CROSS_CC: ${{ matrix.cross_cc }}
+      CROSS_AR: ${{ matrix.cross_ar }}
 
     steps:
       - name: 检出代码
@@ -95,9 +102,20 @@ jobs:
           cc_key="${CARGO_TARGET//-/_}"
           echo "CARGO_TARGET_${cargo_key}_LINKER=$CROSS_CC" >> "$GITHUB_ENV"
           echo "CC_${cc_key}=$CROSS_CC" >> "$GITHUB_ENV"
+          echo "AR_${cc_key}=$CROSS_AR" >> "$GITHUB_ENV"
 
       - name: 编译 Release
         run: cargo build --release --locked --target "$CARGO_TARGET"
+
+      - name: 验证目标程序可启动
+        shell: bash
+        run: |
+          binary="target/$CARGO_TARGET/release/MihoyoBBSToolsRS"
+          if [[ "$CARGO_TARGET" == "armv7-unknown-linux-gnueabihf" ]]; then
+            qemu-arm -L /usr/arm-linux-gnueabihf "$binary" version
+          else
+            "$binary" version
+          fi
 
       - name: 打包并生成校验文件
         run: |

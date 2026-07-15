@@ -37,8 +37,16 @@ concurrency:
 
 jobs:
   check:
-    name: 检查 x86_64-linux 包
-    runs-on: ubuntu-latest
+    name: 检查 ${{ matrix.system }} 包
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runs_on: ubuntu-latest
+          - system: aarch64-linux
+            runs_on: ubuntu-24.04-arm
     steps:
       - name: 检出代码
         uses: actions/checkout@v4

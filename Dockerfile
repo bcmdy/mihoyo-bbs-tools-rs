@@ -1,8 +1,11 @@
-FROM rust:1-alpine AS builder
+FROM rust:1.97.0-slim-bookworm AS builder
 
 ARG MIHOYO_BBS_TOOLS_VERSION=container
+ARG GIT_COMMIT=unknown
 
-RUN apk add --no-cache musl-dev
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -11,13 +14,18 @@ COPY config ./config
 COPY integrations ./integrations
 COPY src ./src
 
-RUN MIHOYO_BBS_TOOLS_VERSION="$MIHOYO_BBS_TOOLS_VERSION" cargo build --release --locked
+RUN MIHOYO_BBS_TOOLS_VERSION="$MIHOYO_BBS_TOOLS_VERSION" \
+    GIT_COMMIT="$GIT_COMMIT" \
+    cargo build --release --locked
 
-FROM alpine:3
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -S -g 10001 app \
-    && adduser -S -D -H -u 10001 -G app app
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates libgcc-s1 tzdata \
+    && groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --home-dir /app --create-home --shell /usr/sbin/nologin app \
+    && install -d -o app -g app /app/logs \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV TZ=Asia/Shanghai
 WORKDIR /app

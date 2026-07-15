@@ -9,6 +9,10 @@ on:
     paths:
       - ".github/workflows/tls-smoke.yml"
       - "tests/tls_smoke.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/http/**"
+      - "src/push/smtp.rs"
 
 permissions:
   contents: read
