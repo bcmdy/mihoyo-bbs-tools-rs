@@ -770,6 +770,9 @@ pub fn remove_notification_provider(path: &Path, index: usize) -> Result<(), Con
 }
 
 fn notification_field_value(field: &str, raw: &str) -> Result<Value, ConfigError> {
+    if field == "title_prefix" && raw.is_empty() {
+        return Ok(Value::String(String::new()));
+    }
     if matches!(field, "uids" | "topic_ids") && raw.is_empty() {
         return Ok(Value::Sequence(Vec::new()));
     }

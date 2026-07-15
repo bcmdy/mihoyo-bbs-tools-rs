@@ -229,3 +229,5 @@ notifications:
   #   subject: "MihoyoBBSTools RS"
   #   tls: implicit
   #   timeout_seconds: null
+  # - type: windows_toast
+  #   title_prefix: "MihoyoBBSTools RS"

@@ -695,6 +695,10 @@ pub enum NotificationProvider {
         #[serde(default)]
         timeout_seconds: Option<u64>,
     },
+    WindowsToast {
+        #[serde(default = "default_windows_toast_title_prefix")]
+        title_prefix: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -707,6 +711,10 @@ pub enum SmtpTlsMode {
 
 fn default_smtp_tls() -> SmtpTlsMode {
     SmtpTlsMode::Implicit
+}
+
+fn default_windows_toast_title_prefix() -> String {
+    "MihoyoBBSTools RS".to_owned()
 }
 
 fn default_wecom_to_user() -> String {
@@ -1224,7 +1232,8 @@ fn validate_provider(provider: &NotificationProvider, index: usize, errors: &mut
             if host.trim().is_empty()
                 || host.trim() != host
                 || host.contains("://")
-                || host.contains(['/', '\\'])
+                || host.contains('/')
+                || host.contains('\\')
                 || host.chars().any(char::is_whitespace)
             {
                 errors.push(format!("{path}.host 必须是无协议和路径的 SMTP 主机名"));
@@ -1245,6 +1254,11 @@ fn validate_provider(provider: &NotificationProvider, index: usize, errors: &mut
             }
             if timeout_seconds.is_some_and(|timeout| !(1..=300).contains(&timeout)) {
                 errors.push(format!("{path}.timeout_seconds 必须在 1 到 300 之间"));
+            }
+        }
+        NotificationProvider::WindowsToast { title_prefix } => {
+            if title_prefix.chars().any(|character| character.is_control()) {
+                errors.push(format!("{path}.title_prefix 不能包含控制字符"));
             }
         }
     }
@@ -1605,6 +1619,7 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                             "tls",
                             "timeout_seconds",
                         ][..],
+                        Some("windows_toast") => &["type", "title_prefix"][..],
                         _ => &["type"][..],
                     };
                     inspect_mapping(
@@ -2119,6 +2134,28 @@ accounts:
         );
         assert!(
             matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains(".host")))
+        );
+    }
+
+    #[test]
+    fn windows_toast_applies_default_prefix_and_rejects_control_characters() {
+        let source = format!(
+            "{MINIMAL}\nnotifications:\n  enabled: true\n  providers:\n    - type: windows_toast\n"
+        );
+        let loaded = parse(&source).unwrap();
+        let NotificationProvider::WindowsToast { title_prefix } =
+            &loaded.config.notifications.providers[0]
+        else {
+            panic!("expected Windows toast provider");
+        };
+        assert_eq!(title_prefix, "MihoyoBBSTools RS");
+        assert!(loaded.warnings.is_empty());
+
+        let invalid = format!(
+            "{MINIMAL}\nnotifications:\n  enabled: true\n  providers:\n    - type: windows_toast\n      title_prefix: \"invalid\\nvalue\"\n"
+        );
+        assert!(
+            matches!(parse(&invalid), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("title_prefix")))
         );
     }
 

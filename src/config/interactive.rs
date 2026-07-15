@@ -475,6 +475,7 @@ fn provider_types() -> &'static [&'static str] {
         "wxpusher",
         "serverchan3",
         "smtp",
+        "windows_toast",
     ]
 }
 
@@ -540,6 +541,8 @@ fn provider_fields(kind: &str) -> &'static [ProviderField] {
         field("tls", true, Some("implicit")),
         field("timeout_seconds", false, None),
     ];
+    const WINDOWS_TOAST: &[ProviderField] =
+        &[field("title_prefix", false, Some("MihoyoBBSTools RS"))];
     match kind {
         "telegram" => TELEGRAM,
         "webhook" => WEBHOOK,
@@ -558,6 +561,7 @@ fn provider_fields(kind: &str) -> &'static [ProviderField] {
         "wxpusher" => WXPUSHER,
         "serverchan3" => SERVERCHAN3,
         "smtp" => SMTP,
+        "windows_toast" => WINDOWS_TOAST,
         _ => &[],
     }
 }
@@ -591,6 +595,7 @@ fn provider_type(provider: &NotificationProvider) -> &'static str {
         NotificationProvider::Wxpusher { .. } => "wxpusher",
         NotificationProvider::Serverchan3 { .. } => "serverchan3",
         NotificationProvider::Smtp { .. } => "smtp",
+        NotificationProvider::WindowsToast { .. } => "windows_toast",
     }
 }
 

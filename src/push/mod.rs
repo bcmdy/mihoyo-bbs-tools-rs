@@ -12,6 +12,8 @@ use crate::{
 
 mod smtp;
 use smtp::SmtpProvider;
+mod windows_toast;
+use windows_toast::WindowsToastProvider;
 
 const PUSHPLUS_API_URL: &str = "https://www.pushplus.plus/send";
 
@@ -48,6 +50,7 @@ pub enum ProviderKind {
     Webhook,
     Pushplus,
     Smtp,
+    WindowsToast,
     Other,
 }
 
@@ -58,6 +61,7 @@ impl ProviderKind {
             Self::Webhook => "webhook",
             Self::Pushplus => "pushplus",
             Self::Smtp => "smtp",
+            Self::WindowsToast => "windows_toast",
             Self::Other => "other",
         }
     }
@@ -107,6 +111,10 @@ pub enum PushError {
     InvalidMessage,
     #[error("SMTP 邮件发送失败")]
     SmtpDelivery,
+    #[error("Windows 本地通知仅支持 Windows 桌面会话")]
+    UnsupportedWindowsToast,
+    #[error("Windows 本地通知提交失败")]
+    WindowsToastDelivery,
 }
 
 pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), PushError>> + Send + 'a>>;
@@ -233,6 +241,9 @@ fn configured_provider(config: &Config, provider: &NotificationProvider) -> Box<
             Duration::from_secs(timeout_seconds.unwrap_or(config.runtime.request_timeout_seconds)),
         ));
     }
+    if let NotificationProvider::WindowsToast { title_prefix } = provider {
+        return Box::new(WindowsToastProvider::new(title_prefix.clone()));
+    }
     let http = configured_http(config, provider);
     let http = match http {
         Ok(http) => http,
@@ -287,6 +298,7 @@ fn configured_kind(provider: &NotificationProvider) -> ProviderKind {
         NotificationProvider::Webhook { .. } => ProviderKind::Webhook,
         NotificationProvider::Pushplus { .. } => ProviderKind::Pushplus,
         NotificationProvider::Smtp { .. } => ProviderKind::Smtp,
+        NotificationProvider::WindowsToast { .. } => ProviderKind::WindowsToast,
         _ => ProviderKind::Other,
     }
 }
@@ -383,7 +395,7 @@ impl CompatProvider {
                 let mut send=base.join("cgi-bin/message/send").map_err(|_|PushError::InvalidEndpoint)?; send.query_pairs_mut().append_pair("access_token",&token.access_token);
                 self.json(send,&serde_json::json!({"touser":to_user,"msgtype":"text","agentid":agent_id,"text":{"content":text},"safe":0})).await
             }
-            Telegram{..}|Webhook{..}|Pushplus{..}|Smtp{..} => unreachable!(),
+            Telegram{..}|Webhook{..}|Pushplus{..}|Smtp{..}|WindowsToast{..} => unreachable!(),
         }
     }
     async fn json(&self, url: Url, body: &serde_json::Value) -> Result<(), PushError> {
