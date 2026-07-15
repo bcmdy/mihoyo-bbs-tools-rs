@@ -64,35 +64,45 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             config: path,
             tasks,
         } => {
-            let mut loaded = config::load(&path)?;
+            let loaded = config::load(&path)?;
             for warning in &loaded.warnings {
                 tracing::warn!("{warning}");
             }
-            service::apply_runtime_delay(&loaded.config.runtime).await;
-            let all = tasks.is_empty();
-            let mut report = service::RunReport::default();
-            if all || tasks.contains(&RunTask::ChinaCheckin) {
-                report.extend(
-                    service::run_china_checkin_with_refresh(&mut loaded.config, &path).await,
-                );
+            let (config, report) = execute_run(loaded.config, &path, &tasks).await;
+            return Ok(finish_report(&config, &report).await);
+        }
+        Command::Schedule {
+            config: path,
+            tasks,
+        } => {
+            let mut first = true;
+            let mut last_exit = 0;
+            loop {
+                let loaded = config::load(&path)?;
+                for warning in &loaded.warnings {
+                    tracing::warn!("{warning}");
+                }
+                let schedule = loaded.config.runtime.schedule.clone();
+                if !schedule.enabled {
+                    if first {
+                        return Err(AppError::Task(
+                            "runtime.schedule.enabled=false，拒绝启动定时运行".to_owned(),
+                        ));
+                    }
+                    tracing::info!("检测到定时运行已关闭，退出 schedule");
+                    return Ok(last_exit);
+                }
+                if first && !schedule.run_on_start {
+                    first = false;
+                    service::wait_schedule_interval(&schedule).await;
+                    continue;
+                }
+                let (config, report) = execute_run(loaded.config, &path, &tasks).await;
+                last_exit = finish_report(&config, &report).await;
+                tracing::info!(exit_code = last_exit, "定时任务本轮结束");
+                first = false;
+                service::wait_schedule_interval(&schedule).await;
             }
-            if all || tasks.contains(&RunTask::HoyolabCheckin) {
-                report.extend(service::run_hoyolab_checkin(&loaded.config).await);
-            }
-            if all || tasks.contains(&RunTask::Bbs) {
-                report.extend(service::run_bbs_with_refresh(&mut loaded.config, &path).await);
-            }
-            let china_cloud = all || tasks.contains(&RunTask::ChinaCloudGame);
-            let overseas_cloud = all || tasks.contains(&RunTask::OverseasCloudGame);
-            if china_cloud || overseas_cloud {
-                report.extend(
-                    service::run_cloud_games(&loaded.config, china_cloud, overseas_cloud).await,
-                );
-            }
-            if all || tasks.contains(&RunTask::WebActivity) {
-                report.extend(service::run_web_activities(&loaded.config));
-            }
-            return Ok(finish_report(&loaded.config, &report).await);
         }
         Command::MigrateConfig(args) => {
             let resolved = args.resolve().map_err(AppError::Task)?;
@@ -156,7 +166,8 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
     match &cli.command {
         Command::ValidateConfig { config }
         | Command::Checkin { config, .. }
-        | Command::Run { config, .. } => Some(config),
+        | Command::Run { config, .. }
+        | Command::Schedule { config, .. } => Some(config),
         Command::Config { command } => match command {
             ConfigCommand::Setup { config }
             | ConfigCommand::Edit { config }
@@ -165,6 +176,34 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
         },
         _ => None,
     }
+}
+
+async fn execute_run(
+    mut config: config::Config,
+    path: &std::path::Path,
+    tasks: &[RunTask],
+) -> (config::Config, service::RunReport) {
+    service::apply_runtime_delay(&config.runtime).await;
+    let all = tasks.is_empty();
+    let mut report = service::RunReport::default();
+    if all || tasks.contains(&RunTask::ChinaCheckin) {
+        report.extend(service::run_china_checkin_with_refresh(&mut config, path).await);
+    }
+    if all || tasks.contains(&RunTask::HoyolabCheckin) {
+        report.extend(service::run_hoyolab_checkin(&config).await);
+    }
+    if all || tasks.contains(&RunTask::Bbs) {
+        report.extend(service::run_bbs_with_refresh(&mut config, path).await);
+    }
+    let china_cloud = all || tasks.contains(&RunTask::ChinaCloudGame);
+    let overseas_cloud = all || tasks.contains(&RunTask::OverseasCloudGame);
+    if china_cloud || overseas_cloud {
+        report.extend(service::run_cloud_games(&config, china_cloud, overseas_cloud).await);
+    }
+    if all || tasks.contains(&RunTask::WebActivity) {
+        report.extend(service::run_web_activities(&config));
+    }
+    (config, report)
 }
 fn init_tracing(
     runtime: Option<&config::RuntimeConfig>,

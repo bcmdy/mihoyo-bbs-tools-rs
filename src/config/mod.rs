@@ -21,7 +21,7 @@ pub use editor::{
     remove_notification_provider, replace_account_cookie, set_account_china_checkin,
     set_account_cloud_games, set_account_device, set_account_games, set_account_general,
     set_account_hoyolab, set_account_proxy, set_account_tasks, set_captcha_endpoint, set_logging,
-    set_notification_options, set_notification_provider, set_runtime,
+    set_notification_options, set_notification_provider, set_runtime, set_schedule,
 };
 pub use interactive::setup as interactive_setup;
 
@@ -98,6 +98,8 @@ pub struct RuntimeConfig {
     pub log_level: LogLevel,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub schedule: ScheduleConfig,
 }
 
 impl Default for RuntimeConfig {
@@ -110,6 +112,27 @@ impl Default for RuntimeConfig {
             random_delay_seconds: default_random_delay(),
             log_level: LogLevel::default(),
             logging: LoggingConfig::default(),
+            schedule: ScheduleConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ScheduleConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_schedule_interval")]
+    pub interval_minutes: u64,
+    #[serde(default = "default_true")]
+    pub run_on_start: bool,
+}
+
+impl Default for ScheduleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_minutes: default_schedule_interval(),
+            run_on_start: true,
         }
     }
 }
@@ -789,6 +812,9 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     if config.runtime.random_delay_seconds > 3600 {
         errors.push("runtime.random_delay_seconds 必须在 0..=3600 之间".to_owned());
     }
+    if !(1..=10_080).contains(&config.runtime.schedule.interval_minutes) {
+        errors.push("runtime.schedule.interval_minutes 必须在 1..=10080 之间".to_owned());
+    }
     if !valid_timezone(&config.runtime.timezone) {
         errors.push("runtime.timezone 不是有效的时区名称".to_owned());
     }
@@ -1269,6 +1295,7 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                 "random_delay_seconds",
                 "log_level",
                 "logging",
+                "schedule",
             ],
             &mut warnings,
         );
@@ -1278,6 +1305,13 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                 "logging",
                 "runtime.logging",
                 &["enabled", "directory", "file_prefix"],
+                &mut warnings,
+            );
+            inspect_named_child(
+                runtime,
+                "schedule",
+                "runtime.schedule",
+                &["enabled", "interval_minutes", "run_on_start"],
                 &mut warnings,
             );
         }
@@ -1605,6 +1639,9 @@ const fn default_game_checkin_max_attempts() -> u32 {
 const fn default_random_delay() -> u64 {
     10
 }
+const fn default_schedule_interval() -> u64 {
+    720
+}
 
 fn hydrate_stokens_from_cookies(config: &mut Config) {
     for account in &mut config.accounts {
@@ -1769,6 +1806,7 @@ accounts:
         assert_eq!(loaded.config.runtime.request_timeout_seconds, 30);
         assert_eq!(loaded.config.runtime.timezone, "Asia/Shanghai");
         assert_eq!(loaded.config.runtime.game_checkin_max_attempts, 3);
+        assert_eq!(loaded.config.runtime.schedule, ScheduleConfig::default());
         assert_eq!(
             loaded.config.accounts[0].credentials.cookie.expose_secret(),
             "account_id=123; cookie_token=secret"
@@ -2161,6 +2199,19 @@ accounts:
             );
             assert!(
                 matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("runtime.game_checkin_max_attempts")))
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_schedule_interval_outside_safe_range() {
+        for interval in [0, 10_081] {
+            let source = MINIMAL.replace(
+                "accounts:",
+                &format!("runtime:\n  schedule:\n    interval_minutes: {interval}\naccounts:"),
+            );
+            assert!(
+                matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("runtime.schedule.interval_minutes")))
             );
         }
     }

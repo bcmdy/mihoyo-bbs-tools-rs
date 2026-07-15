@@ -42,6 +42,15 @@ pub enum Command {
         #[arg(long = "task", value_enum, value_delimiter = ',')]
         tasks: Vec<RunTask>,
     },
+    /// 按 runtime.schedule 间隔常驻执行完整任务，每轮重新加载配置
+    Schedule {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+        /// 每轮仅执行指定任务；语义与 run --task 相同
+        #[arg(long = "task", value_enum, value_delimiter = ',')]
+        tasks: Vec<RunTask>,
+    },
     /// 将 Python v11-v15 配置迁移到新版 YAML
     MigrateConfig(MigrationArgs),
     /// 将完整的脱敏默认配置模板输出到标准输出

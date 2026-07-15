@@ -4,7 +4,7 @@ use super::{
     replace_account_cookie, set_account_china_checkin, set_account_cloud_games, set_account_device,
     set_account_games, set_account_general, set_account_hoyolab, set_account_proxy,
     set_account_tasks, set_captcha_endpoint, set_logging, set_notification_options,
-    set_notification_provider, set_runtime,
+    set_notification_provider, set_runtime, set_schedule,
 };
 use std::{
     io::{self, BufRead, IsTerminal, Write},
@@ -31,10 +31,11 @@ pub async fn setup(path: &Path) -> Result<(), ConfigError> {
 }
 
 fn runtime(path: &Path) -> Result<(), ConfigError> {
-    println!("全局运行：1.请求与重试 2.文件日志 0.返回");
-    match read_number(2)? {
+    println!("全局运行：1.请求与重试 2.文件日志 3.定时运行 0.返回");
+    match read_number(3)? {
         Some(1) => runtime_request(path),
         Some(2) => runtime_logging(path),
+        Some(3) => runtime_schedule(path),
         _ => Ok(()),
     }
 }
@@ -74,6 +75,14 @@ fn runtime_logging(path: &Path) -> Result<(), ConfigError> {
     let directory = prompt_keep("日志目录", &c.directory.to_string_lossy())?;
     let prefix = prompt_keep("日志文件名前缀", &c.file_prefix)?;
     set_logging(path, enabled, &directory, &prefix)
+}
+
+fn runtime_schedule(path: &Path) -> Result<(), ConfigError> {
+    let schedule = load(path)?.config.runtime.schedule;
+    let enabled = prompt_bool("启用 schedule 常驻定时运行", schedule.enabled)?;
+    let interval = prompt_number_keep("执行间隔分钟数", schedule.interval_minutes)?;
+    let run_on_start = prompt_bool("启动后立即执行第一轮", schedule.run_on_start)?;
+    set_schedule(path, enabled, interval, run_on_start)
 }
 
 fn captcha(path: &Path) -> Result<(), ConfigError> {

@@ -4,6 +4,7 @@ mod credential_refresh;
 mod report;
 mod runner;
 mod runtime_delay;
+mod scheduler;
 mod web_activity_runner;
 
 use uuid::Uuid;
@@ -13,6 +14,7 @@ pub use cloud_runner::run_cloud_games;
 pub use report::{RunReport, TaskOutcome, TaskRecord};
 pub use runner::{run_china_checkin, run_china_checkin_with_refresh, run_hoyolab_checkin};
 pub use runtime_delay::apply_runtime_delay;
+pub use scheduler::wait_schedule_interval;
 pub use web_activity_runner::run_web_activities;
 
 fn resolve_device_id(configured: &str, cookie: &str) -> String {

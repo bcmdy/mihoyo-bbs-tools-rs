@@ -22,6 +22,10 @@ runtime:
     enabled: true
     directory: logs
     file_prefix: mihoyo-bbs-tools
+  schedule:
+    enabled: false
+    interval_minutes: 720
+    run_on_start: true
 
 captcha:
   endpoint: "${CAPTCHA_ENDPOINT}"
@@ -163,6 +167,7 @@ MihoyoBBSToolsRS config setup --config config/config.yaml
 ```text
 MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs,china-cloud-game,overseas-cloud-game,web-activity
 MihoyoBBSToolsRS run --task bbs
+MihoyoBBSToolsRS schedule
 MihoyoBBSToolsRS checkin --region china
 MihoyoBBSToolsRS checkin --region hoyolab
 MihoyoBBSToolsRS checkin --region all
@@ -171,6 +176,8 @@ MihoyoBBSToolsRS checkin --region all
 `run --task` 可选择 `china-checkin`、`hoyolab-checkin`、`bbs`、`china-cloud-game`、`overseas-cloud-game`、`web-activity`，支持重复使用参数或逗号分隔多值。省略 `--task` 时依次尝试所有已实现且在账号配置中启用的任务。
 
 `checkin --region` 的可选值为 `china`、`hoyolab`、`all`，默认 `all`。CLI 筛选只会缩小本次执行范围，并继续与账号 `enabled`、任务开关和游戏列表取交集，不能通过命令行重新启用 YAML 中已禁用的内容；未选择的任务也不会作为失败项写入报告。
+
+`schedule` 使用与 `run` 相同的 `--task` 参数，每轮执行完成后按 `runtime.schedule.interval_minutes` 等待，并在下一轮重新读取配置。`enabled: false` 时拒绝启动；运行过程中把该值改为 `false`，下一轮读取配置时会正常退出。`run_on_start: false` 会先等待一个完整间隔。调度器始终串行，不会重叠执行两轮任务。
 
 ## 环境变量替换
 

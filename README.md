@@ -41,6 +41,7 @@ MihoyoBBSToolsRS migrate-config SOURCE [TARGET]
 MihoyoBBSToolsRS migrate-config --input SOURCE [--output TARGET]
 MihoyoBBSToolsRS run
 MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs,china-cloud-game,overseas-cloud-game,web-activity
+MihoyoBBSToolsRS schedule
 MihoyoBBSToolsRS config edit
 MihoyoBBSToolsRS config add-account --name "备注"
 MihoyoBBSToolsRS config remove-account "备注"
@@ -52,6 +53,8 @@ MihoyoBBSToolsRS config setup
 新建账号默认仅执行原神游戏签到和米游社社区签到；阅读、点赞、取消点赞与分享默认关闭。文件日志默认写入 `logs/mihoyo-bbs-tools_YYYY-MM-DD.log` 并按天滚动，可通过 `runtime.logging` 修改或关闭。
 
 `run --task` 可以临时缩小本次运行范围，可选值为 `china-checkin`、`hoyolab-checkin`、`bbs`、`china-cloud-game`、`overseas-cloud-game` 和 `web-activity`；不提供时仍按原顺序尝试全部已实现任务。`checkin --region` 可选择 `china`、`hoyolab` 或 `all`，默认值为 `all`。这些命令行选项不会绕过配置文件中的账号、任务或游戏禁用状态。
+
+`schedule` 按 `runtime.schedule.interval_minutes` 常驻串行执行，每轮重新加载配置并应用随机延迟。该命令要求 `runtime.schedule.enabled: true`；`run_on_start` 控制启动后立即执行还是先等待一个间隔。停止时向进程发送 Ctrl+C 或由服务管理器终止。
 
 首次使用时可以直接运行 `config add-account`。即使默认的 `config/config.yaml` 及其父目录尚不存在，程序也会在 Cookie 和账号信息校验成功后创建只包含该账号的新配置，并以 `mys用户:<米游社昵称>` 作为账号名称。`config setup` 提供完整的数字设置菜单，可配置运行、日志、验证码、国内凭据、HoYoLAB 独立 Cookie/语言/游戏、角色黑名单、设备、代理、任务、云游戏及通知渠道；普通运行命令不会自动进入交互界面，因此不会阻塞 CI、Docker 或计划任务。
 
@@ -99,6 +102,8 @@ device:
 ```text
 MihoyoBBSToolsRS run
 ```
+
+常驻定时运行可把容器命令改为 `schedule`，并在挂载的配置中启用 `runtime.schedule.enabled`。调度间隔由程序内部控制，容器不需要额外 Cron 进程。
 
 真实配置和凭据必须在运行时通过受控配置文件、环境变量或 Secret 注入，不能写入镜像。
 

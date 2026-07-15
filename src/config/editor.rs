@@ -523,6 +523,35 @@ pub fn set_logging(
     })
 }
 
+pub fn set_schedule(
+    path: &Path,
+    enabled: bool,
+    interval_minutes: u64,
+    run_on_start: bool,
+) -> Result<(), ConfigError> {
+    mutate_raw(path, |root| {
+        let runtime = root
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("配置根节点无效".into()))?
+            .entry(key("runtime"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("runtime 必须是对象".into()))?;
+        let schedule = runtime
+            .entry(key("schedule"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("runtime.schedule 必须是对象".into()))?;
+        schedule.insert(key("enabled"), Value::Bool(enabled));
+        schedule.insert(
+            key("interval_minutes"),
+            Value::Number(interval_minutes.into()),
+        );
+        schedule.insert(key("run_on_start"), Value::Bool(run_on_start));
+        Ok(())
+    })
+}
+
 pub fn set_account_general(
     path: &Path,
     name: &str,
@@ -995,6 +1024,7 @@ mod tests {
             "timezone:",
             "game_checkin_max_attempts:",
             "logging:",
+            "schedule:",
             "endpoint:",
             "stoken:",
             "device:",
@@ -1022,6 +1052,24 @@ mod tests {
         let path = temp.path().join("missing/config.yaml");
         assert!(add_account(&path, None, "invalid").await.is_err());
         assert!(!path.parent().unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn schedule_editor_persists_all_options() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        add_account(
+            &path,
+            None,
+            "account_id=123; account_mid_v2=mid; stoken=v2_secret",
+        )
+        .await
+        .unwrap();
+        set_schedule(&path, true, 60, false).unwrap();
+        let schedule = load(&path).unwrap().config.runtime.schedule;
+        assert!(schedule.enabled);
+        assert_eq!(schedule.interval_minutes, 60);
+        assert!(!schedule.run_on_start);
     }
 
     #[tokio::test]

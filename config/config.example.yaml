@@ -11,6 +11,10 @@ runtime:
     enabled: true
     directory: logs
     file_prefix: mihoyo-bbs-tools
+  schedule:
+    enabled: false
+    interval_minutes: 720
+    run_on_start: true
 
 captcha:
   endpoint: null

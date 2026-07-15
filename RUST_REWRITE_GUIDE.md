@@ -294,6 +294,10 @@ runtime:
   game_checkin_max_attempts: 3
   random_delay_seconds: 10
   log_level: info
+  schedule:
+    enabled: false
+    interval_minutes: 720
+    run_on_start: true
 
 captcha:
   endpoint: null
@@ -450,7 +454,7 @@ pub trait Task {
 | 阶段 6：云游戏与 Web 活动 | 已完成 | 国内云原神、云绝区零和国际服云原神已迁移；原项目唯一 Web 活动已过期，现输出明确跳过且不请求失效接口。 |
 | 运行随机延迟 | 已完成 | 每轮 run/checkin 开始前应用一次 0..=配置值 秒随机抖动，不按账号叠加。 |
 | 阶段 7：推送 | 部分完成 | 已实现 Telegram、Webhook、PushPlus、Server酱、企业微信、钉钉、飞书、Bark、Gotify、Discord、WxPusher 等主要网络通知渠道；SMTP 与 Windows 本地通知待补充。 |
-| 阶段 8：完整运行、Docker 与迁移 | 部分完成 | `run`、旧配置迁移、Docker、Release 工作流及 Linux/Windows 发布附件已实现并验证；定时工作流和 Docker 远程运行验收仍缺失。 |
+| 阶段 8：完整运行、Docker 与迁移 | 部分完成 | `run`、`schedule` 常驻间隔调度、旧配置迁移、Docker、Release 工作流及 Linux/Windows 发布附件已实现；GitHub 定时工作流和 Docker 远程运行验收仍缺失。 |
 | 阶段 9：可选服务端模式 | 未开始（可选） | 暂无实现需求。 |
 
 ### 尚未完成的主要工作
@@ -929,6 +933,7 @@ linux/arm/v7
 - [x] 实现首批推送渠道。
 - [x] 添加并验证 Release 工作流和 Linux/Windows 发布附件。
 - [x] 添加 Docker 多阶段镜像。
+- [x] 增加每轮重载配置且不重叠执行的 `schedule` 常驻命令。
 - [ ] 添加 GitHub Actions 定时工作流。
 
 ## 17. 每次提交前的远程检查
