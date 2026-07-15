@@ -8,6 +8,7 @@ use mihoyo_bbs_tools::{
     push::{self, DeliveryStatus},
     service,
 };
+use rand::Rng;
 use tracing_subscriber::filter::LevelFilter;
 
 mod file_logging;
@@ -18,8 +19,7 @@ async fn main() -> ExitCode {
         .install_default()
         .expect("安装 ring TLS provider");
     let cli = Cli::parse();
-    let runtime =
-        cli_config_path(&cli).and_then(|path| config::load(path).ok().map(|v| v.config.runtime));
+    let runtime = initial_runtime(&cli);
     let _log_guard = init_tracing(runtime.as_ref());
     match run(cli).await {
         Ok(code) => ExitCode::from(code),
@@ -74,6 +74,7 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             let (config, report) = execute_run(loaded.config, persistence, &tasks).await;
             return Ok(finish_report(&config, &report).await);
         }
+        Command::RunDirectory(args) => return execute_directory(args).await,
         Command::Schedule {
             config: path,
             tasks,
@@ -179,6 +180,70 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
             | ConfigCommand::RemoveAccount { config, .. } => Some(config),
         },
         _ => None,
+    }
+}
+
+fn initial_runtime(cli: &Cli) -> Option<config::RuntimeConfig> {
+    if let Command::RunDirectory(args) = &cli.command {
+        return service::discover_config_files(&args.directory, args.prefix.as_deref())
+            .ok()?
+            .into_iter()
+            .find_map(|path| config::load(&path).ok().map(|loaded| loaded.config.runtime));
+    }
+    cli_config_path(cli)
+        .and_then(|path| config::load(path).ok().map(|loaded| loaded.config.runtime))
+}
+
+async fn execute_directory(args: mihoyo_bbs_tools::cli::DirectoryRunArgs) -> Result<u8, AppError> {
+    if args.delay_min_seconds > args.delay_max_seconds || args.delay_max_seconds > 3_600 {
+        return Err(AppError::Task(
+            "多配置等待范围必须满足 0 <= 最小秒数 <= 最大秒数 <= 3600".to_owned(),
+        ));
+    }
+    let paths = service::discover_config_files(&args.directory, args.prefix.as_deref())?;
+    let total = paths.len();
+    let mut batch = service::BatchReport::default();
+    for (index, path) in paths.into_iter().enumerate() {
+        let source = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        println!("=== 配置文件：{source} ===");
+        match config::load(&path) {
+            Ok(loaded) => {
+                for warning in &loaded.warnings {
+                    tracing::warn!(config_file = %source, "{warning}");
+                }
+                let persistence = credential_persistence(loaded.source, &path);
+                let (config, report) = execute_run(loaded.config, persistence, &args.tasks).await;
+                let exit_code = finish_report(&config, &report).await;
+                batch.push_completed(source, exit_code);
+            }
+            Err(error) => {
+                let safe_error = format!("配置错误：{error}");
+                tracing::error!(config_file = %source, "{safe_error}");
+                batch.push_failed(source, 2, safe_error);
+            }
+        }
+        if index + 1 < total {
+            wait_directory_delay(args.delay_min_seconds, args.delay_max_seconds).await;
+        }
+    }
+    let summary = batch.render_summary();
+    print!("{summary}");
+    tracing::info!("{}", summary.trim_end());
+    Ok(batch.exit_code())
+}
+
+async fn wait_directory_delay(minimum: u64, maximum: u64) {
+    let seconds = if minimum == maximum {
+        minimum
+    } else {
+        rand::rng().random_range(minimum..=maximum)
+    };
+    if seconds > 0 {
+        tracing::info!(seconds, "多配置运行等待下一个文件");
+        tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
     }
 }
 

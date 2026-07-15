@@ -12,6 +12,8 @@ pub enum AppError {
     CaptchaRequired,
     #[error("任务执行失败：{0}")]
     Task(String),
+    #[error("多配置运行错误：{0}")]
+    ConfigDirectory(#[from] crate::service::ConfigDirectoryError),
 }
 
 impl AppError {
@@ -22,6 +24,7 @@ impl AppError {
             Self::CaptchaRequired => 4,
             Self::Http(_) => 5,
             Self::Task(_) => 1,
+            Self::ConfigDirectory(_) => 2,
         }
     }
 }

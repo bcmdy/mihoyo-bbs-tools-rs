@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     name = "MihoyoBBSToolsRS",
     version = crate::VERSION,
     about = "米游社与 HoYoLAB 自动任务工具",
-    after_help = "示例：\n  MihoyoBBSToolsRS validate-config\n  MihoyoBBSToolsRS checkin --region china\n  MihoyoBBSToolsRS run --task china-checkin,bbs\n  MihoyoBBSToolsRS config setup\n  MihoyoBBSToolsRS create-launcher\n\n使用 `MihoyoBBSToolsRS <COMMAND> --help` 查看子命令的详细说明。"
+    after_help = "示例：\n  MihoyoBBSToolsRS validate-config\n  MihoyoBBSToolsRS checkin --region china\n  MihoyoBBSToolsRS run --task china-checkin,bbs\n  MihoyoBBSToolsRS run-directory config --prefix mhy_\n  MihoyoBBSToolsRS config setup\n  MihoyoBBSToolsRS create-launcher\n\n使用 `MihoyoBBSToolsRS <COMMAND> --help` 查看子命令的详细说明。"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -42,6 +42,9 @@ pub enum Command {
         #[arg(long = "task", value_enum, value_delimiter = ',')]
         tasks: Vec<RunTask>,
     },
+    /// 依次执行目录中的多个 YAML 配置，单个文件失败不阻止后续文件
+    #[command(alias = "run-multi")]
+    RunDirectory(DirectoryRunArgs),
     /// 按 runtime.schedule 间隔常驻执行完整任务，每轮重新加载配置
     Schedule {
         /// 配置文件路径
@@ -132,6 +135,25 @@ pub enum RunTask {
 }
 
 #[derive(Debug, Args)]
+pub struct DirectoryRunArgs {
+    /// 配置目录路径
+    #[arg(value_name = "DIRECTORY", default_value = "config")]
+    pub directory: PathBuf,
+    /// 只运行文件名以此前缀开头的 YAML；默认执行除 *.example.yaml 外的全部 YAML
+    #[arg(long, value_name = "PREFIX")]
+    pub prefix: Option<String>,
+    /// 每个配置仅执行指定任务；语义与 run --task 相同
+    #[arg(long = "task", value_enum, value_delimiter = ',')]
+    pub tasks: Vec<RunTask>,
+    /// 配置文件之间随机等待的最小秒数
+    #[arg(long, default_value_t = 3)]
+    pub delay_min_seconds: u64,
+    /// 配置文件之间随机等待的最大秒数
+    #[arg(long, default_value_t = 10)]
+    pub delay_max_seconds: u64,
+}
+
+#[derive(Debug, Args)]
 pub struct MigrationArgs {
     /// 迁移源配置文件
     #[arg(value_name = "SOURCE", conflicts_with = "input")]
@@ -191,9 +213,11 @@ pub fn version_text() -> String {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use std::path::PathBuf;
 
-    use super::Cli;
+    use clap::{CommandFactory, Parser};
+
+    use super::{Cli, Command};
 
     #[test]
     fn all_commands_have_help_descriptions() {
@@ -232,5 +256,30 @@ mod tests {
         let command = Cli::command();
         assert_eq!(command.get_name(), "MihoyoBBSToolsRS");
         assert_eq!(command.get_version(), Some(crate::VERSION));
+    }
+
+    #[test]
+    fn run_directory_parses_prefix_tasks_and_delay_range() {
+        let cli = Cli::try_parse_from([
+            "MihoyoBBSToolsRS",
+            "run-directory",
+            "configs",
+            "--prefix",
+            "mhy_",
+            "--task",
+            "china-checkin,bbs",
+            "--delay-min-seconds",
+            "0",
+            "--delay-max-seconds",
+            "1",
+        ])
+        .unwrap();
+        let Command::RunDirectory(args) = cli.command else {
+            panic!("expected run-directory command");
+        };
+        assert_eq!(args.directory, PathBuf::from("configs"));
+        assert_eq!(args.prefix.as_deref(), Some("mhy_"));
+        assert_eq!(args.tasks.len(), 2);
+        assert_eq!((args.delay_min_seconds, args.delay_max_seconds), (0, 1));
     }
 }
