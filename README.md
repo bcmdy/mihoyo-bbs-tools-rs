@@ -56,6 +56,8 @@ MihoyoBBSToolsRS config setup
 
 `schedule` 按 `runtime.schedule.interval_minutes` 常驻串行执行，每轮重新加载配置并应用随机延迟。该命令要求 `runtime.schedule.enabled: true`；`run_on_start` 控制启动后立即执行还是先等待一个间隔。停止时向进程发送 Ctrl+C 或由服务管理器终止。
 
+仓库还提供每日 `00:05`（北京时间，GitHub Cron 为 `16:05 UTC`）的一次性 Actions 工作流。只有仓库变量 `ENABLE_SCHEDULED_RUN=true` 且 Secret `MIHOYO_CONFIG_YAML` 已配置时才执行，fork 默认不会运行真实任务。
+
 首次使用时可以直接运行 `config add-account`。即使默认的 `config/config.yaml` 及其父目录尚不存在，程序也会在 Cookie 和账号信息校验成功后创建只包含该账号的新配置，并以 `mys用户:<米游社昵称>` 作为账号名称。`config setup` 提供完整的数字设置菜单，可配置运行、日志、验证码、国内凭据、HoYoLAB 独立 Cookie/语言/游戏、角色黑名单、设备、代理、任务、云游戏及通知渠道；普通运行命令不会自动进入交互界面，因此不会阻塞 CI、Docker 或计划任务。
 
 Windows 可执行 `MihoyoBBSToolsRS create-launcher`，在 EXE 同目录生成 `MihoyoBBSToolsRS-run.bat`。BAT 固定记录生成时的 EXE 绝对路径与工作目录，因此移动到桌面或其他目录后仍能异步启动原程序；已有文件默认不会覆盖，需要覆盖时添加 `--force`，也可用 `--output` 指定 BAT 输出位置。

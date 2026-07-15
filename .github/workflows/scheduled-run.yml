@@ -1,0 +1,54 @@
+name: 定时执行任务
+
+on:
+  schedule:
+    - cron: "5 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mihoyo-bbs-tools-scheduled-run
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: 执行每日任务
+    if: github.repository == 'bcmdy/mihoyo-bbs-tools-rs' && vars.ENABLE_SCHEDULED_RUN == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: 编译程序
+        env:
+          MIHOYO_BBS_TOOLS_VERSION: scheduled-${{ github.run_number }}
+        run: cargo build --release --locked
+
+      - name: 写入受保护配置
+        shell: bash
+        env:
+          CONFIG_YAML: ${{ secrets.MIHOYO_CONFIG_YAML }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CONFIG_YAML" ]]; then
+            echo "缺少 MIHOYO_CONFIG_YAML 仓库 Secret" >&2
+            exit 1
+          fi
+          install -d -m 700 config
+          printf '%s' "$CONFIG_YAML" > config/config.yaml
+          chmod 600 config/config.yaml
+
+      - name: 校验配置
+        run: target/release/MihoyoBBSToolsRS validate-config
+
+      - name: 执行一次完整任务
+        run: target/release/MihoyoBBSToolsRS run
