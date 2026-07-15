@@ -296,7 +296,8 @@ jobs:
           APT_PACKAGE: ${{ matrix.apt_package }}
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends "$APT_PACKAGE"
+          read -r -a packages <<< "$APT_PACKAGE"
+          sudo apt-get install --yes --no-install-recommends "${packages[@]}"
 
       - name: 配置交叉编译器
         if: matrix.cross_cc != ''
