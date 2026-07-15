@@ -2,9 +2,18 @@ name: 生成依赖锁文件
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/lockfiles.yml"
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: dependency-lockfiles-main
+  cancel-in-progress: false
 
 jobs:
   generate:
@@ -36,3 +45,19 @@ jobs:
             Cargo.lock
             flake.lock
           if-no-files-found: error
+
+      - name: 提交更新后的锁文件
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add Cargo.lock flake.lock
+          if git diff --cached --quiet; then
+            echo "依赖锁文件无需更新"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit \
+            -m "构建：更新依赖锁文件" \
+            -m "由远程 Actions 生成 Cargo 与 Nix 锁文件，保持锁定依赖构建可复现。"
+          git push origin HEAD:main
