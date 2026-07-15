@@ -14,6 +14,8 @@ pub enum AppError {
     Task(String),
     #[error("多配置运行错误：{0}")]
     ConfigDirectory(#[from] crate::service::ConfigDirectoryError),
+    #[error("青龙环境配置错误：{0}")]
+    Qinglong(#[from] crate::service::QinglongError),
 }
 
 impl AppError {
@@ -25,6 +27,7 @@ impl AppError {
             Self::Http(_) => 5,
             Self::Task(_) => 1,
             Self::ConfigDirectory(_) => 2,
+            Self::Qinglong(_) => 2,
         }
     }
 }

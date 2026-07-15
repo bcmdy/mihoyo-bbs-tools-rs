@@ -42,6 +42,7 @@ MihoyoBBSToolsRS migrate-config --input SOURCE [--output TARGET]
 MihoyoBBSToolsRS run
 MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs,china-cloud-game,overseas-cloud-game,web-activity
 MihoyoBBSToolsRS run-directory config [--prefix mhy_]
+MihoyoBBSToolsRS qinglong
 MihoyoBBSToolsRS schedule
 MihoyoBBSToolsRS config edit
 MihoyoBBSToolsRS config add-account --name "备注"
@@ -56,6 +57,8 @@ MihoyoBBSToolsRS config setup
 `run --task` 可以临时缩小本次运行范围，可选值为 `china-checkin`、`hoyolab-checkin`、`bbs`、`china-cloud-game`、`overseas-cloud-game` 和 `web-activity`；不提供时仍按原顺序尝试全部已实现任务。`checkin --region` 可选择 `china`、`hoyolab` 或 `all`，默认值为 `all`。这些命令行选项不会绕过配置文件中的账号、任务或游戏禁用状态。
 
 `run-directory` 按文件名顺序执行目录中的 `.yaml`/`.yml`，自动排除 `*.example.yaml` 和 `*.example.yml`。`--prefix` 可限制文件名前缀，单个配置加载或任务失败不会阻止后续文件；各文件使用自己的账号、任务和通知设置。文件之间默认随机等待 3–10 秒，可通过 `--delay-min-seconds`、`--delay-max-seconds` 调整，均设为 `0` 可关闭。
+
+`qinglong`（别名 `ql`）兼容原 Python 入口的 `AutoMihoyoBBS_config_path`、`AutoMihoyoBBS_config_prefix`、`AutoMihoyoBBS_config_multi`、`QL_DIR` 和 `AutoMihoyoBBS_push_project`。多配置模式复用 `run-directory` 的故障隔离与汇总；Rust 版不会动态加载青龙 `notify.py`，通知统一由各 YAML 的 `notifications` 提供。
 
 `schedule` 按 `runtime.schedule.interval_minutes` 常驻串行执行，每轮重新加载配置并应用随机延迟。该命令要求 `runtime.schedule.enabled: true`；`run_on_start` 控制启动后立即执行还是先等待一个间隔。停止时向进程发送 Ctrl+C 或由服务管理器终止。
 

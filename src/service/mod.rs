@@ -2,6 +2,7 @@ mod batch;
 mod bbs_runner;
 mod cloud_runner;
 mod credential_refresh;
+mod qinglong;
 mod report;
 mod runner;
 mod runtime_delay;
@@ -14,6 +15,7 @@ use uuid::Uuid;
 pub use batch::{BatchEntry, BatchReport, ConfigDirectoryError, discover_config_files};
 pub use bbs_runner::{run_bbs, run_bbs_with_persistence, run_bbs_with_refresh};
 pub use cloud_runner::run_cloud_games;
+pub use qinglong::{QinglongError, QinglongSettings, qinglong_settings};
 pub use report::{RunReport, TaskOutcome, TaskRecord};
 pub use runner::{
     run_china_checkin, run_china_checkin_with_persistence, run_china_checkin_with_refresh,

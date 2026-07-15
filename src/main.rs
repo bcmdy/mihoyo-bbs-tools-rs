@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use mihoyo_bbs_tools::{
-    cli::{CheckinRegion, Cli, Command, ConfigCommand, RunTask},
+    cli::{CheckinRegion, Cli, Command, ConfigCommand, DirectoryRunArgs, QinglongArgs, RunTask},
     config,
     error::AppError,
     push::{self, DeliveryStatus},
@@ -65,16 +65,9 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
         Command::Run {
             config: path,
             tasks,
-        } => {
-            let loaded = config::load(&path)?;
-            for warning in &loaded.warnings {
-                tracing::warn!("{warning}");
-            }
-            let persistence = credential_persistence(loaded.source, &path);
-            let (config, report) = execute_run(loaded.config, persistence, &tasks).await;
-            return Ok(finish_report(&config, &report).await);
-        }
+        } => return execute_config_path(&path, &tasks).await,
         Command::RunDirectory(args) => return execute_directory(args).await,
+        Command::Qinglong(args) => return execute_qinglong(args).await,
         Command::Schedule {
             config: path,
             tasks,
@@ -184,17 +177,47 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
 }
 
 fn initial_runtime(cli: &Cli) -> Option<config::RuntimeConfig> {
-    if let Command::RunDirectory(args) = &cli.command {
-        return service::discover_config_files(&args.directory, args.prefix.as_deref())
-            .ok()?
-            .into_iter()
-            .find_map(|path| config::load(&path).ok().map(|loaded| loaded.config.runtime));
+    match &cli.command {
+        Command::RunDirectory(args) => {
+            return initial_directory_runtime(&args.directory, args.prefix.as_deref());
+        }
+        Command::Qinglong(_) => {
+            let settings = service::qinglong_settings().ok()?;
+            return if settings.multi {
+                initial_directory_runtime(&settings.directory, settings.prefix.as_deref())
+            } else {
+                config::load(&settings.single_config)
+                    .ok()
+                    .map(|loaded| loaded.config.runtime)
+            };
+        }
+        _ => {}
     }
     cli_config_path(cli)
         .and_then(|path| config::load(path).ok().map(|loaded| loaded.config.runtime))
 }
 
-async fn execute_directory(args: mihoyo_bbs_tools::cli::DirectoryRunArgs) -> Result<u8, AppError> {
+fn initial_directory_runtime(
+    directory: &std::path::Path,
+    prefix: Option<&str>,
+) -> Option<config::RuntimeConfig> {
+    service::discover_config_files(directory, prefix)
+        .ok()?
+        .into_iter()
+        .find_map(|path| config::load(&path).ok().map(|loaded| loaded.config.runtime))
+}
+
+async fn execute_config_path(path: &std::path::Path, tasks: &[RunTask]) -> Result<u8, AppError> {
+    let loaded = config::load(path)?;
+    for warning in &loaded.warnings {
+        tracing::warn!("{warning}");
+    }
+    let persistence = credential_persistence(loaded.source, path);
+    let (config, report) = execute_run(loaded.config, persistence, tasks).await;
+    Ok(finish_report(&config, &report).await)
+}
+
+async fn execute_directory(args: DirectoryRunArgs) -> Result<u8, AppError> {
     if args.delay_min_seconds > args.delay_max_seconds || args.delay_max_seconds > 3_600 {
         return Err(AppError::Task(
             "多配置等待范围必须满足 0 <= 最小秒数 <= 最大秒数 <= 3600".to_owned(),
@@ -233,6 +256,33 @@ async fn execute_directory(args: mihoyo_bbs_tools::cli::DirectoryRunArgs) -> Res
     print!("{summary}");
     tracing::info!("{}", summary.trim_end());
     Ok(batch.exit_code())
+}
+
+async fn execute_qinglong(args: QinglongArgs) -> Result<u8, AppError> {
+    let settings = service::qinglong_settings()?;
+    if !settings.project_notifications {
+        tracing::warn!(
+            "Rust 版不加载青龙 notify.py；仅使用各配置的 notifications，建议设置 AutoMihoyoBBS_push_project=1"
+        );
+    }
+    if settings.multi {
+        tracing::info!(
+            directory = %settings.directory.display(),
+            prefix = settings.prefix.as_deref().unwrap_or(""),
+            "青龙多配置模式"
+        );
+        execute_directory(DirectoryRunArgs {
+            directory: settings.directory,
+            prefix: settings.prefix,
+            tasks: args.tasks,
+            delay_min_seconds: args.delay_min_seconds,
+            delay_max_seconds: args.delay_max_seconds,
+        })
+        .await
+    } else {
+        tracing::info!(config = %settings.single_config.display(), "青龙单配置模式");
+        execute_config_path(&settings.single_config, &args.tasks).await
+    }
 }
 
 async fn wait_directory_delay(minimum: u64, maximum: u64) {

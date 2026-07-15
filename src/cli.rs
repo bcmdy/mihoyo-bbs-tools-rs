@@ -45,6 +45,9 @@ pub enum Command {
     /// 依次执行目录中的多个 YAML 配置，单个文件失败不阻止后续文件
     #[command(alias = "run-multi")]
     RunDirectory(DirectoryRunArgs),
+    /// 按青龙环境变量选择单配置或多配置模式并执行任务
+    #[command(alias = "ql")]
+    Qinglong(QinglongArgs),
     /// 按 runtime.schedule 间隔常驻执行完整任务，每轮重新加载配置
     Schedule {
         /// 配置文件路径
@@ -149,6 +152,19 @@ pub struct DirectoryRunArgs {
     #[arg(long, default_value_t = 3)]
     pub delay_min_seconds: u64,
     /// 配置文件之间随机等待的最大秒数
+    #[arg(long, default_value_t = 10)]
+    pub delay_max_seconds: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct QinglongArgs {
+    /// 仅执行指定任务；语义与 run --task 相同
+    #[arg(long = "task", value_enum, value_delimiter = ',')]
+    pub tasks: Vec<RunTask>,
+    /// 多配置文件之间随机等待的最小秒数
+    #[arg(long, default_value_t = 3)]
+    pub delay_min_seconds: u64,
+    /// 多配置文件之间随机等待的最大秒数
     #[arg(long, default_value_t = 10)]
     pub delay_max_seconds: u64,
 }
@@ -281,5 +297,15 @@ mod tests {
         assert_eq!(args.prefix.as_deref(), Some("mhy_"));
         assert_eq!(args.tasks.len(), 2);
         assert_eq!((args.delay_min_seconds, args.delay_max_seconds), (0, 1));
+    }
+
+    #[test]
+    fn qinglong_alias_accepts_task_filter() {
+        let cli =
+            Cli::try_parse_from(["MihoyoBBSToolsRS", "ql", "--task", "china-checkin,bbs"]).unwrap();
+        let Command::Qinglong(args) = cli.command else {
+            panic!("expected qinglong command");
+        };
+        assert_eq!(args.tasks.len(), 2);
     }
 }
