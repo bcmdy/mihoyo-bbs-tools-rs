@@ -43,6 +43,7 @@ pub enum ConfigSource {
     Current,
     PythonLegacy(u64),
     Dacapo,
+    StandardInput,
 }
 
 impl ConfigSource {
@@ -741,6 +742,19 @@ pub fn load(path: &Path) -> Result<LoadedConfig, ConfigError> {
     load_with_mode(path, false)
 }
 
+pub fn load_from_str(source: &str, account_name: &str) -> Result<LoadedConfig, ConfigError> {
+    parse_source(
+        source,
+        if account_name.trim().is_empty() {
+            "stdin"
+        } else {
+            account_name.trim()
+        },
+        false,
+        ConfigSource::StandardInput,
+    )
+}
+
 pub fn migrate_config(path: &Path) -> Result<LoadedConfig, ConfigError> {
     load_with_mode(path, true)
 }
@@ -827,14 +841,28 @@ fn load_with_mode(path: &Path, migration_requested: bool) -> Result<LoadedConfig
         path: path.to_path_buf(),
         source,
     })?;
+    let account_name = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("legacy");
+    parse_source(
+        &source,
+        account_name,
+        migration_requested,
+        ConfigSource::Current,
+    )
+}
+
+fn parse_source(
+    source: &str,
+    account_name: &str,
+    migration_requested: bool,
+    current_source: ConfigSource,
+) -> Result<LoadedConfig, ConfigError> {
     let mut value: Value = serde_yaml_ng::from_str(&source)?;
     expand_environment(&mut value, &|name| env::var(name).ok())?;
     if let Some(11..=15) = config_version(&value) {
-        let account_name = path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or("legacy");
         let loaded = legacy::migrate_value(&value, account_name)?;
         validate(&loaded.config)?;
         return Ok(loaded);
@@ -847,7 +875,7 @@ fn load_with_mode(path: &Path, migration_requested: bool) -> Result<LoadedConfig
     let mut loaded = LoadedConfig {
         config,
         warnings,
-        source: ConfigSource::Current,
+        source: current_source,
     };
     if migration_requested {
         loaded
@@ -2408,6 +2436,17 @@ accounts:
         assert!(ConfigSource::Current.supports_persistent_refresh());
         assert!(!ConfigSource::PythonLegacy(15).supports_persistent_refresh());
         assert!(!ConfigSource::Dacapo.supports_persistent_refresh());
+        assert!(!ConfigSource::StandardInput.supports_persistent_refresh());
+    }
+
+    #[test]
+    fn string_loader_marks_current_yaml_as_standard_input() {
+        let source = MINIMAL
+            .replace("${COOKIE}", "account_id=123; cookie_token=secret")
+            .replace("${STOKEN}", "v2_secret");
+        let loaded = load_from_str(&source, "serverless").unwrap();
+        assert_eq!(loaded.source, ConfigSource::StandardInput);
+        assert_eq!(loaded.config.accounts[0].name, "first");
     }
 
     #[test]

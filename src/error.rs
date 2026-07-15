@@ -18,6 +18,8 @@ pub enum AppError {
     Qinglong(#[from] crate::service::QinglongError),
     #[error("DaCapo 配置错误：{0}")]
     Dacapo(#[from] crate::config::DacapoError),
+    #[error("无法读取标准输入配置")]
+    StandardInput,
 }
 
 impl AppError {
@@ -31,6 +33,7 @@ impl AppError {
             Self::ConfigDirectory(_) => 2,
             Self::Qinglong(_) => 2,
             Self::Dacapo(_) => 2,
+            Self::StandardInput => 2,
         }
     }
 }

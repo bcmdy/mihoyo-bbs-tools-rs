@@ -179,6 +179,14 @@ MihoyoBBSToolsRS checkin --region all
 
 `run --task` 可选择 `china-checkin`、`hoyolab-checkin`、`bbs`、`china-cloud-game`、`overseas-cloud-game`、`web-activity`，支持重复使用参数或逗号分隔多值。省略 `--task` 时依次尝试所有已实现且在账号配置中启用的任务。
 
+`run --config -` 从标准输入读取新版或受支持的旧版 YAML，适用于云函数、CI 和 Secret 挂载。标准输入配置始终标记为只读；普通文件可通过 `--read-only` 禁止凭据刷新写回。只读不代表禁用网络任务，也不阻止本轮内存中的凭据刷新，只限制持久化副作用。
+
+`--no-notify` 禁止调用所有通知渠道。`--output json` 输出 `schema_version: 1` 的单一 JSON 对象，包含实际进程退出码、脱敏任务记录和通知投递结果；控制台日志固定写入标准错误，启用文件日志时按配置写入日志文件。该组合适合由上层程序解析：
+
+```text
+MihoyoBBSToolsRS run --config - --read-only --no-notify --output json
+```
+
 `checkin --region` 的可选值为 `china`、`hoyolab`、`all`，默认 `all`。CLI 筛选只会缩小本次执行范围，并继续与账号 `enabled`、任务开关和游戏列表取交集，不能通过命令行重新启用 YAML 中已禁用的内容；未选择的任务也不会作为失败项写入报告。
 
 `schedule` 使用与 `run` 相同的 `--task` 参数，每轮执行完成后按 `runtime.schedule.interval_minutes` 等待，并在下一轮重新读取配置。`enabled: false` 时拒绝启动；运行过程中把该值改为 `false`，下一轮读取配置时会正常退出。`run_on_start: false` 会先等待一个完整间隔。调度器始终串行，不会重叠执行两轮任务。

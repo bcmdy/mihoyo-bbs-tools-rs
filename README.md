@@ -41,6 +41,7 @@ MihoyoBBSToolsRS migrate-config SOURCE [TARGET]
 MihoyoBBSToolsRS migrate-config --input SOURCE [--output TARGET]
 MihoyoBBSToolsRS run
 MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs,china-cloud-game,overseas-cloud-game,web-activity
+MihoyoBBSToolsRS run --config - --read-only --no-notify --output json
 MihoyoBBSToolsRS run-directory config [--prefix mhy_]
 MihoyoBBSToolsRS qinglong
 MihoyoBBSToolsRS dacapo settings.json
@@ -56,6 +57,8 @@ MihoyoBBSToolsRS config setup
 新建账号默认仅执行原神游戏签到和米游社社区签到；阅读、点赞、取消点赞与分享默认关闭。文件日志默认写入 `logs/mihoyo-bbs-tools_YYYY-MM-DD.log` 并按天滚动，可通过 `runtime.logging` 修改或关闭。
 
 `run --task` 可以临时缩小本次运行范围，可选值为 `china-checkin`、`hoyolab-checkin`、`bbs`、`china-cloud-game`、`overseas-cloud-game` 和 `web-activity`；不提供时仍按原顺序尝试全部已实现任务。`checkin --region` 可选择 `china`、`hoyolab` 或 `all`，默认值为 `all`。这些命令行选项不会绕过配置文件中的账号、任务或游戏禁用状态。
+
+云函数和流水线可以使用 `run --config -` 从标准输入读取完整 YAML；该输入始终只读，不会尝试写回自动刷新的凭据。`--read-only` 可让普通配置文件也只读运行，`--no-notify` 禁止所有外部通知，`--output json` 让标准输出只包含一个结构化 JSON 对象；运行日志写入标准错误或配置的日志文件，不会混入 JSON。
 
 `run-directory` 按文件名顺序执行目录中的 `.yaml`/`.yml`，自动排除 `*.example.yaml` 和 `*.example.yml`。`--prefix` 可限制文件名前缀，单个配置加载或任务失败不会阻止后续文件；各文件使用自己的账号、任务和通知设置。文件之间默认随机等待 3–10 秒，可通过 `--delay-min-seconds`、`--delay-max-seconds` 调整，均设为 `0` 可关闭。
 

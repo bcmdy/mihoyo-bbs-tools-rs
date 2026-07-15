@@ -1,14 +1,18 @@
-use std::process::ExitCode;
+use std::{io::Read, process::ExitCode};
 
 use clap::Parser;
 use mihoyo_bbs_tools::{
-    cli::{CheckinRegion, Cli, Command, ConfigCommand, DirectoryRunArgs, QinglongArgs, RunTask},
+    cli::{
+        CheckinRegion, Cli, Command, ConfigCommand, DirectoryRunArgs, QinglongArgs, ReportFormat,
+        RunTask,
+    },
     config,
     error::AppError,
     push::{self, DeliveryStatus},
     service,
 };
 use rand::Rng;
+use serde::Serialize;
 use tracing_subscriber::filter::LevelFilter;
 
 mod file_logging;
@@ -60,12 +64,17 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             if matches!(region, CheckinRegion::Hoyolab | CheckinRegion::All) {
                 report.extend(service::run_hoyolab_checkin(&loaded.config).await);
             }
-            return Ok(finish_report(&loaded.config, &report).await);
+            return finish_report(&loaded.config, &report, ReportFormat::Text, false).await;
         }
         Command::Run {
             config: path,
             tasks,
-        } => return execute_config_path(&path, &tasks).await,
+            read_only,
+            no_notify,
+            output,
+        } => {
+            return execute_run_command(&path, &tasks, read_only, no_notify, output).await;
+        }
         Command::RunDirectory(args) => return execute_directory(args).await,
         Command::Qinglong(args) => return execute_qinglong(args).await,
         Command::Dacapo {
@@ -100,7 +109,7 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                 }
                 let persistence = credential_persistence(loaded.source, &path);
                 let (config, report) = execute_run(loaded.config, persistence, &tasks).await;
-                last_exit = finish_report(&config, &report).await;
+                last_exit = finish_report(&config, &report, ReportFormat::Text, false).await?;
                 tracing::info!(exit_code = last_exit, "定时任务本轮结束");
                 first = false;
                 service::wait_schedule_interval(&schedule).await;
@@ -143,12 +152,29 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
     Ok(0)
 }
 
-async fn finish_report(config: &config::Config, report: &service::RunReport) -> u8 {
-    print!("{}", report.render_text());
-    tracing::info!("任务报告\n{}", report.render_text().trim_end());
-    let push_report = push::send_report(config, report).await;
-    for delivery in push_report.deliveries {
-        match delivery.status {
+#[derive(Serialize)]
+struct StructuredRunOutput<'a> {
+    schema_version: u8,
+    exit_code: u8,
+    records: &'a [service::TaskRecord],
+    notifications: &'a [push::DeliveryResult],
+}
+
+async fn finish_report(
+    config: &config::Config,
+    report: &service::RunReport,
+    output: ReportFormat,
+    no_notify: bool,
+) -> Result<u8, AppError> {
+    let rendered = report.render_text();
+    tracing::info!("任务报告\n{}", rendered.trim_end());
+    let push_report = if no_notify {
+        push::PushReport::default()
+    } else {
+        push::send_report(config, report).await
+    };
+    for delivery in &push_report.deliveries {
+        match &delivery.status {
             DeliveryStatus::Sent => tracing::info!(
                 provider = delivery.provider.as_str(),
                 "{}",
@@ -161,7 +187,24 @@ async fn finish_report(config: &config::Config, report: &service::RunReport) -> 
             ),
         }
     }
-    report.exit_code()
+    let exit_code = report.exit_code();
+    match output {
+        ReportFormat::Text => print!("{rendered}"),
+        ReportFormat::Json => {
+            let output = StructuredRunOutput {
+                schema_version: 1,
+                exit_code,
+                records: &report.records,
+                notifications: &push_report.deliveries,
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&output)
+                    .map_err(|error| AppError::Task(format!("JSON 报告序列化失败：{error}")))?
+            );
+        }
+    }
+    Ok(exit_code)
 }
 
 fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
@@ -223,7 +266,35 @@ async fn execute_config_path(path: &std::path::Path, tasks: &[RunTask]) -> Resul
     }
     let persistence = credential_persistence(loaded.source, path);
     let (config, report) = execute_run(loaded.config, persistence, tasks).await;
-    Ok(finish_report(&config, &report).await)
+    finish_report(&config, &report, ReportFormat::Text, false).await
+}
+
+async fn execute_run_command(
+    path: &std::path::Path,
+    tasks: &[RunTask],
+    read_only: bool,
+    no_notify: bool,
+    output: ReportFormat,
+) -> Result<u8, AppError> {
+    let loaded = if path == std::path::Path::new("-") {
+        let mut source = String::new();
+        std::io::stdin()
+            .read_to_string(&mut source)
+            .map_err(|_| AppError::StandardInput)?;
+        config::load_from_str(&source, "stdin")?
+    } else {
+        config::load(path)?
+    };
+    for warning in &loaded.warnings {
+        tracing::warn!("{warning}");
+    }
+    let persistence = if read_only || path == std::path::Path::new("-") {
+        service::CredentialPersistence::ReadOnly
+    } else {
+        credential_persistence(loaded.source, path)
+    };
+    let (config, report) = execute_run(loaded.config, persistence, tasks).await;
+    finish_report(&config, &report, output, no_notify).await
 }
 
 async fn execute_directory(args: DirectoryRunArgs) -> Result<u8, AppError> {
@@ -248,7 +319,7 @@ async fn execute_directory(args: DirectoryRunArgs) -> Result<u8, AppError> {
                 }
                 let persistence = credential_persistence(loaded.source, &path);
                 let (config, report) = execute_run(loaded.config, persistence, &args.tasks).await;
-                let exit_code = finish_report(&config, &report).await;
+                let exit_code = finish_report(&config, &report, ReportFormat::Text, false).await?;
                 batch.push_completed(source, exit_code);
             }
             Err(error) => {
@@ -305,7 +376,7 @@ async fn execute_dacapo(path: &std::path::Path, tasks: &[RunTask]) -> Result<u8,
         tasks,
     )
     .await;
-    Ok(finish_report(&config, &report).await)
+    finish_report(&config, &report, ReportFormat::Text, false).await
 }
 
 async fn wait_directory_delay(minimum: u64, maximum: u64) {
@@ -389,6 +460,7 @@ fn init_tracing(
         .with_max_level(level)
         .with_target(false)
         .without_time()
+        .with_writer(std::io::stderr)
         .init();
     None
 }

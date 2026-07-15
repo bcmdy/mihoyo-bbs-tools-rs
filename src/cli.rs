@@ -41,6 +41,15 @@ pub enum Command {
         /// 仅执行指定任务；可重复提供或使用逗号分隔，省略时执行全部任务
         #[arg(long = "task", value_enum, value_delimiter = ',')]
         tasks: Vec<RunTask>,
+        /// 禁止将自动刷新的凭据写回配置文件；从标准输入读取时始终只读
+        #[arg(long)]
+        read_only: bool,
+        /// 禁止发送所有外部通知
+        #[arg(long)]
+        no_notify: bool,
+        /// 任务报告输出格式；JSON 模式只向标准输出写入一个 JSON 对象
+        #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
+        output: ReportFormat,
     },
     /// 依次执行目录中的多个 YAML 配置，单个文件失败不阻止后续文件
     #[command(alias = "run-multi")]
@@ -128,6 +137,15 @@ pub enum CheckinRegion {
     Hoyolab,
     /// 执行国内和 HoYoLAB 游戏签到
     All,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum ReportFormat {
+    /// 输出面向终端阅读的文本报告
+    #[default]
+    Text,
+    /// 输出稳定的结构化 JSON 报告
+    Json,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ValueEnum)]
@@ -242,7 +260,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, Command};
+    use super::{Cli, Command, ReportFormat};
 
     #[test]
     fn all_commands_have_help_descriptions() {
@@ -333,5 +351,34 @@ mod tests {
         };
         assert_eq!(config, PathBuf::from("settings.json"));
         assert_eq!(tasks.len(), 1);
+    }
+
+    #[test]
+    fn run_accepts_standard_input_read_only_json_without_notifications() {
+        let cli = Cli::try_parse_from([
+            "MihoyoBBSToolsRS",
+            "run",
+            "--config",
+            "-",
+            "--read-only",
+            "--no-notify",
+            "--output",
+            "json",
+        ])
+        .unwrap();
+        let Command::Run {
+            config,
+            read_only,
+            no_notify,
+            output,
+            ..
+        } = cli.command
+        else {
+            panic!("expected run command");
+        };
+        assert_eq!(config, PathBuf::from("-"));
+        assert!(read_only);
+        assert!(no_notify);
+        assert_eq!(output, ReportFormat::Json);
     }
 }
