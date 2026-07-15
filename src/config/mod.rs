@@ -14,9 +14,11 @@ use url::Url;
 
 use crate::auth::{CookieJar, SecretString};
 
+mod dacapo;
 mod editor;
 mod interactive;
 mod legacy;
+pub use dacapo::{DacapoError, load_dacapo};
 pub use editor::{
     add_account_from_stdin, edit_file, persist_refreshed_cookie, remove_account,
     remove_notification_provider, replace_account_cookie, set_account_china_checkin,
@@ -40,6 +42,7 @@ pub struct LoadedConfig {
 pub enum ConfigSource {
     Current,
     PythonLegacy(u64),
+    Dacapo,
 }
 
 impl ConfigSource {
@@ -2404,6 +2407,7 @@ accounts:
     fn only_current_config_source_supports_persistent_refresh() {
         assert!(ConfigSource::Current.supports_persistent_refresh());
         assert!(!ConfigSource::PythonLegacy(15).supports_persistent_refresh());
+        assert!(!ConfigSource::Dacapo.supports_persistent_refresh());
     }
 
     #[test]

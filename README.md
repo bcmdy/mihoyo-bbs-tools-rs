@@ -43,6 +43,7 @@ MihoyoBBSToolsRS run
 MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs,china-cloud-game,overseas-cloud-game,web-activity
 MihoyoBBSToolsRS run-directory config [--prefix mhy_]
 MihoyoBBSToolsRS qinglong
+MihoyoBBSToolsRS dacapo settings.json
 MihoyoBBSToolsRS schedule
 MihoyoBBSToolsRS config edit
 MihoyoBBSToolsRS config add-account --name "备注"
@@ -59,6 +60,8 @@ MihoyoBBSToolsRS config setup
 `run-directory` 按文件名顺序执行目录中的 `.yaml`/`.yml`，自动排除 `*.example.yaml` 和 `*.example.yml`。`--prefix` 可限制文件名前缀，单个配置加载或任务失败不会阻止后续文件；各文件使用自己的账号、任务和通知设置。文件之间默认随机等待 3–10 秒，可通过 `--delay-min-seconds`、`--delay-max-seconds` 调整，均设为 `0` 可关闭。
 
 `qinglong`（别名 `ql`）兼容原 Python 入口的 `AutoMihoyoBBS_config_path`、`AutoMihoyoBBS_config_prefix`、`AutoMihoyoBBS_config_multi`、`QL_DIR` 和 `AutoMihoyoBBS_push_project`。多配置模式复用 `run-directory` 的故障隔离与汇总；Rust 版不会动态加载青龙 `notify.py`，通知统一由各 YAML 的 `notifications` 提供。
+
+`dacapo` 直接读取 DaCapo 生成的 JSON，在内存中转换账号、设备、国内/国际签到、社区、云游戏、Web 活动和通知设置，不再创建含凭据的临时 YAML/INI。发布包的 `dacapo/template.yml` 可直接用于新版集成；输入始终按只读配置处理。
 
 `schedule` 按 `runtime.schedule.interval_minutes` 常驻串行执行，每轮重新加载配置并应用随机延迟。该命令要求 `runtime.schedule.enabled: true`；`run_on_start` 控制启动后立即执行还是先等待一个间隔。停止时向进程发送 Ctrl+C 或由服务管理器终止。
 

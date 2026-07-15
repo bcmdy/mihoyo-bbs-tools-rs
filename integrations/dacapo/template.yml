@@ -1,0 +1,328 @@
+Project:
+  General:
+    _Base:
+      work_dir:
+        value: "./repos/mihoyo-bbs-tools-rs"
+      background:
+        value: true
+
+    账号配置:
+      米游社Cookie:
+        type: input
+        value: ""
+        help: "完整米游社 Cookie，必填；建议通过 DaCapo 的敏感配置能力保存"
+      stuid:
+        type: input
+        value: ""
+        help: "Cookie 缺少 UID 时用于补齐 account_id"
+      stoken:
+        type: input
+        value: ""
+        help: "Cookie 中没有 stoken 时单独填写"
+      mid:
+        type: input
+        value: ""
+        help: "V2 Stoken 需要 MID；Cookie 缺少时用于补齐 account_mid_v2"
+
+    设备信息:
+      设备名称:
+        type: input
+        value: "Xiaomi MI 6"
+      设备型号:
+        type: input
+        value: "Mi 6"
+      设备ID:
+        type: input
+        value: ""
+        help: "留空时按 Cookie 稳定生成"
+      设备指纹:
+        type: input
+        value: ""
+        help: "留空时由运行流程按需获取"
+
+    推送设置:
+      启用推送:
+        type: checkbox
+        value: false
+      推送服务:
+        type: select
+        value: "pushplus"
+        option:
+          [
+            "pushplus",
+            "ftqq",
+            "telegram",
+            "wecom",
+            "dingrobot",
+            "feishubot",
+            "bark",
+            "pushdeer",
+            "gotify",
+            "smtp",
+            "webhook",
+            "qmsg",
+            "discord",
+            "wintoast",
+            "wxpusher",
+            "serverchan3",
+          ]
+      推送Token:
+        type: input
+        value: ""
+        help: "所选服务的 Token、密码、SendKey、Secret 或 Webhook"
+      仅错误时推送:
+        type: checkbox
+        value: false
+      推送群组:
+        type: input
+        value: ""
+        help: "PushPlus topic 或 Server酱³ tags"
+      屏蔽关键词:
+        type: input
+        value: ""
+        help: "多个关键词用英文逗号分隔"
+      Telegram Chat ID:
+        type: input
+        value: ""
+      Telegram API地址:
+        type: input
+        value: "https://api.telegram.org"
+      Telegram代理:
+        type: input
+        value: ""
+      企业微信 Corp ID:
+        type: input
+        value: ""
+      企业微信 Agent ID:
+        type: input
+        value: ""
+      企业微信 ToUser:
+        type: input
+        value: "@all"
+      钉钉加签 Secret:
+        type: input
+        value: ""
+      Bark API地址:
+        type: input
+        value: ""
+        help: "留空使用官方地址"
+      Bark图标:
+        type: input
+        value: ""
+      PushDeer API地址:
+        type: input
+        value: ""
+        help: "留空使用官方地址"
+      Gotify API地址:
+        type: input
+        value: ""
+      Gotify优先级:
+        type: input
+        value: "0"
+      SMTP主机:
+        type: input
+        value: ""
+      SMTP端口:
+        type: input
+        value: "465"
+      SMTP发件人:
+        type: input
+        value: ""
+      SMTP收件人:
+        type: input
+        value: ""
+      SMTP用户名:
+        type: input
+        value: ""
+      SMTP主题:
+        type: input
+        value: "MihoyoBBSTools RS"
+      SMTP TLS:
+        type: select
+        value: "implicit"
+        option: ["implicit", "starttls", "none"]
+      SMTP超时秒数:
+        type: input
+        value: ""
+        help: "留空复用全局请求超时"
+      Qmsg API地址:
+        type: input
+        value: ""
+      Windows标题前缀:
+        type: input
+        value: "MihoyoBBSTools RS"
+      WxPusher UIDs:
+        type: input
+        value: ""
+        help: "多个 UID 用英文逗号分隔"
+      WxPusher Topic IDs:
+        type: input
+        value: ""
+        help: "多个数字 Topic ID 用英文逗号分隔"
+      WxPusher API地址:
+        type: input
+        value: ""
+
+  Update:
+    _Base:
+      env_name:
+        value: "mys-rs"
+
+日常:
+  米游社:
+    _Base:
+      command:
+        value: "./MihoyoBBSToolsRS dacapo"
+
+    米游社BBS:
+      启用米游社签到:
+        type: checkbox
+        value: true
+      启用版块签到:
+        type: checkbox
+        value: true
+      签到版块列表:
+        type: input
+        value: "5,2"
+        help: "默认大别野与原神；多个板块 ID 用英文逗号分隔"
+      启用看帖:
+        type: checkbox
+        value: false
+      启用点赞:
+        type: checkbox
+        value: false
+      启用取消点赞:
+        type: checkbox
+        value: false
+      启用分享:
+        type: checkbox
+        value: false
+
+    国服游戏:
+      启用国服签到:
+        type: checkbox
+        value: true
+      User Agent:
+        type: input
+        value: "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0"
+      重试次数:
+        type: input
+        value: "3"
+        help: "游戏签到最大尝试次数，范围 1 到 10"
+      原神签到:
+        type: checkbox
+        value: true
+      原神黑名单:
+        type: input
+        value: ""
+      崩坏2签到:
+        type: checkbox
+        value: false
+      崩坏2黑名单:
+        type: input
+        value: ""
+      崩坏3签到:
+        type: checkbox
+        value: false
+      崩坏3黑名单:
+        type: input
+        value: ""
+      未定事件簿签到:
+        type: checkbox
+        value: false
+      未定事件簿黑名单:
+        type: input
+        value: ""
+      星穹铁道签到:
+        type: checkbox
+        value: false
+      星穹铁道黑名单:
+        type: input
+        value: ""
+      绝区零签到:
+        type: checkbox
+        value: false
+      绝区零黑名单:
+        type: input
+        value: ""
+
+    国际服游戏:
+      启用国际服签到:
+        type: checkbox
+        value: false
+      国际服Cookie:
+        type: input
+        value: ""
+      语言设置:
+        type: select
+        value: "zh-cn"
+        option: ["zh-cn", "en-us", "ja-jp", "ko-kr"]
+      国际服原神签到:
+        type: checkbox
+        value: false
+      国际服原神黑名单:
+        type: input
+        value: ""
+      国际服崩坏3签到:
+        type: checkbox
+        value: false
+      国际服崩坏3黑名单:
+        type: input
+        value: ""
+      国际服未定事件簿签到:
+        type: checkbox
+        value: false
+      国际服未定事件簿黑名单:
+        type: input
+        value: ""
+      国际服星穹铁道签到:
+        type: checkbox
+        value: false
+      国际服星穹铁道黑名单:
+        type: input
+        value: ""
+      国际服绝区零签到:
+        type: checkbox
+        value: false
+      国际服绝区零黑名单:
+        type: input
+        value: ""
+
+    云游戏:
+      启用云游戏签到:
+        type: checkbox
+        value: false
+      启用云原神:
+        type: checkbox
+        value: false
+      云原神Token:
+        type: input
+        value: ""
+      启用云绝区零:
+        type: checkbox
+        value: false
+      云绝区零Token:
+        type: input
+        value: ""
+      启用国际服云游戏:
+        type: checkbox
+        value: false
+      国际服云游戏语言:
+        type: select
+        value: "zh-cn"
+        option: ["zh-cn", "en-us", "ja-jp", "ko-kr"]
+      启用国际服云原神:
+        type: checkbox
+        value: false
+      国际服云原神Token:
+        type: input
+        value: ""
+
+    网页活动:
+      启用网页活动:
+        type: checkbox
+        value: false
+      活动列表:
+        type: input
+        value: ""
+        help: "当前仅识别 genshin_mizone；该历史活动已过期，执行时会明确跳过"

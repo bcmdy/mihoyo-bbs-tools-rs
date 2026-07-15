@@ -277,6 +277,14 @@ accounts:
 - 转换后的配置再次读取时应得到等价内部结果。
 - 直接运行 Python v11–v15 配置时只进行内存迁移，凭据刷新不会写回旧文件；使用 `migrate-config` 生成的新版 YAML 后才允许安全写回。
 
+## DaCapo JSON 适配
+
+`dacapo JSON_PATH` 读取 DaCapo 传入的 JSON，叶子字段同时兼容直接标量和 `{ "value": ... }`。转换全程在内存完成，不生成含 Cookie、Token 的临时 YAML 或 INI，也不会把自动刷新的凭据写回 DaCapo 输入。
+
+独立 `stuid` 和 `mid` 会在 Cookie 缺少对应值时分别补为 `account_id` 和 `account_mid_v2`；独立 `stoken` 写入统一凭据模型。`国服游戏.重试次数` 映射到 `runtime.game_checkin_max_attempts`，不是 HTTP 重试次数。国内角色黑名单完整迁移；DaCapo/原 Python 的国际服黑名单从未在实际签到中执行，因此只产生明确警告。未知 Web 活动直接报错，不会静默忽略。
+
+新版 `integrations/dacapo/template.yml` 为所有可选通知补充了必要的次级字段。启用通知后，缺少 Chat ID、API 地址、SMTP 主机/邮箱或 WxPusher 接收目标等必要字段会在联网前报错。JSON 字符串同样支持 `${ENV_NAME}`，环境变量缺失时不会回显对应 Secret。
+
 兼容测试使用从旧项目抽取并人工脱敏的 Fixture，不得提交真实账号配置或历史日志。
 
 ## 配置文件保护

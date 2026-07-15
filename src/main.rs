@@ -68,6 +68,10 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
         } => return execute_config_path(&path, &tasks).await,
         Command::RunDirectory(args) => return execute_directory(args).await,
         Command::Qinglong(args) => return execute_qinglong(args).await,
+        Command::Dacapo {
+            config: path,
+            tasks,
+        } => return execute_dacapo(&path, &tasks).await,
         Command::Schedule {
             config: path,
             tasks,
@@ -191,6 +195,11 @@ fn initial_runtime(cli: &Cli) -> Option<config::RuntimeConfig> {
                     .map(|loaded| loaded.config.runtime)
             };
         }
+        Command::Dacapo { config: path, .. } => {
+            return config::load_dacapo(path)
+                .ok()
+                .map(|loaded| loaded.config.runtime);
+        }
         _ => {}
     }
     cli_config_path(cli)
@@ -283,6 +292,20 @@ async fn execute_qinglong(args: QinglongArgs) -> Result<u8, AppError> {
         tracing::info!(config = %settings.single_config.display(), "青龙单配置模式");
         execute_config_path(&settings.single_config, &args.tasks).await
     }
+}
+
+async fn execute_dacapo(path: &std::path::Path, tasks: &[RunTask]) -> Result<u8, AppError> {
+    let loaded = config::load_dacapo(path)?;
+    for warning in &loaded.warnings {
+        tracing::warn!("{warning}");
+    }
+    let (config, report) = execute_run(
+        loaded.config,
+        service::CredentialPersistence::ReadOnly,
+        tasks,
+    )
+    .await;
+    Ok(finish_report(&config, &report).await)
 }
 
 async fn wait_directory_delay(minimum: u64, maximum: u64) {

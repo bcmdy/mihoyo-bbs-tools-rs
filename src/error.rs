@@ -16,6 +16,8 @@ pub enum AppError {
     ConfigDirectory(#[from] crate::service::ConfigDirectoryError),
     #[error("青龙环境配置错误：{0}")]
     Qinglong(#[from] crate::service::QinglongError),
+    #[error("DaCapo 配置错误：{0}")]
+    Dacapo(#[from] crate::config::DacapoError),
 }
 
 impl AppError {
@@ -28,6 +30,7 @@ impl AppError {
             Self::Task(_) => 1,
             Self::ConfigDirectory(_) => 2,
             Self::Qinglong(_) => 2,
+            Self::Dacapo(_) => 2,
         }
     }
 }

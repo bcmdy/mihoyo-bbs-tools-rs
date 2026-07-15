@@ -48,6 +48,15 @@ pub enum Command {
     /// 按青龙环境变量选择单配置或多配置模式并执行任务
     #[command(alias = "ql")]
     Qinglong(QinglongArgs),
+    /// 读取 DaCapo 生成的 JSON 配置并以内存只读模式执行任务
+    Dacapo {
+        /// DaCapo 传入的 JSON 配置文件
+        #[arg(value_name = "JSON_PATH")]
+        config: PathBuf,
+        /// 仅执行指定任务；语义与 run --task 相同
+        #[arg(long = "task", value_enum, value_delimiter = ',')]
+        tasks: Vec<RunTask>,
+    },
     /// 按 runtime.schedule 间隔常驻执行完整任务，每轮重新加载配置
     Schedule {
         /// 配置文件路径
@@ -307,5 +316,22 @@ mod tests {
             panic!("expected qinglong command");
         };
         assert_eq!(args.tasks.len(), 2);
+    }
+
+    #[test]
+    fn dacapo_requires_json_path_and_accepts_task_filter() {
+        let cli = Cli::try_parse_from([
+            "MihoyoBBSToolsRS",
+            "dacapo",
+            "settings.json",
+            "--task",
+            "china-checkin",
+        ])
+        .unwrap();
+        let Command::Dacapo { config, tasks } = cli.command else {
+            panic!("expected dacapo command");
+        };
+        assert_eq!(config, PathBuf::from("settings.json"));
+        assert_eq!(tasks.len(), 1);
     }
 }
