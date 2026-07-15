@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use lettre::message::Mailbox;
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::{Mapping, Value};
 use thiserror::Error;
@@ -673,6 +674,39 @@ pub enum NotificationProvider {
         #[serde(default)]
         tags: Option<String>,
     },
+    Smtp {
+        host: String,
+        port: u16,
+        from: String,
+        to: String,
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        username: SecretString,
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        password: SecretString,
+        subject: String,
+        #[serde(default = "default_smtp_tls")]
+        tls: SmtpTlsMode,
+        #[serde(default)]
+        timeout_seconds: Option<u64>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpTlsMode {
+    None,
+    Starttls,
+    Implicit,
+}
+
+fn default_smtp_tls() -> SmtpTlsMode {
+    SmtpTlsMode::Implicit
 }
 
 fn default_wecom_to_user() -> String {
@@ -1176,6 +1210,43 @@ fn validate_provider(provider: &NotificationProvider, index: usize, errors: &mut
         NotificationProvider::Serverchan3 { sendkey, .. } => {
             validate_required_secret(sendkey, &format!("{path}.sendkey"), errors);
         }
+        NotificationProvider::Smtp {
+            host,
+            port,
+            from,
+            to,
+            username,
+            password,
+            subject,
+            timeout_seconds,
+            ..
+        } => {
+            if host.trim().is_empty()
+                || host.trim() != host
+                || host.contains("://")
+                || host.contains(['/', '\\'])
+                || host.chars().any(char::is_whitespace)
+            {
+                errors.push(format!("{path}.host 必须是无协议和路径的 SMTP 主机名"));
+            }
+            if *port == 0 {
+                errors.push(format!("{path}.port 必须大于 0"));
+            }
+            if from.parse::<Mailbox>().is_err() {
+                errors.push(format!("{path}.from 不是有效邮箱地址"));
+            }
+            if to.parse::<Mailbox>().is_err() {
+                errors.push(format!("{path}.to 不是有效邮箱地址"));
+            }
+            validate_required_secret(username, &format!("{path}.username"), errors);
+            validate_required_secret(password, &format!("{path}.password"), errors);
+            if subject.trim().is_empty() {
+                errors.push(format!("{path}.subject 不能为空"));
+            }
+            if timeout_seconds.is_some_and(|timeout| !(1..=300).contains(&timeout)) {
+                errors.push(format!("{path}.timeout_seconds 必须在 1 到 300 之间"));
+            }
+        }
     }
 }
 
@@ -1522,6 +1593,18 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                             &["type", "app_token", "uids", "topic_ids", "api_url"][..]
                         }
                         Some("serverchan3") => &["type", "sendkey", "tags"][..],
+                        Some("smtp") => &[
+                            "type",
+                            "host",
+                            "port",
+                            "from",
+                            "to",
+                            "username",
+                            "password",
+                            "subject",
+                            "tls",
+                            "timeout_seconds",
+                        ][..],
                         _ => &["type"][..],
                     };
                     inspect_mapping(
@@ -2002,6 +2085,40 @@ accounts:
         );
         assert!(
             matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("notifications.providers[0].proxy")))
+        );
+    }
+
+    #[test]
+    fn smtp_accepts_tls_modes_and_redacts_credentials() {
+        for tls in ["none", "starttls", "implicit"] {
+            let source = format!(
+                "{MINIMAL}\nnotifications:\n  enabled: true\n  providers:\n    - type: smtp\n      host: smtp.example.com\n      port: 465\n      from: sender@example.com\n      to: receiver@example.com\n      username: smtp-user-secret\n      password: smtp-password-secret\n      subject: MihoyoBBSTools RS\n      tls: {tls}\n      timeout_seconds: 30\n"
+            );
+            let loaded = parse(&source).unwrap();
+            assert!(loaded.warnings.is_empty());
+            let debug = format!("{:?}", loaded.config.notifications);
+            assert!(!debug.contains("smtp-user-secret"));
+            assert!(!debug.contains("smtp-password-secret"));
+        }
+    }
+
+    #[test]
+    fn smtp_rejects_invalid_addresses_port_and_timeout() {
+        let source = format!(
+            "{MINIMAL}\nnotifications:\n  enabled: true\n  providers:\n    - type: smtp\n      host: smtp.example.com\n      port: 0\n      from: invalid\n      to: invalid\n      username: user\n      password: password\n      subject: test\n      tls: implicit\n      timeout_seconds: 301\n"
+        );
+        assert!(
+            matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains(".port")) && errors.iter().any(|error| error.contains(".from")) && errors.iter().any(|error| error.contains(".to")) && errors.iter().any(|error| error.contains(".timeout_seconds")))
+        );
+    }
+
+    #[test]
+    fn smtp_rejects_url_instead_of_host_name() {
+        let source = format!(
+            "{MINIMAL}\nnotifications:\n  enabled: true\n  providers:\n    - type: smtp\n      host: https://smtp.example.com/mail\n      port: 465\n      from: sender@example.com\n      to: receiver@example.com\n      username: user\n      password: password\n      subject: test\n      tls: implicit\n"
+        );
+        assert!(
+            matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains(".host")))
         );
     }
 

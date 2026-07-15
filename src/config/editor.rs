@@ -781,6 +781,14 @@ fn notification_field_value(field: &str, raw: &str) -> Result<Value, ConfigError
             .parse::<i64>()
             .map(|value| Value::Number(value.into()))
             .map_err(|_| ConfigError::Edit("priority 必须是整数".into())),
+        "port" => raw
+            .parse::<u16>()
+            .map(|value| Value::Number(u64::from(value).into()))
+            .map_err(|_| ConfigError::Edit("port 必须是 0 到 65535 之间的整数".into())),
+        "timeout_seconds" => raw
+            .parse::<u64>()
+            .map(|value| Value::Number(value.into()))
+            .map_err(|_| ConfigError::Edit("timeout_seconds 必须是非负整数".into())),
         "topic_ids" => raw
             .split(',')
             .map(str::trim)
@@ -1070,6 +1078,43 @@ mod tests {
         assert!(schedule.enabled);
         assert_eq!(schedule.interval_minutes, 60);
         assert!(!schedule.run_on_start);
+    }
+
+    #[tokio::test]
+    async fn smtp_editor_persists_numeric_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        add_account(
+            &path,
+            None,
+            "account_id=123; account_mid_v2=mid; stoken=v2_secret",
+        )
+        .await
+        .unwrap();
+        let fields = [
+            ("host".to_owned(), Some("smtp.example.com".to_owned())),
+            ("port".to_owned(), Some("465".to_owned())),
+            ("from".to_owned(), Some("sender@example.com".to_owned())),
+            ("to".to_owned(), Some("receiver@example.com".to_owned())),
+            ("username".to_owned(), Some("smtp-user".to_owned())),
+            ("password".to_owned(), Some("smtp-password".to_owned())),
+            ("subject".to_owned(), Some("test".to_owned())),
+            ("tls".to_owned(), Some("implicit".to_owned())),
+            ("timeout_seconds".to_owned(), Some("30".to_owned())),
+        ];
+        set_notification_provider(&path, None, "smtp", &fields).unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("port: 465"));
+        assert!(written.contains("timeout_seconds: 30"));
+        assert!(matches!(
+            load(&path).unwrap().config.notifications.providers[0],
+            super::super::NotificationProvider::Smtp {
+                port: 465,
+                timeout_seconds: Some(30),
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

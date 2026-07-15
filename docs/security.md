@@ -4,7 +4,7 @@
 
 ## 凭据管理
 
-- 真实 Cookie、SToken、LToken、Cookie Token、推送 Token、Webhook 密钥和代理密码只能通过 GitHub Secrets、环境变量或受控配置文件提供。
+- 真实 Cookie、SToken、LToken、Cookie Token、推送 Token、Webhook 密钥、SMTP 凭据和代理密码只能通过 GitHub Secrets、环境变量或受控配置文件提供。
 - 仓库中的示例配置只允许使用 `${ENV_NAME}` 占位符。
 - 不允许将 Cookie 或 Token 作为命令行参数，避免凭据出现在进程列表、Shell 历史和 Actions 日志中。
 - 敏感字段在 Rust 中应使用敏感字符串类型包装，不能派生或实现会输出明文的普通 `Debug`。
@@ -19,6 +19,7 @@
 - Telegram Bot Token 及其他推送提供商令牌。
 - Webhook URL 查询参数或路径中的密钥。
 - 代理用户名和密码。
+- SMTP 用户名和授权码或密码。
 - 完整账号 ID，默认只显示尾部少量字符。
 
 禁止记录完整的 HTTP 请求对象、配置结构体、环境变量集合或未经限制的响应体。错误信息只能包含定位问题所需的安全上下文。
@@ -26,6 +27,7 @@
 ## 网络安全
 
 - 默认验证 TLS 证书，不提供全局关闭证书验证的选项。
+- SMTP 默认使用隐式 TLS；`tls: none` 只允许用于可信隔离网络，因为认证信息会以明文传输。
 - 验证码服务地址、代理地址和 Webhook 地址必须校验协议。
 - Cookie 和认证请求头只能发送给明确允许的目标主机。
 - HTTP 重定向到不同主机时，不得继续携带敏感请求头。

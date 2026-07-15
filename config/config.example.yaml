@@ -219,3 +219,13 @@ notifications:
   # - type: serverchan3
   #   sendkey: "${SERVERCHAN3_SENDKEY}"
   #   tags: null
+  # - type: smtp
+  #   host: "smtp.example.com"
+  #   port: 465
+  #   from: "sender@example.com"
+  #   to: "receiver@example.com"
+  #   username: "${SMTP_USERNAME}"
+  #   password: "${SMTP_PASSWORD}"
+  #   subject: "MihoyoBBSTools RS"
+  #   tls: implicit
+  #   timeout_seconds: null

@@ -474,6 +474,7 @@ fn provider_types() -> &'static [&'static str] {
         "discord",
         "wxpusher",
         "serverchan3",
+        "smtp",
     ]
 }
 
@@ -528,6 +529,17 @@ fn provider_fields(kind: &str) -> &'static [ProviderField] {
     ];
     const SERVERCHAN3: &[ProviderField] =
         &[field("sendkey", true, None), field("tags", false, None)];
+    const SMTP: &[ProviderField] = &[
+        field("host", true, None),
+        field("port", true, Some("465")),
+        field("from", true, None),
+        field("to", true, None),
+        field("username", true, None),
+        field("password", true, None),
+        field("subject", true, Some("MihoyoBBSTools RS")),
+        field("tls", true, Some("implicit")),
+        field("timeout_seconds", false, None),
+    ];
     match kind {
         "telegram" => TELEGRAM,
         "webhook" => WEBHOOK,
@@ -545,6 +557,7 @@ fn provider_fields(kind: &str) -> &'static [ProviderField] {
         "qmsg" => QMSG,
         "wxpusher" => WXPUSHER,
         "serverchan3" => SERVERCHAN3,
+        "smtp" => SMTP,
         _ => &[],
     }
 }
@@ -577,6 +590,7 @@ fn provider_type(provider: &NotificationProvider) -> &'static str {
         NotificationProvider::Discord { .. } => "discord",
         NotificationProvider::Wxpusher { .. } => "wxpusher",
         NotificationProvider::Serverchan3 { .. } => "serverchan3",
+        NotificationProvider::Smtp { .. } => "smtp",
     }
 }
 
@@ -863,6 +877,11 @@ mod tests {
             provider_fields("telegram")
                 .iter()
                 .any(|field| field.name == "proxy")
+        );
+        assert!(
+            provider_fields("smtp")
+                .iter()
+                .any(|field| field.name == "timeout_seconds")
         );
     }
 }

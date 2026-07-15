@@ -121,7 +121,7 @@ notifications:
       topic: null
 ```
 
-除 Telegram、Webhook、PushPlus 外，通知还支持：`ftqq`、`pushme`、`cqhttp`、`wecom`、`wecomrobot`、`pushdeer`、`dingrobot`、`feishubot`、`bark`、`gotify`、`ifttt`、`qmsg`、`discord`、`wxpusher`、`serverchan3`。各渠道使用与服务商对应的 `token`、`sendkey`、`webhook`、`api_url` 等字段；所有凭据均建议使用环境变量注入。`error_only: true` 时仅在核心任务非成功时推送，`block_keywords` 会在发送前将正文中的指定关键词替换为等长星号。
+除 Telegram、Webhook、PushPlus 外，通知还支持：`ftqq`、`pushme`、`cqhttp`、`wecom`、`wecomrobot`、`pushdeer`、`dingrobot`、`feishubot`、`bark`、`gotify`、`ifttt`、`qmsg`、`discord`、`wxpusher`、`serverchan3` 和 `smtp`。各渠道使用与服务商对应的字段；所有凭据均建议使用环境变量注入。`error_only: true` 时仅在核心任务非成功时推送，`block_keywords` 会在发送前将正文中的指定关键词替换为等长星号。
 
 ## 验证码与推送
 
@@ -132,6 +132,8 @@ notifications:
 环境变量会在配置反序列化前统一展开，因此即使 `notifications.enabled` 为 `false`，配置文件中已经写入的 `${ENV_NAME}` 仍必须存在。不使用通知时应保留空的 `providers: []`，不要放置尚未配置 Secret 的渠道。
 
 Telegram 的 `api_url` 默认使用 `https://api.telegram.org`，一般无需修改。无法直接访问 Telegram API 时，可通过该渠道独立的 `proxy` 字段配置 HTTP、HTTPS、SOCKS5 或 SOCKS5H 代理，例如 `proxy: "127.0.0.1:7890"`；省略协议时按 HTTP 代理处理，不使用代理时设为 `null`。代理仅作用于 Telegram，不影响其他通知渠道；带用户名和密码的代理地址属于敏感信息，不会写入错误消息或日志。
+
+SMTP 使用 `host`、`port`、`from`、`to`、`username`、`password`、`subject`、`tls` 和可选 `timeout_seconds`。`tls` 支持 `implicit`（通常为 465）、`starttls`（通常为 587）和 `none`（通常为 25）；默认及推荐使用 `implicit`。`timeout_seconds: null` 时复用全局请求超时，显式值必须在 1 到 300 秒之间。`none` 会明文传输 SMTP 认证信息，只能用于可信隔离网络，不建议连接公网邮件服务器。
 
 ## 配置编辑与账号管理
 

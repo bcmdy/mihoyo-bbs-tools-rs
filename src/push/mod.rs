@@ -10,6 +10,9 @@ use crate::{
     service::RunReport,
 };
 
+mod smtp;
+use smtp::SmtpProvider;
+
 const PUSHPLUS_API_URL: &str = "https://www.pushplus.plus/send";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,6 +47,7 @@ pub enum ProviderKind {
     Telegram,
     Webhook,
     Pushplus,
+    Smtp,
     Other,
 }
 
@@ -53,6 +57,7 @@ impl ProviderKind {
             Self::Telegram => "telegram",
             Self::Webhook => "webhook",
             Self::Pushplus => "pushplus",
+            Self::Smtp => "smtp",
             Self::Other => "other",
         }
     }
@@ -98,6 +103,10 @@ pub enum PushError {
     InvalidResponse,
     #[error("推送服务拒绝请求（代码 {0}）")]
     ServiceRejected(i64),
+    #[error("邮件地址或正文无效")]
+    InvalidMessage,
+    #[error("SMTP 邮件发送失败")]
+    SmtpDelivery,
 }
 
 pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), PushError>> + Send + 'a>>;
@@ -131,7 +140,7 @@ impl PushDispatcher {
             .notifications
             .providers
             .iter()
-            .map(|provider| configured_provider(configured_http(config, provider), provider))
+            .map(|provider| configured_provider(config, provider))
             .collect();
         Self::new(providers)
     }
@@ -199,10 +208,32 @@ fn configured_http(
     builder.proxy(proxy)?.build()
 }
 
-fn configured_provider(
-    http: Result<HttpClient, HttpError>,
-    provider: &NotificationProvider,
-) -> Box<dyn Provider> {
+fn configured_provider(config: &Config, provider: &NotificationProvider) -> Box<dyn Provider> {
+    if let NotificationProvider::Smtp {
+        host,
+        port,
+        from,
+        to,
+        username,
+        password,
+        subject,
+        tls,
+        timeout_seconds,
+    } = provider
+    {
+        return Box::new(SmtpProvider::new(
+            host.clone(),
+            *port,
+            from.clone(),
+            to.clone(),
+            username.clone(),
+            password.clone(),
+            subject.clone(),
+            *tls,
+            Duration::from_secs(timeout_seconds.unwrap_or(config.runtime.request_timeout_seconds)),
+        ));
+    }
+    let http = configured_http(config, provider);
     let http = match http {
         Ok(http) => http,
         Err(error) => {
@@ -255,6 +286,7 @@ fn configured_kind(provider: &NotificationProvider) -> ProviderKind {
         NotificationProvider::Telegram { .. } => ProviderKind::Telegram,
         NotificationProvider::Webhook { .. } => ProviderKind::Webhook,
         NotificationProvider::Pushplus { .. } => ProviderKind::Pushplus,
+        NotificationProvider::Smtp { .. } => ProviderKind::Smtp,
         _ => ProviderKind::Other,
     }
 }
@@ -351,7 +383,7 @@ impl CompatProvider {
                 let mut send=base.join("cgi-bin/message/send").map_err(|_|PushError::InvalidEndpoint)?; send.query_pairs_mut().append_pair("access_token",&token.access_token);
                 self.json(send,&serde_json::json!({"touser":to_user,"msgtype":"text","agentid":agent_id,"text":{"content":text},"safe":0})).await
             }
-            Telegram{..}|Webhook{..}|Pushplus{..} => unreachable!(),
+            Telegram{..}|Webhook{..}|Pushplus{..}|Smtp{..} => unreachable!(),
         }
     }
     async fn json(&self, url: Url, body: &serde_json::Value) -> Result<(), PushError> {
