@@ -6,9 +6,9 @@ use url::Url;
 use super::{
     AccountConfig, CURRENT_CONFIG_VERSION, CaptchaConfig, ChinaCheckinConfig,
     ChinaCloudGamesConfig, CloudGameEntryConfig, CloudGamesConfig, Config, ConfigError,
-    CredentialConfig, DeviceConfig, Game, HoyolabConfig, LoadedConfig, NotificationsConfig,
-    OverseasCloudGamesConfig, ProxyConfig, RoleBlacklistConfig, RuntimeConfig, TaskConfig,
-    WebActivity, WebActivityTaskConfig,
+    ConfigSource, CredentialConfig, DeviceConfig, Game, HoyolabConfig, LoadedConfig,
+    NotificationsConfig, OverseasCloudGamesConfig, ProxyConfig, RoleBlacklistConfig, RuntimeConfig,
+    TaskConfig, WebActivity, WebActivityTaskConfig,
 };
 use crate::auth::SecretString;
 
@@ -186,7 +186,11 @@ pub(super) fn migrate_value(
         notifications: NotificationsConfig::default(),
     };
 
-    Ok(LoadedConfig { config, warnings })
+    Ok(LoadedConfig {
+        config,
+        warnings,
+        source: ConfigSource::PythonLegacy(version),
+    })
 }
 
 fn legacy_bbs_forums(bbs: Option<&Mapping>, warnings: &mut Vec<String>) -> Vec<u8> {

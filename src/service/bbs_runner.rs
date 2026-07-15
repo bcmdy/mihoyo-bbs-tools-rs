@@ -10,7 +10,7 @@ use crate::{
 };
 
 use super::{
-    RunReport, TaskOutcome, TaskRecord,
+    CredentialPersistence, RunReport, TaskOutcome, TaskRecord,
     credential_refresh::{has_authentication_failure, refresh_account_cookie},
     resolve_device_id,
 };
@@ -37,14 +37,21 @@ impl CompletedRequests {
 
 pub async fn run_bbs(config: &Config) -> RunReport {
     let mut runtime_config = config.clone();
-    run_bbs_inner(&mut runtime_config, None).await
+    run_bbs_inner(&mut runtime_config, CredentialPersistence::ReadOnly).await
 }
 
 pub async fn run_bbs_with_refresh(config: &mut Config, path: &Path) -> RunReport {
-    run_bbs_inner(config, Some(path)).await
+    run_bbs_with_persistence(config, CredentialPersistence::CurrentConfig(path)).await
 }
 
-async fn run_bbs_inner(config: &mut Config, path: Option<&Path>) -> RunReport {
+pub async fn run_bbs_with_persistence(
+    config: &mut Config,
+    persistence: CredentialPersistence<'_>,
+) -> RunReport {
+    run_bbs_inner(config, persistence).await
+}
+
+async fn run_bbs_inner(config: &mut Config, persistence: CredentialPersistence<'_>) -> RunReport {
     let mut report = RunReport::default();
     for account_index in 0..config.accounts.len() {
         let account = config.accounts[account_index].clone();
@@ -70,17 +77,25 @@ async fn run_bbs_inner(config: &mut Config, path: Option<&Path>) -> RunReport {
                     continue;
                 }
             };
-            match refresh_account_cookie(config, account_index, refresh_http, path).await {
+            match refresh_account_cookie(config, account_index, refresh_http, persistence.path())
+                .await
+            {
                 Ok(persisted) => {
                     report.push(record(
                         &account.name,
                         "凭据刷新",
                         "cookie_token",
                         TaskOutcome::Success,
-                        if persisted {
-                            "检测到认证失效，已通过 SToken 刷新、写回配置并重试"
-                        } else {
-                            "检测到认证失效，已通过 SToken 刷新并重试；Cookie 来自环境变量，未写入配置文件"
+                        match (persistence, persisted) {
+                            (CredentialPersistence::CurrentConfig(_), true) => {
+                                "检测到认证失效，已通过 SToken 刷新、写回配置并重试"
+                            }
+                            (CredentialPersistence::CurrentConfig(_), false) => {
+                                "检测到认证失效，已通过 SToken 刷新并重试；Cookie 来自环境变量，未写入配置文件"
+                            }
+                            (CredentialPersistence::ReadOnly, _) => {
+                                "检测到认证失效，已通过 SToken 刷新并重试；当前配置源为只读，未写入配置文件"
+                            }
                         },
                     ));
                     let refreshed = config.accounts[account_index].clone();

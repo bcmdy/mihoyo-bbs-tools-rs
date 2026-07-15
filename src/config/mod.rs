@@ -33,6 +33,19 @@ pub const EXAMPLE_CONFIG: &str = include_str!("../../config/config.example.yaml"
 pub struct LoadedConfig {
     pub config: Config,
     pub warnings: Vec<String>,
+    pub source: ConfigSource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigSource {
+    Current,
+    PythonLegacy(u64),
+}
+
+impl ConfigSource {
+    pub const fn supports_persistent_refresh(self) -> bool {
+        matches!(self, Self::Current)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -828,7 +841,11 @@ fn load_with_mode(path: &Path, migration_requested: bool) -> Result<LoadedConfig
     let mut config: Config = serde_yaml_ng::from_value(value)?;
     hydrate_stokens_from_cookies(&mut config);
     validate(&config)?;
-    let mut loaded = LoadedConfig { config, warnings };
+    let mut loaded = LoadedConfig {
+        config,
+        warnings,
+        source: ConfigSource::Current,
+    };
     if migration_requested {
         loaded
             .warnings
@@ -1884,7 +1901,11 @@ mod tests {
         let warnings = collect_unknown_field_warnings(&value);
         let config: Config = serde_yaml_ng::from_value(value)?;
         validate(&config)?;
-        Ok(LoadedConfig { config, warnings })
+        Ok(LoadedConfig {
+            config,
+            warnings,
+            source: ConfigSource::Current,
+        })
     }
 
     const MINIMAL: &str = r#"
@@ -2380,6 +2401,12 @@ accounts:
     }
 
     #[test]
+    fn only_current_config_source_supports_persistent_refresh() {
+        assert!(ConfigSource::Current.supports_persistent_refresh());
+        assert!(!ConfigSource::PythonLegacy(15).supports_persistent_refresh());
+    }
+
+    #[test]
     fn unknown_notification_provider_is_an_error() {
         let source = format!(
             "{MINIMAL}\nnotifications:\n  enabled: true\n  providers:\n    - type: unknown\n"
@@ -2403,6 +2430,7 @@ accounts:
         let migrated = migrate_config(&path).unwrap();
         assert_eq!(migrated.config.accounts[0].name, "fixture-account");
         assert_eq!(migrated.config.version, CURRENT_CONFIG_VERSION);
+        assert_eq!(migrated.source, ConfigSource::PythonLegacy(15));
     }
 
     #[test]

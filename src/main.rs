@@ -51,8 +51,10 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             service::apply_runtime_delay(&loaded.config.runtime).await;
             let mut report = service::RunReport::default();
             if matches!(region, CheckinRegion::China | CheckinRegion::All) {
+                let persistence = credential_persistence(loaded.source, &path);
                 report.extend(
-                    service::run_china_checkin_with_refresh(&mut loaded.config, &path).await,
+                    service::run_china_checkin_with_persistence(&mut loaded.config, persistence)
+                        .await,
                 );
             }
             if matches!(region, CheckinRegion::Hoyolab | CheckinRegion::All) {
@@ -68,7 +70,8 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             for warning in &loaded.warnings {
                 tracing::warn!("{warning}");
             }
-            let (config, report) = execute_run(loaded.config, &path, &tasks).await;
+            let persistence = credential_persistence(loaded.source, &path);
+            let (config, report) = execute_run(loaded.config, persistence, &tasks).await;
             return Ok(finish_report(&config, &report).await);
         }
         Command::Schedule {
@@ -97,7 +100,8 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                     service::wait_schedule_interval(&schedule).await;
                     continue;
                 }
-                let (config, report) = execute_run(loaded.config, &path, &tasks).await;
+                let persistence = credential_persistence(loaded.source, &path);
+                let (config, report) = execute_run(loaded.config, persistence, &tasks).await;
                 last_exit = finish_report(&config, &report).await;
                 tracing::info!(exit_code = last_exit, "定时任务本轮结束");
                 first = false;
@@ -180,20 +184,20 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
 
 async fn execute_run(
     mut config: config::Config,
-    path: &std::path::Path,
+    persistence: service::CredentialPersistence<'_>,
     tasks: &[RunTask],
 ) -> (config::Config, service::RunReport) {
     service::apply_runtime_delay(&config.runtime).await;
     let all = tasks.is_empty();
     let mut report = service::RunReport::default();
     if all || tasks.contains(&RunTask::ChinaCheckin) {
-        report.extend(service::run_china_checkin_with_refresh(&mut config, path).await);
+        report.extend(service::run_china_checkin_with_persistence(&mut config, persistence).await);
     }
     if all || tasks.contains(&RunTask::HoyolabCheckin) {
         report.extend(service::run_hoyolab_checkin(&config).await);
     }
     if all || tasks.contains(&RunTask::Bbs) {
-        report.extend(service::run_bbs_with_refresh(&mut config, path).await);
+        report.extend(service::run_bbs_with_persistence(&mut config, persistence).await);
     }
     let china_cloud = all || tasks.contains(&RunTask::ChinaCloudGame);
     let overseas_cloud = all || tasks.contains(&RunTask::OverseasCloudGame);
@@ -204,6 +208,17 @@ async fn execute_run(
         report.extend(service::run_web_activities(&config));
     }
     (config, report)
+}
+
+fn credential_persistence<'a>(
+    source: config::ConfigSource,
+    path: &'a std::path::Path,
+) -> service::CredentialPersistence<'a> {
+    if source.supports_persistent_refresh() {
+        service::CredentialPersistence::CurrentConfig(path)
+    } else {
+        service::CredentialPersistence::ReadOnly
+    }
 }
 fn init_tracing(
     runtime: Option<&config::RuntimeConfig>,
