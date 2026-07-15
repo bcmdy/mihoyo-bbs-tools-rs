@@ -106,7 +106,18 @@ jobs:
           echo "AR_${cc_key}=$CROSS_AR" >> "$GITHUB_ENV"
 
       - name: 编译 Release
-        run: cargo build --release --locked --target "$CARGO_TARGET"
+        run: |
+          set +e
+          cargo build --release --locked --target "$CARGO_TARGET" 2>&1 | tee build.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            details=$(tail -n 100 build.log)
+            details="${details//'%'/'%25'}"
+            details="${details//$'\r'/'%0D'}"
+            details="${details//$'\n'/'%0A'}"
+            echo "::error title=Linux $PACKAGE_ARCH 发布构建失败::$details"
+          fi
+          exit "$code"
 
       - name: 验证目标程序可启动
         shell: bash
