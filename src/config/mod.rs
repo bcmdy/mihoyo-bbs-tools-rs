@@ -18,9 +18,10 @@ mod interactive;
 mod legacy;
 pub use editor::{
     add_account_from_stdin, edit_file, persist_refreshed_cookie, remove_account,
-    remove_notification_provider, replace_account_cookie, set_account_device, set_account_games,
-    set_account_general, set_account_proxy, set_account_tasks, set_captcha_endpoint, set_logging,
-    set_notification_options, set_notification_provider, set_runtime,
+    remove_notification_provider, replace_account_cookie, set_account_cloud_games,
+    set_account_device, set_account_games, set_account_general, set_account_proxy,
+    set_account_tasks, set_captcha_endpoint, set_logging, set_notification_options,
+    set_notification_provider, set_runtime,
 };
 pub use interactive::setup as interactive_setup;
 
@@ -168,6 +169,8 @@ pub struct AccountConfig {
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
+    pub cloud_games: CloudGamesConfig,
+    #[serde(default)]
     pub tasks: TaskConfig,
     #[serde(default)]
     pub games: Vec<Game>,
@@ -222,6 +225,51 @@ pub struct ProxyConfig {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct CloudGamesConfig {
+    #[serde(default)]
+    pub china: ChinaCloudGamesConfig,
+    #[serde(default)]
+    pub overseas: OverseasCloudGamesConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ChinaCloudGamesConfig {
+    #[serde(default)]
+    pub genshin: CloudGameEntryConfig,
+    #[serde(default)]
+    pub zenless_zone_zero: CloudGameEntryConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct CloudGameEntryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_secret",
+        serialize_with = "serialize_optional_secret"
+    )]
+    pub token: Option<SecretString>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OverseasCloudGamesConfig {
+    #[serde(default = "default_hoyolab_language")]
+    pub language: String,
+    #[serde(default)]
+    pub genshin: CloudGameEntryConfig,
+}
+
+impl Default for OverseasCloudGamesConfig {
+    fn default() -> Self {
+        Self {
+            language: default_hoyolab_language(),
+            genshin: CloudGameEntryConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct TaskConfig {
     #[serde(default)]
     pub china_game_checkin: bool,
@@ -238,12 +286,10 @@ pub struct TaskConfig {
 }
 
 impl TaskConfig {
-    fn any_enabled(&self) -> bool {
+    fn requires_primary_cookie(&self) -> bool {
         self.china_game_checkin
             || self.hoyolab_checkin
             || self.bbs.is_enabled()
-            || self.china_cloud_game
-            || self.overseas_cloud_game
             || self.web_activity
     }
 }
@@ -648,7 +694,11 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 &mut errors,
             );
         }
-        if account.enabled && account.tasks.any_enabled() && account.credentials.cookie.is_empty() {
+        validate_cloud_games(account, &path, &mut errors);
+        if account.enabled
+            && account.tasks.requires_primary_cookie()
+            && account.credentials.cookie.is_empty()
+        {
             errors.push(format!("{path} 启用了任务但 credentials.cookie 为空"));
         }
         if account.enabled
@@ -683,6 +733,37 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         Ok(())
     } else {
         Err(ConfigError::Validation(errors))
+    }
+}
+
+fn validate_cloud_games(account: &AccountConfig, path: &str, errors: &mut Vec<String>) {
+    let china = &account.cloud_games.china;
+    let overseas = &account.cloud_games.overseas;
+    for (field, entry) in [
+        ("china.genshin", &china.genshin),
+        ("china.zenless_zone_zero", &china.zenless_zone_zero),
+        ("overseas.genshin", &overseas.genshin),
+    ] {
+        if entry
+            .token
+            .as_ref()
+            .is_some_and(|token| token.expose_secret().trim().is_empty())
+        {
+            errors.push(format!("{path}.cloud_games.{field}.token 不能为空字符串"));
+        }
+        if entry.enabled && entry.token.is_none() {
+            errors.push(format!(
+                "{path}.cloud_games.{field}.enabled=true 时必须配置 token"
+            ));
+        }
+    }
+    if !matches!(
+        overseas.language.as_str(),
+        "zh-cn" | "en-us" | "ja-jp" | "ko-kr"
+    ) {
+        errors.push(format!(
+            "{path}.cloud_games.overseas.language 必须是 zh-cn、en-us、ja-jp 或 ko-kr"
+        ));
     }
 }
 
@@ -971,6 +1052,7 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                         "credentials",
                         "device",
                         "proxy",
+                        "cloud_games",
                         "tasks",
                         "games",
                     ],
@@ -984,6 +1066,53 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                         &["cookie", "stoken"],
                         &mut warnings,
                     );
+                    if let Some(Value::Mapping(cloud_games)) = get(account_map, "cloud_games") {
+                        inspect_mapping(
+                            &Value::Mapping(cloud_games.clone()),
+                            &format!("{base}.cloud_games"),
+                            &["china", "overseas"],
+                            &mut warnings,
+                        );
+                        inspect_named_child(
+                            cloud_games,
+                            "china",
+                            &format!("{base}.cloud_games.china"),
+                            &["genshin", "zenless_zone_zero"],
+                            &mut warnings,
+                        );
+                        inspect_named_child(
+                            cloud_games,
+                            "overseas",
+                            &format!("{base}.cloud_games.overseas"),
+                            &["language", "genshin"],
+                            &mut warnings,
+                        );
+                        if let Some(Value::Mapping(china)) = get(cloud_games, "china") {
+                            inspect_named_child(
+                                china,
+                                "genshin",
+                                &format!("{base}.cloud_games.china.genshin"),
+                                &["enabled", "token"],
+                                &mut warnings,
+                            );
+                            inspect_named_child(
+                                china,
+                                "zenless_zone_zero",
+                                &format!("{base}.cloud_games.china.zenless_zone_zero"),
+                                &["enabled", "token"],
+                                &mut warnings,
+                            );
+                        }
+                        if let Some(Value::Mapping(overseas)) = get(cloud_games, "overseas") {
+                            inspect_named_child(
+                                overseas,
+                                "genshin",
+                                &format!("{base}.cloud_games.overseas.genshin"),
+                                &["enabled", "token"],
+                                &mut warnings,
+                            );
+                        }
+                    }
                     inspect_named_child(
                         account_map,
                         "device",
@@ -1172,6 +1301,9 @@ fn valid_timezone(value: &str) -> bool {
 fn default_timezone() -> String {
     "Asia/Shanghai".to_owned()
 }
+fn default_hoyolab_language() -> String {
+    "zh-cn".to_owned()
+}
 const fn default_timeout() -> u64 {
     30
 }
@@ -1355,6 +1487,73 @@ accounts:
         let mut config: Config = serde_yaml_ng::from_str(&source).unwrap();
         hydrate_stokens_from_cookies(&mut config);
         validate(&config).unwrap();
+    }
+
+    #[test]
+    fn cloud_game_config_round_trips_without_exposing_tokens() {
+        let source = MINIMAL.replace(
+            "    tasks:",
+            "    cloud_games:\n      china:\n        genshin:\n          enabled: true\n          token: cn-cloud-secret\n        zenless_zone_zero:\n          enabled: false\n          token: saved-zzz-secret\n      overseas:\n        language: en-us\n        genshin:\n          enabled: true\n          token: os-cloud-secret\n    tasks:",
+        );
+        let loaded = parse(&source).unwrap();
+        let cloud = &loaded.config.accounts[0].cloud_games;
+        assert!(cloud.china.genshin.enabled);
+        assert!(!cloud.china.zenless_zone_zero.enabled);
+        assert_eq!(cloud.overseas.language, "en-us");
+        assert_eq!(
+            cloud
+                .china
+                .genshin
+                .token
+                .as_ref()
+                .map(SecretString::expose_secret),
+            Some("cn-cloud-secret")
+        );
+        let debug = format!("{:?}", loaded.config);
+        assert!(!debug.contains("cn-cloud-secret"));
+        assert!(!debug.contains("os-cloud-secret"));
+
+        let yaml = to_yaml(&loaded.config).unwrap();
+        let round_tripped: Config = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(
+            round_tripped.accounts[0].cloud_games.overseas.language,
+            "en-us"
+        );
+    }
+
+    #[test]
+    fn cloud_game_rejects_missing_token_and_unknown_language() {
+        let source = MINIMAL.replace(
+            "    tasks:",
+            "    cloud_games:\n      china:\n        genshin:\n          enabled: true\n          token: null\n      overseas:\n        language: invalid\n    tasks:",
+        );
+        assert!(
+            matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.len() == 2 && errors.iter().any(|error| error.contains("china.genshin.enabled")) && errors.iter().any(|error| error.contains("overseas.language")))
+        );
+    }
+
+    #[test]
+    fn cloud_game_rejects_whitespace_only_token() {
+        let source = MINIMAL.replace(
+            "    tasks:",
+            "    cloud_games:\n      china:\n        genshin:\n          enabled: true\n          token: '   '\n    tasks:",
+        );
+        assert!(
+            matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("china.genshin.token")))
+        );
+    }
+
+    #[test]
+    fn cloud_game_unknown_nested_fields_are_reported() {
+        let source = MINIMAL.replace(
+            "    tasks:",
+            "    cloud_games:\n      china:\n        genshin:\n          enabled: false\n          typo: true\n    tasks:",
+        );
+        let loaded = parse(&source).unwrap();
+        assert_eq!(
+            loaded.warnings,
+            vec!["未知配置字段 accounts[0].cloud_games.china.genshin.typo"]
+        );
     }
 
     #[test]

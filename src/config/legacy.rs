@@ -4,8 +4,10 @@ use serde_yaml_ng::{Mapping, Value};
 use url::Url;
 
 use super::{
-    AccountConfig, CURRENT_CONFIG_VERSION, CaptchaConfig, Config, ConfigError, CredentialConfig,
-    DeviceConfig, Game, LoadedConfig, NotificationsConfig, ProxyConfig, RuntimeConfig, TaskConfig,
+    AccountConfig, CURRENT_CONFIG_VERSION, CaptchaConfig, ChinaCloudGamesConfig,
+    CloudGameEntryConfig, CloudGamesConfig, Config, ConfigError, CredentialConfig, DeviceConfig,
+    Game, LoadedConfig, NotificationsConfig, OverseasCloudGamesConfig, ProxyConfig, RuntimeConfig,
+    TaskConfig,
 };
 use crate::auth::SecretString;
 
@@ -114,6 +116,23 @@ pub(super) fn migrate_value(
         .and_then(|map| mapping(map, "os"))
         .and_then(|map| boolean(map, "enable"))
         .unwrap_or(false);
+    let legacy_cloud_cn = cloud_games.and_then(|map| mapping(map, "cn"));
+    let cloud_genshin = legacy_cloud_cn
+        .and_then(|map| mapping(map, "genshin"))
+        .or_else(|| cloud_games.and_then(|map| mapping(map, "genshin")));
+    let cloud_zzz = legacy_cloud_cn.and_then(|map| mapping(map, "zzz"));
+    let legacy_cloud_os = cloud_games.and_then(|map| mapping(map, "os"));
+    let cloud_os_genshin = legacy_cloud_os.and_then(|map| mapping(map, "genshin"));
+    let cloud_games_config = CloudGamesConfig {
+        china: ChinaCloudGamesConfig {
+            genshin: migrate_cloud_entry(cloud_genshin, "cloud_games.cn.genshin", &mut warnings),
+            zenless_zone_zero: migrate_cloud_entry(cloud_zzz, "cloud_games.cn.zzz", &mut warnings),
+        },
+        overseas: OverseasCloudGamesConfig {
+            language: migrate_cloud_language(legacy_cloud_os, &mut warnings),
+            genshin: migrate_cloud_entry(cloud_os_genshin, "cloud_games.os.genshin", &mut warnings),
+        },
+    };
     let web_activity_enabled = mapping(root, "web_activity")
         .and_then(|map| boolean(map, "enable"))
         .unwrap_or(false);
@@ -139,6 +158,7 @@ pub(super) fn migrate_value(
             },
             device,
             proxy: ProxyConfig::default(),
+            cloud_games: cloud_games_config,
             tasks: TaskConfig {
                 china_game_checkin: cn_enabled,
                 hoyolab_checkin: overseas_enabled,
@@ -223,9 +243,6 @@ fn warn_about_lossy_fields(root: &Mapping, warnings: &mut Vec<String>) {
             warnings.push("旧版游戏角色黑名单尚无对应的新模型，未迁移".to_owned());
         }
     }
-    if has_cloud_tokens(root) {
-        warnings.push("旧版云游戏 Token 尚无对应的新模型，未迁移".to_owned());
-    }
 }
 
 fn has_blacklists(games: &Mapping) -> bool {
@@ -241,19 +258,39 @@ fn has_blacklists(games: &Mapping) -> bool {
     })
 }
 
-fn has_cloud_tokens(root: &Mapping) -> bool {
-    mapping(root, "cloud_games").is_some_and(|cloud| {
-        cloud.values().any(|region_or_game| {
-            region_or_game.as_mapping().is_some_and(|map| {
-                scalar_string(map, "token").is_some_and(|token| !token.is_empty())
-                    || map.values().any(|game| {
-                        game.as_mapping()
-                            .and_then(|game| scalar_string(game, "token"))
-                            .is_some_and(|token| !token.is_empty())
-                    })
-            })
-        })
-    })
+fn migrate_cloud_entry(
+    value: Option<&Mapping>,
+    path: &str,
+    warnings: &mut Vec<String>,
+) -> CloudGameEntryConfig {
+    let requested = value
+        .and_then(|map| boolean(map, "enable"))
+        .unwrap_or(false);
+    let token = value
+        .and_then(|map| scalar_string(map, "token"))
+        .filter(|token| !token.trim().is_empty())
+        .map(SecretString::new);
+    if requested && token.is_none() {
+        warnings.push(format!("旧版 {path} 已启用但 Token 为空，已关闭该云游戏"));
+    }
+    CloudGameEntryConfig {
+        enabled: requested && token.is_some(),
+        token,
+    }
+}
+
+fn migrate_cloud_language(value: Option<&Mapping>, warnings: &mut Vec<String>) -> String {
+    let language = value
+        .and_then(|map| scalar_string(map, "lang"))
+        .unwrap_or_else(super::default_hoyolab_language);
+    if matches!(language.as_str(), "zh-cn" | "en-us" | "ja-jp" | "ko-kr") {
+        language
+    } else {
+        warnings.push(format!(
+            "旧版 cloud_games.os.lang={language:?} 不受支持，已改为 zh-cn"
+        ));
+        super::default_hoyolab_language()
+    }
 }
 
 fn game_checkin(region: Option<&Mapping>, game: &str) -> bool {
@@ -348,11 +385,78 @@ mod tests {
             serde_yaml_ng::from_str(include_str!("fixtures/legacy_v11.yaml")).unwrap();
         let migrated = migrate_value(&value, "v11").unwrap();
         assert!(migrated.config.accounts[0].tasks.china_cloud_game);
+        let cloud = &migrated.config.accounts[0].cloud_games.china.genshin;
+        assert!(cloud.enabled);
+        assert_eq!(
+            cloud.token.as_ref().unwrap().expose_secret(),
+            "fixture-cloud-token"
+        );
         assert!(
-            migrated
+            !migrated
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("云游戏 Token"))
+                .any(|warning| warning.contains("Token 尚无对应"))
+        );
+    }
+
+    #[test]
+    fn migrates_v15_cloud_tokens_and_language() {
+        let source = r#"
+version: 15
+account:
+  cookie: fixture-cookie
+  stoken: fixture-stoken
+cloud_games:
+  cn:
+    enable: true
+    genshin:
+      enable: true
+      token: fixture-cn-token
+    zzz:
+      enable: true
+      token: fixture-zzz-token
+  os:
+    enable: true
+    lang: en-us
+    genshin:
+      enable: true
+      token: fixture-os-token
+"#;
+        let value: Value = serde_yaml_ng::from_str(source).unwrap();
+        let migrated = migrate_value(&value, "v15").unwrap();
+        let cloud = &migrated.config.accounts[0].cloud_games;
+        assert!(migrated.config.accounts[0].tasks.china_cloud_game);
+        assert!(migrated.config.accounts[0].tasks.overseas_cloud_game);
+        assert!(cloud.china.genshin.enabled);
+        assert!(cloud.china.zenless_zone_zero.enabled);
+        assert!(cloud.overseas.genshin.enabled);
+        assert_eq!(cloud.overseas.language, "en-us");
+        assert_eq!(
+            cloud
+                .china
+                .genshin
+                .token
+                .as_ref()
+                .map(SecretString::expose_secret),
+            Some("fixture-cn-token")
+        );
+        assert_eq!(
+            cloud
+                .china
+                .zenless_zone_zero
+                .token
+                .as_ref()
+                .map(SecretString::expose_secret),
+            Some("fixture-zzz-token")
+        );
+        assert_eq!(
+            cloud
+                .overseas
+                .genshin
+                .token
+                .as_ref()
+                .map(SecretString::expose_secret),
+            Some("fixture-os-token")
         );
     }
 

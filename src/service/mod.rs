@@ -1,4 +1,5 @@
 mod bbs_runner;
+mod cloud_runner;
 mod credential_refresh;
 mod report;
 mod runner;
@@ -6,6 +7,7 @@ mod runner;
 use uuid::Uuid;
 
 pub use bbs_runner::{run_bbs, run_bbs_with_refresh};
+pub use cloud_runner::run_cloud_games;
 pub use report::{RunReport, TaskOutcome, TaskRecord};
 pub use runner::{run_china_checkin, run_china_checkin_with_refresh, run_hoyolab_checkin};
 

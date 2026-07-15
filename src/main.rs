@@ -80,6 +80,13 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             if all || tasks.contains(&RunTask::Bbs) {
                 report.extend(service::run_bbs_with_refresh(&mut loaded.config, &path).await);
             }
+            let china_cloud = all || tasks.contains(&RunTask::ChinaCloudGame);
+            let overseas_cloud = all || tasks.contains(&RunTask::OverseasCloudGame);
+            if china_cloud || overseas_cloud {
+                report.extend(
+                    service::run_cloud_games(&loaded.config, china_cloud, overseas_cloud).await,
+                );
+            }
             return Ok(finish_report(&loaded.config, &report).await);
         }
         Command::MigrateConfig(args) => {

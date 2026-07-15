@@ -3,6 +3,7 @@ pub mod bbs;
 pub mod captcha;
 pub mod checkin;
 pub mod cli;
+pub mod cloud_game;
 pub mod config;
 pub mod error;
 pub mod http;

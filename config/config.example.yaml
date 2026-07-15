@@ -30,6 +30,19 @@ accounts:
       fp: ""
     proxy:
       url: null
+    cloud_games:
+      china:
+        genshin:
+          enabled: false
+          token: null
+        zenless_zone_zero:
+          enabled: false
+          token: null
+      overseas:
+        language: zh-cn
+        genshin:
+          enabled: false
+          token: null
     tasks:
       china_game_checkin: true
       hoyolab_checkin: false
@@ -63,6 +76,19 @@ accounts:
   #     fp: ""
   #   proxy:
   #     url: null
+  #   cloud_games:
+  #     china:
+  #       genshin:
+  #         enabled: false
+  #         token: null
+  #       zenless_zone_zero:
+  #         enabled: false
+  #         token: null
+  #     overseas:
+  #       language: zh-cn
+  #       genshin:
+  #         enabled: false
+  #         token: null
   #   tasks:
   #     china_game_checkin: true
   #     hoyolab_checkin: false

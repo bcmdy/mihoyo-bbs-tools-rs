@@ -1,9 +1,9 @@
 use super::{
     ConfigError, LogLevel, NotificationProvider, add_account_from_stdin, edit_file, load,
-    remove_account, remove_notification_provider, replace_account_cookie, set_account_device,
-    set_account_games, set_account_general, set_account_proxy, set_account_tasks,
-    set_captcha_endpoint, set_logging, set_notification_options, set_notification_provider,
-    set_runtime,
+    remove_account, remove_notification_provider, replace_account_cookie, set_account_cloud_games,
+    set_account_device, set_account_games, set_account_general, set_account_proxy,
+    set_account_tasks, set_captcha_endpoint, set_logging, set_notification_options,
+    set_notification_provider, set_runtime,
 };
 use std::{
     io::{self, BufRead, IsTerminal, Write},
@@ -91,8 +91,10 @@ fn captcha(path: &Path) -> Result<(), ConfigError> {
 
 async fn accounts(path: &Path) -> Result<(), ConfigError> {
     loop {
-        println!("账号：1.添加 2.基本信息 3.更新 Cookie 4.设备 5.代理 6.任务 7.游戏 8.删除 0.返回");
-        match read_number(8)? {
+        println!(
+            "账号：1.添加 2.基本信息 3.更新 Cookie 4.设备 5.代理 6.云游戏 7.任务 8.游戏 9.删除 0.返回"
+        );
+        match read_number(9)? {
             None | Some(0) => return Ok(()),
             Some(1) => {
                 let remark = prompt("可选备注(留空不设置)")?;
@@ -105,9 +107,10 @@ async fn accounts(path: &Path) -> Result<(), ConfigError> {
             Some(3) => account_cookie(path).await?,
             Some(4) => account_device(path)?,
             Some(5) => account_proxy(path)?,
-            Some(6) => tasks(path)?,
-            Some(7) => games(path)?,
-            Some(8) => {
+            Some(6) => account_cloud_games(path)?,
+            Some(7) => tasks(path)?,
+            Some(8) => games(path)?,
+            Some(9) => {
                 if let Some(name) = choose(path)? {
                     remove_account(path, &name)?;
                 }
@@ -181,6 +184,48 @@ fn account_proxy(path: &Path) -> Result<(), ConfigError> {
         return Ok(());
     }
     set_account_proxy(path, &name, proxy.as_deref())
+}
+
+fn account_cloud_games(path: &Path) -> Result<(), ConfigError> {
+    let Some(name) = choose(path)? else {
+        return Ok(());
+    };
+    let cloud = load(path)?
+        .config
+        .accounts
+        .into_iter()
+        .find(|account| account.name == name)
+        .expect("已选择的账号存在")
+        .cloud_games;
+    println!(
+        "已保存的云游戏 Token 不会作为当前值回显；新输入内容由终端正常显示，留空保留，输入 - 清空"
+    );
+    let china_genshin_token =
+        prompt_secret("国内云原神 Token", cloud.china.genshin.token.as_ref())?;
+    let china_genshin_enabled = prompt_bool("启用国内云原神", cloud.china.genshin.enabled)?;
+    let china_zzz_token = prompt_secret(
+        "国内云绝区零 Token",
+        cloud.china.zenless_zone_zero.token.as_ref(),
+    )?;
+    let china_zzz_enabled = prompt_bool("启用国内云绝区零", cloud.china.zenless_zone_zero.enabled)?;
+    let overseas_language = prompt_keep(
+        "国际服语言(zh-cn/en-us/ja-jp/ko-kr)",
+        &cloud.overseas.language,
+    )?;
+    let overseas_genshin_token =
+        prompt_secret("国际服云原神 Token", cloud.overseas.genshin.token.as_ref())?;
+    let overseas_genshin_enabled = prompt_bool("启用国际服云原神", cloud.overseas.genshin.enabled)?;
+    set_account_cloud_games(
+        path,
+        &name,
+        china_genshin_enabled,
+        china_genshin_token.as_deref(),
+        china_zzz_enabled,
+        china_zzz_token.as_deref(),
+        &overseas_language,
+        overseas_genshin_enabled,
+        overseas_genshin_token.as_deref(),
+    )
 }
 
 fn notifications(path: &Path) -> Result<(), ConfigError> {
@@ -569,6 +614,25 @@ fn prompt_optional(label: &str, current: Option<&str>) -> Result<Option<String>,
     ))?;
     if value.is_empty() {
         Ok(current.map(str::to_owned))
+    } else if value == "-" {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn prompt_secret(
+    label: &str,
+    current: Option<&crate::auth::SecretString>,
+) -> Result<Option<String>, ConfigError> {
+    let shown = if current.is_some() {
+        "<已配置>"
+    } else {
+        "未设置"
+    };
+    let value = prompt(&format!("{label}[{shown}] (留空保留，- 清空)"))?;
+    if value.is_empty() {
+        Ok(current.map(|value| value.expose_secret().to_owned()))
     } else if value == "-" {
         Ok(None)
     } else {

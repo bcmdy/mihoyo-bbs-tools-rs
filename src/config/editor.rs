@@ -132,6 +132,11 @@ pub async fn add_account(
             key("proxy"),
             serde_yaml_ng::to_value(super::ProxyConfig::default()).expect("默认代理配置可序列化"),
         );
+        account.insert(
+            key("cloud_games"),
+            serde_yaml_ng::to_value(super::CloudGamesConfig::default())
+                .expect("默认云游戏配置可序列化"),
+        );
         account.insert(key("tasks"), default_tasks());
         account.insert(key("games"), default_games());
         accounts.push(Value::Mapping(account));
@@ -276,8 +281,78 @@ pub fn set_account_tasks(
             ),
         );
         tasks.insert(key("bbs"), Value::Mapping(detail));
+        tasks.insert(key("china_cloud_game"), Value::Bool(selected.contains(&4)));
+        tasks.insert(
+            key("overseas_cloud_game"),
+            Value::Bool(selected.contains(&5)),
+        );
+        tasks.insert(key("web_activity"), Value::Bool(selected.contains(&6)));
         Ok(())
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn set_account_cloud_games(
+    path: &Path,
+    name: &str,
+    china_genshin_enabled: bool,
+    china_genshin_token: Option<&str>,
+    china_zzz_enabled: bool,
+    china_zzz_token: Option<&str>,
+    overseas_language: &str,
+    overseas_genshin_enabled: bool,
+    overseas_genshin_token: Option<&str>,
+) -> Result<(), ConfigError> {
+    mutate_raw(path, |root| {
+        let account = find_account_mut(root, name)?;
+        let cloud_games = account
+            .entry(key("cloud_games"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("cloud_games 必须是对象".to_owned()))?;
+        let china = mapping_entry(cloud_games, "china")?;
+        set_cloud_game_entry(china, "genshin", china_genshin_enabled, china_genshin_token)?;
+        set_cloud_game_entry(
+            china,
+            "zenless_zone_zero",
+            china_zzz_enabled,
+            china_zzz_token,
+        )?;
+        let overseas = mapping_entry(cloud_games, "overseas")?;
+        overseas.insert(key("language"), Value::String(overseas_language.to_owned()));
+        set_cloud_game_entry(
+            overseas,
+            "genshin",
+            overseas_genshin_enabled,
+            overseas_genshin_token,
+        )?;
+        Ok(())
+    })
+}
+
+fn mapping_entry<'a>(map: &'a mut Mapping, name: &str) -> Result<&'a mut Mapping, ConfigError> {
+    map.entry(key(name))
+        .or_insert_with(|| Value::Mapping(Mapping::new()))
+        .as_mapping_mut()
+        .ok_or_else(|| ConfigError::Edit(format!("{name} 必须是对象")))
+}
+
+fn set_cloud_game_entry(
+    parent: &mut Mapping,
+    name: &str,
+    enabled: bool,
+    token: Option<&str>,
+) -> Result<(), ConfigError> {
+    let entry = mapping_entry(parent, name)?;
+    entry.insert(key("enabled"), Value::Bool(enabled));
+    entry.insert(
+        key("token"),
+        token
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| Value::String(value.to_owned()))
+            .unwrap_or(Value::Null),
+    );
+    Ok(())
 }
 
 pub fn set_account_games(path: &Path, name: &str, games: &[u8]) -> Result<(), ConfigError> {
@@ -834,6 +909,11 @@ mod tests {
             "stoken:",
             "device:",
             "proxy:",
+            "cloud_games:",
+            "china:",
+            "overseas:",
+            "language:",
+            "token:",
             "forums:",
             "notifications:",
             "providers:",
@@ -848,6 +928,87 @@ mod tests {
         let path = temp.path().join("missing/config.yaml");
         assert!(add_account(&path, None, "invalid").await.is_err());
         assert!(!path.parent().unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn task_editor_persists_cloud_and_web_switches() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        let name = add_account(
+            &path,
+            None,
+            "account_id=123; account_mid_v2=mid; stoken=v2_secret",
+        )
+        .await
+        .unwrap();
+        set_account_tasks(&path, &name, &[4, 5, 6], &[], &[]).unwrap();
+        let tasks = load(&path).unwrap().config.accounts[0].tasks.clone();
+        assert!(tasks.china_cloud_game);
+        assert!(tasks.overseas_cloud_game);
+        assert!(tasks.web_activity);
+        assert!(!tasks.china_game_checkin);
+        assert!(!tasks.bbs.enabled);
+    }
+
+    #[tokio::test]
+    async fn cloud_game_editor_sets_and_clears_sensitive_tokens() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        let name = add_account(
+            &path,
+            None,
+            "account_id=123; account_mid_v2=mid; stoken=v2_secret",
+        )
+        .await
+        .unwrap();
+        set_account_cloud_games(
+            &path,
+            &name,
+            true,
+            Some("cn-token"),
+            true,
+            Some("zzz-token"),
+            "ja-jp",
+            true,
+            Some("os-token"),
+        )
+        .unwrap();
+        let loaded = load(&path).unwrap();
+        let cloud = &loaded.config.accounts[0].cloud_games;
+        assert!(cloud.china.genshin.enabled);
+        assert_eq!(cloud.overseas.language, "ja-jp");
+        assert_eq!(
+            cloud
+                .overseas
+                .genshin
+                .token
+                .as_ref()
+                .map(|v| v.expose_secret()),
+            Some("os-token")
+        );
+        assert!(!format!("{:?}", cloud).contains("cn-token"));
+
+        set_account_cloud_games(
+            &path,
+            &name,
+            true,
+            Some("cn-token"),
+            false,
+            None,
+            "ja-jp",
+            true,
+            Some("os-token"),
+        )
+        .unwrap();
+        let loaded = load(&path).unwrap();
+        assert!(
+            loaded.config.accounts[0]
+                .cloud_games
+                .china
+                .zenless_zone_zero
+                .token
+                .is_none()
+        );
     }
 
     #[test]

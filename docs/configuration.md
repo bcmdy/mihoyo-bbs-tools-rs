@@ -40,6 +40,20 @@ accounts:
     proxy:
       url: null
 
+    cloud_games:
+      china:
+        genshin:
+          enabled: false
+          token: null
+        zenless_zone_zero:
+          enabled: false
+          token: null
+      overseas:
+        language: zh-cn
+        genshin:
+          enabled: false
+          token: null
+
     tasks:
       china_game_checkin: true
       hoyolab_checkin: false
@@ -125,14 +139,14 @@ MihoyoBBSToolsRS config setup --config config/config.yaml
 可以在不修改 YAML 的情况下缩小本次运行范围：
 
 ```text
-MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs
+MihoyoBBSToolsRS run --task china-checkin,hoyolab-checkin,bbs,china-cloud-game,overseas-cloud-game
 MihoyoBBSToolsRS run --task bbs
 MihoyoBBSToolsRS checkin --region china
 MihoyoBBSToolsRS checkin --region hoyolab
 MihoyoBBSToolsRS checkin --region all
 ```
 
-`run --task` 可选择 `china-checkin`、`hoyolab-checkin`、`bbs`，支持重复使用参数或逗号分隔多值。尚未实现运行器的云游戏和 Web 活动不会作为可选值暴露。省略 `--task` 时保持原有行为和执行顺序：国内签到、HoYoLAB 签到、米游社任务。
+`run --task` 可选择 `china-checkin`、`hoyolab-checkin`、`bbs`、`china-cloud-game`、`overseas-cloud-game`，支持重复使用参数或逗号分隔多值。Web 活动尚未作为可选值暴露。省略 `--task` 时依次尝试所有已实现且在账号配置中启用的任务。
 
 `checkin --region` 的可选值为 `china`、`hoyolab`、`all`，默认 `all`。CLI 筛选只会缩小本次执行范围，并继续与账号 `enabled`、任务开关和游戏列表取交集，不能通过命令行重新启用 YAML 中已禁用的内容；未选择的任务也不会作为失败项写入报告。
 
@@ -193,12 +207,23 @@ accounts:
 
 未配置代理时使用直接连接。代理连接失败应分类为网络或代理故障，对应退出码 `5`。
 
+## 云游戏
+
+`tasks.china_cloud_game` 和 `tasks.overseas_cloud_game` 是区域总开关；`cloud_games` 保存每个云游戏的独立开关和 Token。国内支持云原神与云绝区零，国际服支持云原神。配置示例中的 `token: null` 表示未配置，Token 已保存但临时停用时只需把对应的 `enabled` 改为 `false`。
+
+国际服 `language` 支持 `zh-cn`、`en-us`、`ja-jp`、`ko-kr`。云游戏 Token 与 Cookie 一样属于敏感凭据，建议使用环境变量注入，不会在日志、调试输出或交互菜单中回显。账号代理同样作用于云游戏请求。
+
+云游戏签到报告包含本次增加的免费分钟数、当前总免费时长、畅玩卡状态和米云币或邦邦点数量。接口返回 Token 失效时退出码为 `3`，网络失败为 `5`；本次未增加免费时长会标记为 `AlreadyCompleted`。
+
+国内云游戏首次响应未显示新增时长且总免费时长低于 600 分钟时，会等待 3–6 秒后再次查询，并用前后总时长差确认异步到账。接口返回 `-100` 既可能表示 Token 失效，也可能表示防沉迷限制，因此程序只报告认证失败，不会自动删除 Token 或改写开关；请确认原因后在设置菜单中更新或清空。
+
 ## 旧版配置兼容
 
 兼容层负责读取经过支持的 Python 版单账号和多账号 YAML，并转换为统一内部模型。兼容过程遵循以下规则：
 
 - 缺失字段使用经过文档确认的安全默认值。
 - 旧版顶层 `device` 会迁移到对应账号的 `device`，保留 `name`、`model`、`id` 和 `fp`。
+- 旧版国内/国际云游戏总开关、单游戏开关、Token 和国际服语言会迁移到账号的 `cloud_games`。
 - 无法迁移的字段产生明确警告。
 - 旧格式解析完成后，业务代码只使用新版内部模型。
 - `migrate-config` 输出新版 YAML，输出内容不得包含额外日志或未脱敏 Secret。

@@ -33,7 +33,7 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = CheckinRegion::All)]
         region: CheckinRegion,
     },
-    /// 执行游戏签到与米游社社区任务
+    /// 执行游戏签到、米游社社区任务与云游戏签到
     Run {
         /// 配置文件路径
         #[arg(short, long, default_value = "config/config.yaml")]
@@ -114,6 +114,10 @@ pub enum RunTask {
     HoyolabCheckin,
     /// 米游社社区签到与已启用的社区任务
     Bbs,
+    /// 国内云原神与云绝区零签到
+    ChinaCloudGame,
+    /// 国际服云原神签到
+    OverseasCloudGame,
 }
 
 #[derive(Debug, Args)]
