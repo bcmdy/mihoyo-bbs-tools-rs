@@ -685,22 +685,20 @@ jobs:
 
 ### 10.2 Release 工作流
 
-Release 工作流只在版本标签触发：
+Release 工作流会在推送 `v*` 标签时自动触发，也支持手动输入版本号；手动运行时对应的 `v<版本>` 标签必须已经存在：
 
 ```yaml
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
   push:
     tags:
       - "v*"
 ```
 
-至少发布：
-
-- Linux x86_64。
-- Windows x86_64。
-- SHA256 校验文件。
-
-当前 Release 工作流发布 Linux x86_64、ARM64、ARMv7 与 Windows x86_64 附件；容器工作流发布 amd64、arm64、arm/v7 多架构 GHCR 镜像。ARM64 使用原生 Actions runner，ARMv7 使用 GNU hard-float 交叉工具链并通过 QEMU 启动验证。
+当前 Release 工作流发布 Linux x86_64、ARM64、ARMv7 与 Windows x86_64 附件及 SHA256 校验文件；容器工作流发布 amd64、arm64、arm/v7 多架构 GHCR 镜像。ARM64 使用原生 Actions runner，ARMv7 使用 GNU hard-float 交叉工具链并通过 QEMU 启动验证。
 
 ### 10.3 真实签到集成测试
 

@@ -44,6 +44,7 @@ jobs:
             cross_ar: arm-linux-gnueabihf-ar
             apt_package: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user
     env:
+      GIT_COMMIT: ${{ github.sha }}
       CARGO_TARGET: ${{ matrix.target }}
       PACKAGE_ARCH: ${{ matrix.package_arch }}
       CROSS_CC: ${{ matrix.cross_cc }}
@@ -166,6 +167,8 @@ jobs:
   build-windows:
     name: 构建 Windows x86_64
     runs-on: windows-latest
+    env:
+      GIT_COMMIT: ${{ github.sha }}
 
     steps:
       - name: 检出代码

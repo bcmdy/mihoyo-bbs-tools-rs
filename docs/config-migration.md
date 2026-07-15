@@ -57,7 +57,7 @@ configs/legacy.yaml -> configs/legacy.migrated.yaml
 - 旧版顶层 `device` 的 `name`、`model`、`id` 和 `fp`。
 - HoYoLAB 独立 Cookie、语言和游戏选择。
 - 国内/国际云游戏总开关、单游戏开关、Token 和语言。
-- 米游社社区签到板块与已支持的通知配置。
+- 米游社社区签到板块。旧 `push.ini` 通知引用不会迁移，需要在新版 `notifications` 中重新配置。
 
 旧版国内角色黑名单会执行。原 Python 国际服签到实际没有按 UID 使用国际服黑名单，因此迁移时会明确警告，不会将它标记为已支持。其他无法表达或已经移除的字段也会逐项显示警告。
 

@@ -128,6 +128,8 @@ jobs:
   build:
     name: 编译 ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      GIT_COMMIT: ${{ github.sha }}
 
     strategy:
       fail-fast: false
@@ -292,6 +294,7 @@ jobs:
             cross_ar: arm-linux-gnueabihf-ar
             apt_package: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user
     env:
+      GIT_COMMIT: ${{ github.sha }}
       CARGO_TARGET: ${{ matrix.target }}
       CROSS_CC: ${{ matrix.cross_cc }}
       CROSS_AR: ${{ matrix.cross_ar }}
