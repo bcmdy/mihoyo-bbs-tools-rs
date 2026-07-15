@@ -48,6 +48,7 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             for warning in &loaded.warnings {
                 tracing::warn!("{warning}");
             }
+            service::apply_runtime_delay(&loaded.config.runtime).await;
             let mut report = service::RunReport::default();
             if matches!(region, CheckinRegion::China | CheckinRegion::All) {
                 report.extend(
@@ -67,6 +68,7 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             for warning in &loaded.warnings {
                 tracing::warn!("{warning}");
             }
+            service::apply_runtime_delay(&loaded.config.runtime).await;
             let all = tasks.is_empty();
             let mut report = service::RunReport::default();
             if all || tasks.contains(&RunTask::ChinaCheckin) {
