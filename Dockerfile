@@ -1,5 +1,7 @@
 FROM rust:1-alpine AS builder
 
+ARG MIHOYO_BBS_TOOLS_VERSION=container
+
 RUN apk add --no-cache musl-dev
 
 WORKDIR /app
@@ -9,7 +11,7 @@ COPY config ./config
 COPY integrations ./integrations
 COPY src ./src
 
-RUN cargo build --release --locked
+RUN MIHOYO_BBS_TOOLS_VERSION="$MIHOYO_BBS_TOOLS_VERSION" cargo build --release --locked
 
 FROM alpine:3
 

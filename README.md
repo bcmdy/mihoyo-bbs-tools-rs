@@ -111,6 +111,8 @@ device:
 
 仓库中的 `Dockerfile` 用于构建最终运行镜像。镜像采用多阶段构建，运行阶段不包含 Rust 工具链。镜像应由 GitHub Actions 构建，不要求开发机执行 `docker build`。
 
+版本标签会发布 `ghcr.io/bcmdy/mihoyo-bbs-tools-rs:<版本>` 与 `latest`，同时支持 `linux/amd64`、`linux/arm64` 和 `linux/arm/v7`。`main` 分支只更新 `main` 与提交 SHA 标签，不覆盖稳定版 `latest`。
+
 镜像默认执行完整任务流程：
 
 ```text

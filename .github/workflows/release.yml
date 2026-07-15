@@ -16,10 +16,31 @@ permissions:
 
 jobs:
   build-linux:
-    name: 构建 Linux x86_64
+    name: 构建 Linux ${{ matrix.package_arch }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            package_arch: x86_64
+            cross_cc: ""
+            apt_package: ""
+          - target: aarch64-unknown-linux-gnu
+            package_arch: arm64
+            cross_cc: aarch64-linux-gnu-gcc
+            apt_package: gcc-aarch64-linux-gnu
+          - target: armv7-unknown-linux-gnueabihf
+            package_arch: armv7
+            cross_cc: arm-linux-gnueabihf-gcc
+            apt_package: gcc-arm-linux-gnueabihf
+    env:
+      CARGO_TARGET: ${{ matrix.target }}
+      PACKAGE_ARCH: ${{ matrix.package_arch }}
+      CROSS_CC: ${{ matrix.cross_cc }}
 
     steps:
       - name: 检出代码
@@ -38,8 +59,8 @@ jobs:
             exit 1
           fi
           echo "MIHOYO_BBS_TOOLS_VERSION=$version" >> "$GITHUB_ENV"
-          echo "PACKAGE_NAME=MihoyoBBSToolsRS-$version-linux-x86_64" >> "$GITHUB_ENV"
-          echo "package_name=MihoyoBBSToolsRS-$version-linux-x86_64" >> "$GITHUB_OUTPUT"
+          echo "PACKAGE_NAME=MihoyoBBSToolsRS-$version-linux-$PACKAGE_ARCH" >> "$GITHUB_ENV"
+          echo "package_name=MihoyoBBSToolsRS-$version-linux-$PACKAGE_ARCH" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
       - name: 检出手动指定的版本标签
@@ -55,26 +76,46 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+          rustup target add "$CARGO_TARGET"
+
+      - name: 安装交叉编译器
+        if: matrix.apt_package != ''
+        env:
+          APT_PACKAGE: ${{ matrix.apt_package }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "$APT_PACKAGE"
+
+      - name: 配置交叉编译器
+        if: matrix.cross_cc != ''
+        shell: bash
+        run: |
+          cargo_key="${CARGO_TARGET^^}"
+          cargo_key="${cargo_key//-/_}"
+          cc_key="${CARGO_TARGET//-/_}"
+          echo "CARGO_TARGET_${cargo_key}_LINKER=$CROSS_CC" >> "$GITHUB_ENV"
+          echo "CC_${cc_key}=$CROSS_CC" >> "$GITHUB_ENV"
 
       - name: 编译 Release
-        run: cargo build --release --locked
+        run: cargo build --release --locked --target "$CARGO_TARGET"
 
       - name: 打包并生成校验文件
         run: |
           set -euo pipefail
           package_name="$PACKAGE_NAME"
           package_dir="package/$package_name"
+          binary_path="target/$CARGO_TARGET/release/MihoyoBBSToolsRS"
           mkdir -p "$package_dir/config" "$package_dir/dacapo" dist
-          cp target/release/MihoyoBBSToolsRS "$package_dir/"
+          cp "$binary_path" "$package_dir/"
           cp docs/使用说明.md "$package_dir/使用说明.md"
           cp docs/快速开始.md "$package_dir/快速开始.md"
           cp config/config.example.yaml "$package_dir/config/"
           cp integrations/dacapo/template.yml "$package_dir/dacapo/"
           tar -C package -czf "dist/$package_name.tar.gz" "$package_name"
-          binary_bytes=$(stat -c %s "target/release/MihoyoBBSToolsRS")
+          binary_bytes=$(stat -c %s "$binary_path")
           archive_bytes=$(stat -c %s "dist/$package_name.tar.gz")
           {
-            echo "### Linux x86_64 体积"
+            echo "### Linux $PACKAGE_ARCH 体积"
             echo "| 文件 | 字节数 |"
             echo "|---|---:|"
             echo "| MihoyoBBSToolsRS | $binary_bytes |"

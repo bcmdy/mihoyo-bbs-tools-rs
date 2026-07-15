@@ -943,6 +943,7 @@ linux/arm/v7
 - [x] 添加带仓库变量保护的 GitHub Actions 定时工作流。
 - [x] 增加 Kubernetes CronJob 示例，以只读 Secret 挂载配置并禁止任务重叠。
 - [x] 增加 Nix Flake 包定义与独立远程构建检查，覆盖 x86_64-linux 和 aarch64-linux。
+- [x] 增加 Linux ARM64/ARMv7 发布构建与 amd64、arm64、arm/v7 多架构 GHCR 镜像工作流。
 
 ## 17. 每次提交前的远程检查
 

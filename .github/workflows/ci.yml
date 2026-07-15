@@ -254,3 +254,51 @@ jobs:
           name: ${{ steps.version_linux.outputs.package_name || steps.version_windows.outputs.package_name }}
           path: dist/*
           if-no-files-found: error
+
+  build-linux-arm:
+    name: 编译 Linux ${{ matrix.package_arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            package_arch: arm64
+            cross_cc: aarch64-linux-gnu-gcc
+            apt_package: gcc-aarch64-linux-gnu
+          - target: armv7-unknown-linux-gnueabihf
+            package_arch: armv7
+            cross_cc: arm-linux-gnueabihf-gcc
+            apt_package: gcc-arm-linux-gnueabihf
+    env:
+      CARGO_TARGET: ${{ matrix.target }}
+      CROSS_CC: ${{ matrix.cross_cc }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust 与目标平台
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$CARGO_TARGET"
+
+      - name: 安装交叉编译器
+        env:
+          APT_PACKAGE: ${{ matrix.apt_package }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "$APT_PACKAGE"
+
+      - name: 配置交叉编译器
+        run: |
+          cargo_key="${CARGO_TARGET^^}"
+          cargo_key="${cargo_key//-/_}"
+          cc_key="${CARGO_TARGET//-/_}"
+          echo "CARGO_TARGET_${cargo_key}_LINKER=$CROSS_CC" >> "$GITHUB_ENV"
+          echo "CC_${cc_key}=$CROSS_CC" >> "$GITHUB_ENV"
+
+      - name: 编译 Release
+        run: cargo build --release --locked --target "$CARGO_TARGET"
