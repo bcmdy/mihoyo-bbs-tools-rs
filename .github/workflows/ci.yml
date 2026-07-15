@@ -284,7 +284,7 @@ jobs:
             runs_on: ubuntu-latest
             cross_cc: arm-linux-gnueabihf-gcc
             cross_ar: arm-linux-gnueabihf-ar
-            apt_package: gcc-arm-linux-gnueabihf qemu-user
+            apt_package: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user
     env:
       CARGO_TARGET: ${{ matrix.target }}
       CROSS_CC: ${{ matrix.cross_cc }}
