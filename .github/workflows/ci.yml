@@ -109,6 +109,11 @@ jobs:
           cargo clippy --all-targets --all-features --locked -- -D warnings 2>&1 | tee clippy.log
           code=${PIPESTATUS[0]}
           if [ "$code" -ne 0 ]; then
+            details=$(tail -n 80 clippy.log)
+            details="${details//'%'/'%25'}"
+            details="${details//$'\r'/'%0D'}"
+            details="${details//$'\n'/'%0A'}"
+            echo "::error title=Clippy 失败::$details"
             echo '```text' >> "$GITHUB_STEP_SUMMARY"
             tail -n 120 clippy.log >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -184,6 +189,11 @@ jobs:
           cargo build --release --locked 2>&1 | tee build.log
           code=${PIPESTATUS[0]}
           if [ "$code" -ne 0 ]; then
+            details=$(tail -n 80 build.log)
+            details="${details//'%'/'%25'}"
+            details="${details//$'\r'/'%0D'}"
+            details="${details//$'\n'/'%0A'}"
+            echo "::error title=Linux 构建失败::$details"
             echo '```text' >> "$GITHUB_STEP_SUMMARY"
             tail -n 120 build.log >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
