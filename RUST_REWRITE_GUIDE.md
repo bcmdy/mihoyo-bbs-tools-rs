@@ -454,21 +454,20 @@ pub trait Task {
 | 阶段 6：云游戏与 Web 活动 | 已完成 | 国内云原神、云绝区零和国际服云原神已迁移；原项目唯一 Web 活动已过期，现输出明确跳过且不请求失效接口。 |
 | 运行随机延迟 | 已完成 | 每轮 run/checkin 开始前应用一次 0..=配置值 秒随机抖动，不按账号叠加。 |
 | 阶段 7：推送 | 代码完成，待真实验收 | 已实现 Telegram、Webhook、PushPlus、Server酱、企业微信、钉钉、飞书、Bark、Gotify、Discord、WxPusher、SMTP 与 Windows 本地通知；真实渠道和桌面会话仍需人工验收。 |
-| 阶段 8：完整运行、Docker 与迁移 | 大部分完成 | `run`、多配置目录批次、青龙环境变量、DaCapo JSON、`schedule` 常驻间隔调度、GitHub 定时任务、旧配置迁移、Docker、Release 工作流及 Linux/Windows 发布附件已实现；Docker 远程运行验收仍缺失。 |
+| 阶段 8：完整运行、部署与迁移 | 代码完成，待真实部署验收 | `run`、多配置目录、青龙、DaCapo、标准输入只读 JSON、`schedule`、GitHub 定时任务、旧配置迁移、Kubernetes、Nix、四平台 Release 与三架构 GHCR 已实现；Actions 已实际构建并启动 amd64、arm64、arm/v7 镜像，真实 Kubernetes 集群和版本标签发布仍需人工验收。 |
 | 阶段 9：可选服务端模式 | 未开始（可选） | 暂无实现需求。 |
 
 ### 尚未完成的主要工作
 
 按阻塞程度排序：
 
-1. 增加手动真实接口测试工作流和人工验收记录，验证国内签到、HoYoLAB 与米游社任务。
-2. 使用真实账号验收验证码求解闭环和首批推送渠道。
-3. 云游戏与 Web 活动迁移已完成；后续新活动需加入活动注册表并提供有效期与测试。
-4. 使用真实 SMTP 账号和 Windows 桌面会话验收新增通知渠道。
-5. 增加 GitHub Actions 定时运行，并实际消费时区和随机延迟配置。
-6. 增加 Docker 构建/运行工作流，验证最终镜像可在无 Rust 环境运行。
-7. 补齐通用 SHA256/HMAC 签名抽象及固定测试向量、HTTP 响应体大小限制、重试/超时合约测试和多账号故障隔离测试。
-8. 增加 Secret 历史扫描、依赖许可证清单及 arm64/armv7 构建验证。
+1. 增加受保护的手动真实接口工作流和人工验收记录，验证国内签到、HoYoLAB 与米游社社区任务。
+2. 使用真实账号验收验证码求解闭环以及各网络通知渠道。
+3. 使用真实 SMTP 账号和 Windows 桌面会话验收 SMTP 与 Windows 本地通知。
+4. 在真实 Kubernetes 集群验收 CronJob，并用正式版本标签验证四平台 Release 附件；代码与 main 镜像已经过远程 CI。
+5. 补齐通用 SHA256/HMAC 签名抽象及固定测试向量、HTTP 响应体大小限制、重试/超时合约测试和更完整的多账号故障隔离测试。
+6. 增加 Secret 历史扫描与第三方依赖许可证清单。
+7. 服务端模式仍为可选项；除非需要 Web 管理/API，否则不属于 Python 功能迁移的完成条件。
 
 ### 已按实现完成的近期项目
 
@@ -484,6 +483,9 @@ pub trait Task {
 - [x] 精简 Tokio runtime、日志过滤依赖和未使用的错误/Secret 依赖。
 - [x] CI 输出 Linux、Windows 原始程序和发布压缩包体积。
 - [x] `run` 支持标准输入 YAML、显式只读、禁止通知和稳定 JSON 报告，日志与 JSON 标准输出隔离。
+- [x] 多配置目录、青龙和 DaCapo 兼容入口均使用统一配置、报告、通知与只读凭据模型。
+- [x] Kubernetes CronJob、Nix x86_64/ARM64、Linux ARM64/ARMv7 Release 与 GHCR 三架构镜像已经接入远程验证。
+- [x] GHCR main 镜像已实际构建并分别启动 amd64、arm64、arm/v7 程序执行 `version`。
 
 ### 阶段 0：初始化仓库
 
@@ -698,7 +700,7 @@ on:
 - Windows x86_64。
 - SHA256 校验文件。
 
-ARM64、ARMv7 和 Docker 多架构镜像应在核心功能稳定后增加，避免初期把时间消耗在交叉编译问题上。
+当前 Release 工作流发布 Linux x86_64、ARM64、ARMv7 与 Windows x86_64 附件；容器工作流发布 amd64、arm64、arm/v7 多架构 GHCR 镜像。ARM64 使用原生 Actions runner，ARMv7 使用 GNU hard-float 交叉工具链并通过 QEMU 启动验证。
 
 ### 10.3 真实签到集成测试
 
@@ -870,7 +872,7 @@ CMD ["run"]
 
 Docker 镜像由 GitHub Actions 构建，不要求开发机执行 `docker build`。
 
-第一阶段只发布 `linux/amd64`。稳定后再使用 Buildx 增加：
+当前使用 Buildx 发布并启动验证以下平台：
 
 ```text
 linux/amd64
@@ -980,8 +982,8 @@ linux/arm/v7
 - [x] Cookie 无效和验证码状态可明确区分。
 - [x] GitHub Actions 可以定时运行。
 - [x] Linux 和 Windows Release 可以下载。
-- [ ] Docker 镜像可在无 Rust 环境中运行。
-- [ ] amd64 稳定后再验证 arm64、armv7。
+- [x] Docker 镜像可在无 Rust 环境中运行，且远程验证三种架构的 `version` 入口。
+- [x] Linux ARM64 原生构建和 ARMv7 交叉构建、QEMU 启动验证通过。
 - [ ] 仓库历史中不存在真实 Cookie、Token 和日志。
 - [ ] 所有第三方依赖和参考代码许可证清晰。
 
