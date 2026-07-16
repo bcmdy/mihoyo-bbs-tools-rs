@@ -4,7 +4,7 @@
 
 > MihoyoBBSTools RS 是社区维护的非官方开源项目，与米哈游、HoYoverse 及其关联公司无隶属、授权、认可或合作关系。使用前请自行确认账号安全和相关服务条款。
 
-[下载最新版本](https://github.com/bcmdy/mihoyo-bbs-tools-rs/releases/latest) · [快速开始](docs/快速开始.md) · [完整使用说明](docs/使用说明.md) · [YAML 配置参考](docs/configuration.md) · [安全说明](docs/security.md)
+[下载最新版本](https://github.com/bcmdy/mihoyo-bbs-tools-rs/releases/latest) · [快速开始](docs/快速开始.md) · [完整使用说明](docs/使用说明.md) · [Cookie 与故障处理](docs/Cookie与故障处理.md) · [YAML 配置参考](docs/configuration.md) · [安全说明](docs/security.md)
 
 ## 主要功能
 
@@ -114,6 +114,7 @@ Cookie、SToken 和通知 Token 都属于账号凭据。只在程序提示后粘
 - [YAML 配置参考](docs/configuration.md)：字段默认值、取值范围和次级节点。
 - [旧配置迁移](docs/config-migration.md)：Python v11–v15 配置迁移方法。
 - [安全说明](docs/security.md)：凭据、日志、网络和部署安全要求。
+- [Cookie 与故障处理](docs/Cookie与故障处理.md)：必需字段、安全录入和常见凭据错误。
 
 ## 自动运行与可选部署
 
