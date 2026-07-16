@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 
 use super::ConfigError;
 
@@ -35,19 +35,18 @@ fn read_line(label: &str, secret: bool) -> Result<String, ConfigError> {
             .map_err(|_| ConfigError::Edit("无法输出交互提示".to_owned()))?;
     }
 
-    let _echo = if terminal && secret {
-        Some(EchoGuard::disable()?)
-    } else {
-        None
-    };
+    if terminal && secret {
+        let _echo = EchoGuard::disable()?;
+        let result = read_secret_terminal();
+        drop(_echo);
+        println!();
+        return result;
+    }
     let mut value = String::new();
     let bytes = io::stdin()
         .lock()
         .read_line(&mut value)
         .map_err(|_| ConfigError::Edit("无法从标准输入读取内容".to_owned()))?;
-    if terminal && secret {
-        println!();
-    }
     if bytes == 0 {
         return Err(ConfigError::Edit(
             "标准输入已结束，未读取任何内容".to_owned(),
@@ -56,19 +55,55 @@ fn read_line(label: &str, secret: bool) -> Result<String, ConfigError> {
     Ok(value.trim().to_owned())
 }
 
+fn read_secret_terminal() -> Result<String, ConfigError> {
+    let mut value = Vec::new();
+    loop {
+        let mut byte = [0_u8; 1];
+        let read = io::stdin()
+            .read(&mut byte)
+            .map_err(|_| ConfigError::Edit("无法从终端读取敏感内容".to_owned()))?;
+        if read == 0 {
+            return Err(ConfigError::Edit(
+                "终端输入已结束，未读取任何内容".to_owned(),
+            ));
+        }
+        match byte[0] {
+            b'\r' | b'\n' => break,
+            3 | 4 | 26 | 28 => {
+                return Err(ConfigError::Edit("已取消敏感信息输入".to_owned()));
+            }
+            8 | 127 => remove_last_utf8_character(&mut value),
+            byte => value.push(byte),
+        }
+    }
+    String::from_utf8(value)
+        .map(|value| value.trim().to_owned())
+        .map_err(|_| ConfigError::Edit("终端输入不是有效 UTF-8 文本".to_owned()))
+}
+
+fn remove_last_utf8_character(value: &mut Vec<u8>) {
+    while let Some(byte) = value.pop() {
+        if byte & 0b1100_0000 != 0b1000_0000 {
+            break;
+        }
+    }
+}
+
 struct EchoGuard {
     #[cfg(windows)]
     handle: *mut std::ffi::c_void,
     #[cfg(windows)]
     original_mode: u32,
     #[cfg(unix)]
-    active: bool,
+    original: String,
 }
 
 impl EchoGuard {
     #[cfg(windows)]
     fn disable() -> Result<Self, ConfigError> {
         const STD_INPUT_HANDLE: u32 = -10_i32 as u32;
+        const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
+        const ENABLE_LINE_INPUT: u32 = 0x0002;
         const ENABLE_ECHO_INPUT: u32 = 0x0004;
 
         #[link(name = "Kernel32")]
@@ -87,7 +122,9 @@ impl EchoGuard {
         if unsafe { GetConsoleMode(handle, &mut original_mode) } == 0 {
             return Err(ConfigError::Edit("无法读取终端输入模式".to_owned()));
         }
-        if unsafe { SetConsoleMode(handle, original_mode & !ENABLE_ECHO_INPUT) } == 0 {
+        let secret_mode =
+            original_mode & !(ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+        if unsafe { SetConsoleMode(handle, secret_mode) } == 0 {
             return Err(ConfigError::Edit("无法关闭终端输入回显".to_owned()));
         }
         Ok(Self {
@@ -98,14 +135,22 @@ impl EchoGuard {
 
     #[cfg(unix)]
     fn disable() -> Result<Self, ConfigError> {
+        let original = std::process::Command::new("stty")
+            .arg("-g")
+            .output()
+            .map_err(|_| ConfigError::Edit("无法读取终端输入模式".to_owned()))?;
+        if !original.status.success() {
+            return Err(ConfigError::Edit("无法读取终端输入模式".to_owned()));
+        }
+        let original = String::from_utf8_lossy(&original.stdout).trim().to_owned();
         let status = std::process::Command::new("stty")
-            .arg("-echo")
+            .args(["-echo", "-icanon", "-isig", "min", "1", "time", "0"])
             .status()
             .map_err(|_| ConfigError::Edit("无法启动 stty 关闭终端回显".to_owned()))?;
         if !status.success() {
             return Err(ConfigError::Edit("无法关闭终端输入回显".to_owned()));
         }
-        Ok(Self { active: true })
+        Ok(Self { original })
     }
 }
 
@@ -121,8 +166,10 @@ impl Drop for EchoGuard {
             let _ = unsafe { SetConsoleMode(self.handle, self.original_mode) };
         }
         #[cfg(unix)]
-        if self.active {
-            let _ = std::process::Command::new("stty").arg("echo").status();
+        if !self.original.is_empty() {
+            let _ = std::process::Command::new("stty")
+                .arg(&self.original)
+                .status();
         }
     }
 }
