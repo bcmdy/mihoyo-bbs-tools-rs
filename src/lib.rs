@@ -13,6 +13,7 @@ pub mod launcher;
 pub mod push;
 pub mod service;
 pub mod signing;
+pub mod update;
 
 pub const VERSION: &str = match option_env!("MIHOYO_BBS_TOOLS_VERSION") {
     Some(version) => version,

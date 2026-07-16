@@ -118,6 +118,11 @@ pub enum Command {
         #[command(subcommand)]
         command: AutomationCommand,
     },
+    /// 检查 GitHub 上的最新稳定版本；不会自动下载或替换程序
+    Update {
+        #[command(subcommand)]
+        command: UpdateCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -236,6 +241,12 @@ pub enum AutomationCommand {
     RunNow,
     /// 仅移除本项目固定名称的任务，保留配置和日志
     Uninstall,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UpdateCommand {
+    /// 显示当前版本、最新稳定版本和发布页面
+    Check,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

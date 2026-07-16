@@ -4,7 +4,7 @@ use clap::Parser;
 use mihoyo_bbs_tools::{
     cli::{
         AutomationCommand, CheckinRegion, Cli, Command, ConfigCommand, DirectoryRunArgs,
-        NotificationCommand, QinglongArgs, ReportFormat, RunTask,
+        NotificationCommand, QinglongArgs, ReportFormat, RunTask, UpdateCommand,
     },
     config,
     error::AppError,
@@ -436,6 +436,23 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                 mihoyo_bbs_tools::automation::uninstall()
                     .map_err(|error| AppError::Task(error.to_string()))?;
                 println!("自动运行任务已移除；配置和日志未删除");
+            }
+        },
+        Command::Update { command } => match command {
+            UpdateCommand::Check => {
+                let update = mihoyo_bbs_tools::update::check().await?;
+                println!("当前版本：{}", update.current_version);
+                println!("最新稳定版本：{}", update.latest_version);
+                println!(
+                    "检查结果：{}",
+                    if update.update_available {
+                        "发现新版本"
+                    } else {
+                        "当前已是最新稳定版本"
+                    }
+                );
+                println!("发布页面：{}", update.release_url);
+                println!("配置兼容：{}", update.config_compatibility);
             }
         },
     }
