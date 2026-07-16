@@ -1063,8 +1063,7 @@ pub fn create_backup(path: &Path, keep: usize) -> Result<PathBuf, ConfigError> {
         path: path.to_path_buf(),
         source,
     })?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let directory = parent.join("backups");
+    let directory = backup_directory(path);
     fs::create_dir_all(&directory).map_err(|source| write_error(&directory, source))?;
     let stem = path
         .file_stem()
@@ -1089,6 +1088,93 @@ pub fn create_backup(path: &Path, keep: usize) -> Result<PathBuf, ConfigError> {
     secure_write_new(&backup, &source)?;
     prune_backups(&directory, stem, keep)?;
     Ok(backup)
+}
+
+#[derive(Clone, Debug)]
+pub struct BackupInfo {
+    pub path: PathBuf,
+    pub created: String,
+    pub version: Option<u64>,
+    pub account_count: Option<usize>,
+}
+
+pub fn list_backups(path: &Path) -> Result<Vec<BackupInfo>, ConfigError> {
+    let directory = backup_directory(path);
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("config");
+    let prefix = format!("{stem}-");
+    let mut paths = fs::read_dir(&directory)
+        .map_err(|source| ConfigError::Read {
+            path: directory.clone(),
+            source,
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|backup| {
+            backup.extension().and_then(|value| value.to_str()) == Some("yaml")
+                && backup
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .collect::<Vec<_>>();
+    paths.sort_by(|left, right| right.cmp(left));
+    Ok(paths
+        .into_iter()
+        .map(|backup| {
+            let loaded = load(&backup).ok();
+            let created = backup
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .and_then(|value| value.strip_prefix(&prefix))
+                .unwrap_or("未知时间")
+                .to_owned();
+            BackupInfo {
+                path: backup,
+                created,
+                version: loaded.as_ref().map(|loaded| loaded.config.version),
+                account_count: loaded.as_ref().map(|loaded| loaded.config.accounts.len()),
+            }
+        })
+        .collect())
+}
+
+pub fn restore_backup(path: &Path, backup: &Path) -> Result<PathBuf, ConfigError> {
+    load(path)?;
+    let allowed_directory = backup_directory(path);
+    let allowed = fs::canonicalize(&allowed_directory).map_err(|source| ConfigError::Read {
+        path: allowed_directory.clone(),
+        source,
+    })?;
+    let backup = fs::canonicalize(backup).map_err(|source| ConfigError::Read {
+        path: backup.to_path_buf(),
+        source,
+    })?;
+    if backup.parent() != Some(allowed.as_path()) {
+        return Err(ConfigError::Edit(format!(
+            "只允许恢复 {} 目录中的受控备份",
+            allowed.display()
+        )));
+    }
+    load(&backup).map_err(|error| ConfigError::Edit(format!("备份未通过校验：{error}")))?;
+    let source = fs::read_to_string(&backup).map_err(|source| ConfigError::Read {
+        path: backup.clone(),
+        source,
+    })?;
+    let current_backup = create_backup(path, 5)?;
+    replace_validated(path, &source)?;
+    Ok(current_backup)
+}
+
+fn backup_directory(path: &Path) -> PathBuf {
+    path.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("backups")
 }
 
 pub fn install_new_config(staged: &Path, target: &Path) -> Result<(), ConfigError> {

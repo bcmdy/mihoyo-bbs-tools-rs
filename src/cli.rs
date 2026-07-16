@@ -158,6 +158,33 @@ pub enum ConfigCommand {
         #[arg(value_name = "ACCOUNT_NAME")]
         name: String,
     },
+    /// 立即创建一份受控配置备份
+    Backup {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+        /// 保留最近备份数量，范围 1 到 50
+        #[arg(long, default_value_t = 5)]
+        keep: usize,
+    },
+    /// 列出备份时间、版本与账号数量，不显示任何凭据
+    ListBackups {
+        /// 配置文件路径，用于确定对应备份目录
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+    },
+    /// 从当前配置 backups 目录恢复一份已校验备份
+    Restore {
+        /// 要恢复的备份文件
+        #[arg(value_name = "BACKUP")]
+        backup: PathBuf,
+        /// 要替换的配置文件路径
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+        /// 跳过交互确认；自动化环境必须显式提供
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

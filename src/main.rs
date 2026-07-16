@@ -1,4 +1,4 @@
-use std::{io::Read, process::ExitCode};
+use std::{io::{IsTerminal, Read}, process::ExitCode};
 
 use clap::Parser;
 use mihoyo_bbs_tools::{
@@ -218,6 +218,59 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             ConfigCommand::RemoveAccount { config: path, name } => {
                 config::remove_account(&path, &name)?;
                 println!("已删除账号：{name}");
+            }
+            ConfigCommand::Backup { config: path, keep } => {
+                let backup = config::create_backup(&path, keep)?;
+                println!("配置备份已创建：{}", backup.display());
+            }
+            ConfigCommand::ListBackups { config: path } => {
+                let backups = config::list_backups(&path)?;
+                if backups.is_empty() {
+                    println!("尚无可用配置备份");
+                }
+                for (index, backup) in backups.iter().enumerate() {
+                    println!(
+                        "{}. {} / version {} / {} 个账号 / {}",
+                        index + 1,
+                        backup.created,
+                        backup
+                            .version
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "无效".to_owned()),
+                        backup
+                            .account_count
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "未知".to_owned()),
+                        backup.path.display()
+                    );
+                }
+            }
+            ConfigCommand::Restore {
+                config: path,
+                backup,
+                yes,
+            } => {
+                let preview = config::load(&backup)?;
+                println!("即将恢复配置备份：");
+                println!("- 备份：{}", backup.display());
+                println!("- 目标：{}", path.display());
+                println!("- 版本：{}", preview.config.version);
+                println!("- 账号数量：{}", preview.config.accounts.len());
+                let confirmed = if yes {
+                    true
+                } else if std::io::stdin().is_terminal() {
+                    config::confirm_interactive("恢复前会先备份当前配置，确认继续？", false)?
+                } else {
+                    return Err(AppError::Task(
+                        "非交互环境恢复配置必须显式提供 --yes".to_owned(),
+                    ));
+                };
+                if confirmed {
+                    let current_backup = config::restore_backup(&path, &backup)?;
+                    println!("配置已恢复；恢复前配置备份：{}", current_backup.display());
+                } else {
+                    println!("已取消恢复，当前配置未修改");
+                }
             }
         },
         Command::Notification { command } => match command {
@@ -461,7 +514,10 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
             | ConfigCommand::Setup { config }
             | ConfigCommand::Edit { config }
             | ConfigCommand::AddAccount { config, .. }
-            | ConfigCommand::RemoveAccount { config, .. } => Some(config),
+            | ConfigCommand::RemoveAccount { config, .. }
+            | ConfigCommand::Backup { config, .. }
+            | ConfigCommand::ListBackups { config }
+            | ConfigCommand::Restore { config, .. } => Some(config),
         },
         Command::Notification { command } => match command {
             NotificationCommand::List { config } | NotificationCommand::Test { config, .. } => {
