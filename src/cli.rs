@@ -100,6 +100,12 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
+    /// 首次创建完整配置；已有配置不会被覆盖
+    Init {
+        /// 要创建的配置文件路径
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+    },
     /// 通过数字菜单设置运行参数、验证码、账号、任务和通知
     Setup {
         /// 配置文件路径

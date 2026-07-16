@@ -178,7 +178,15 @@ pub async fn add_account_from_stdin(
     if cookie.is_empty() {
         return Err(ConfigError::Edit("Cookie 不能为空".to_owned()));
     }
-    add_account(path, name, &cookie).await
+    let jar = CookieJar::parse(&cookie)
+        .map_err(|_| ConfigError::Edit("Cookie 格式无效".to_owned()))?;
+    let account = add_account(path, name, &cookie).await?;
+    println!(
+        "已识别 UID：{}，SToken：已包含，MID：{}",
+        jar.uid().map(mask_identifier).unwrap_or_else(|| "未识别".to_owned()),
+        if jar.mid().is_some() { "已包含" } else { "未包含" }
+    );
+    Ok(account)
 }
 
 pub async fn add_account(
@@ -188,13 +196,21 @@ pub async fn add_account(
 ) -> Result<String, ConfigError> {
     let jar =
         CookieJar::parse(cookie).map_err(|_| ConfigError::Edit("Cookie 格式无效".to_owned()))?;
+    let uid = jar.uid().ok_or_else(|| {
+        ConfigError::Edit("Cookie 中未识别到 UID，请重新获取完整 Cookie".to_owned())
+    })?;
     let stoken = jar
         .get("stoken")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             ConfigError::Edit("Cookie 中缺少 stoken，请重新获取完整 Cookie".to_owned())
         })?;
-    let nickname = fetch_nickname(cookie, jar.uid().unwrap_or_default()).await?;
+    if stoken.starts_with("v2_") && jar.mid().is_none() {
+        return Err(ConfigError::Edit(
+            "Cookie 中已识别 UID 和 V2 SToken，但缺少 MID；请重新获取完整 Cookie".to_owned(),
+        ));
+    }
+    let nickname = fetch_nickname(cookie, uid).await?;
     let mut account_name = format_account_name(&nickname);
 
     let existed = path.exists();
@@ -212,7 +228,7 @@ pub async fn add_account(
             account_name = format!(
                 "{}-{}",
                 account_name,
-                uid_suffix(jar.uid().unwrap_or_default())
+                uid_suffix(uid)
             );
             if accounts
                 .iter()
@@ -1075,6 +1091,34 @@ pub fn create_backup(path: &Path, keep: usize) -> Result<PathBuf, ConfigError> {
     Ok(backup)
 }
 
+pub fn install_new_config(staged: &Path, target: &Path) -> Result<(), ConfigError> {
+    if target.exists() {
+        return Err(ConfigError::Edit(format!(
+            "配置文件已存在，拒绝覆盖：{}；请改用 `config setup`",
+            target.display()
+        )));
+    }
+    load(staged)?;
+    let source = fs::read_to_string(staged).map_err(|source| ConfigError::Read {
+        path: staged.to_path_buf(),
+        source,
+    })?;
+    if let Some(parent) = target.parent().filter(|path| !path.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).map_err(|source| write_error(parent, source))?;
+    }
+    let mut file = open_secure_new(target).map_err(|source| write_error(target, source))?;
+    if let Err(source) = file
+        .write_all(source.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
+        drop(file);
+        let _ = fs::remove_file(target);
+        return Err(write_error(target, source));
+    }
+    let _ = fs::remove_file(staged);
+    Ok(())
+}
+
 fn prune_backups(directory: &Path, stem: &str, keep: usize) -> Result<(), ConfigError> {
     let prefix = format!("{stem}-");
     let mut backups = fs::read_dir(directory)
@@ -1186,6 +1230,10 @@ fn default_web_activities() -> Value {
 fn uid_suffix(uid: &str) -> String {
     let suffix = uid.chars().rev().take(4).collect::<Vec<_>>();
     suffix.into_iter().rev().collect()
+}
+
+fn mask_identifier(value: &str) -> String {
+    format!("***{}", uid_suffix(value))
 }
 
 fn key(value: &str) -> Value {

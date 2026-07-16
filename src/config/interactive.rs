@@ -7,9 +7,16 @@ use super::{
     set_notification_provider, set_runtime, set_schedule,
 };
 use std::{
+    fs,
     io::{self, IsTerminal},
-    path::Path,
+    path::{Path, PathBuf},
 };
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InitResult {
+    pub created: bool,
+    pub run_now: bool,
+}
 
 pub async fn setup(path: &Path) -> Result<(), ConfigError> {
     if !io::stdin().is_terminal() {
@@ -50,6 +57,106 @@ pub async fn setup(path: &Path) -> Result<(), ConfigError> {
         println!("已放弃全部暂存变更，原配置未修改");
     }
     Ok(())
+}
+
+pub async fn init(path: &Path) -> Result<InitResult, ConfigError> {
+    if !io::stdin().is_terminal() {
+        return Err(ConfigError::Edit("config init 需要交互式终端".to_owned()));
+    }
+    if path.exists() {
+        return Err(ConfigError::Edit(format!(
+            "配置文件已存在，拒绝覆盖：{}；请改用 `config setup`",
+            path.display()
+        )));
+    }
+    if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    let staged = init_staging_path(path);
+    let _cleanup = StagedConfig(staged.clone());
+    println!("首次配置向导");
+    println!("目标配置：{}", path.display());
+    println!("Cookie、Token 和通知凭据均使用隐藏输入，向导完成前不会写入正式配置。");
+
+    loop {
+        let remark = prompt("可选账号备注（留空不设置）")?;
+        let name = add_account_from_stdin(
+            &staged,
+            (!remark.is_empty()).then_some(remark.as_str()),
+        )
+        .await?;
+        println!("已获取米游社昵称并暂存账号：{name}");
+        println!("请选择该账号参与国内签到的游戏。");
+        games_for(&staged, &name)?;
+        println!("请选择该账号需要执行的任务与社区操作。");
+        tasks_for(&staged, &name)?;
+        if !super::input::confirm("继续添加另一个账号？", false)? {
+            break;
+        }
+    }
+
+    if super::input::confirm("现在配置通知渠道？", false)? {
+        notifications(&staged)?;
+    }
+    let config = load(&staged)?.config;
+    println!("\n即将创建配置：");
+    println!("- 账号数量：{}", config.accounts.len());
+    for account in &config.accounts {
+        println!(
+            "- [{}] {}{}；国内签到游戏 {} 个",
+            if account.enabled { "x" } else { " " },
+            account.name,
+            account
+                .remark
+                .as_deref()
+                .map(|value| format!("（{value}）"))
+                .unwrap_or_default(),
+            account.games.len()
+        );
+    }
+    println!(
+        "- 通知：{}，{} 个渠道",
+        if config.notifications.enabled {
+            "已启用"
+        } else {
+            "已关闭"
+        },
+        config.notifications.providers.len()
+    );
+    if !super::input::confirm("创建这份配置？", true)? {
+        println!("已取消首次配置，未创建 config.yaml");
+        return Ok(InitResult::default());
+    }
+    super::install_new_config(&staged, path)?;
+    println!("配置已创建并通过校验：{}", path.display());
+    let run_now = super::input::confirm("现在执行第一次运行？", false)?;
+    Ok(InitResult {
+        created: true,
+        run_now,
+    })
+}
+
+struct StagedConfig(PathBuf);
+
+impl Drop for StagedConfig {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn init_staging_path(path: &Path) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path.with_extension(format!(
+        "yaml.{}.{}.session",
+        std::process::id(),
+        stamp
+    ))
 }
 
 fn runtime(path: &Path) -> Result<(), ConfigError> {
@@ -761,6 +868,10 @@ fn tasks(path: &Path) -> Result<(), ConfigError> {
     let Some(name) = choose(path)? else {
         return Ok(());
     };
+    tasks_for(path, &name)
+}
+
+fn tasks_for(path: &Path, name: &str) -> Result<(), ConfigError> {
     let account = load(path)?
         .config
         .accounts
@@ -835,13 +946,17 @@ fn tasks(path: &Path) -> Result<(), ConfigError> {
             .map(|forum| forum.id)
             .collect();
     }
-    set_account_tasks(path, &name, &selected, &bbs, &forums)
+    set_account_tasks(path, name, &selected, &bbs, &forums)
 }
 
 fn games(path: &Path) -> Result<(), ConfigError> {
     let Some(name) = choose(path)? else {
         return Ok(());
     };
+    games_for(path, &name)
+}
+
+fn games_for(path: &Path, name: &str) -> Result<(), ConfigError> {
     let current = load(path)?
         .config
         .accounts
@@ -866,7 +981,7 @@ fn games(path: &Path) -> Result<(), ConfigError> {
     )? else {
         return Ok(());
     };
-    set_account_games(path, &name, &selected)
+    set_account_games(path, name, &selected)
 }
 
 fn choose(path: &Path) -> Result<Option<String>, ConfigError> {

@@ -21,14 +21,14 @@ mod interactive;
 mod legacy;
 pub use dacapo::{DacapoError, load_dacapo};
 pub use editor::{
-    EditSession, add_account_from_stdin, create_backup, edit_file, persist_refreshed_cookie,
-    remove_account,
+    EditSession, add_account_from_stdin, create_backup, edit_file, install_new_config,
+    persist_refreshed_cookie, remove_account,
     remove_notification_provider, replace_account_cookie, set_account_china_checkin,
     set_account_cloud_games, set_account_device, set_account_games, set_account_general,
     set_account_hoyolab, set_account_proxy, set_account_tasks, set_captcha_endpoint, set_logging,
     set_notification_options, set_notification_provider, set_runtime, set_schedule,
 };
-pub use interactive::setup as interactive_setup;
+pub use interactive::{InitResult, init as interactive_init, setup as interactive_setup};
 
 pub const CURRENT_CONFIG_VERSION: u64 = 1;
 pub const EXAMPLE_CONFIG: &str = include_str!("../../config/config.example.yaml");

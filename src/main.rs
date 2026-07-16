@@ -136,6 +136,20 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             println!("该 BAT 可移动到其他位置，仍会从当前程序目录运行 MihoyoBBSToolsRS。");
         }
         Command::Config { command } => match command {
+            ConfigCommand::Init { config: path } => {
+                let result = config::interactive_init(&path).await?;
+                if result.created && result.run_now {
+                    return execute_run_command(
+                        &path,
+                        &[],
+                        false,
+                        false,
+                        ReportFormat::Text,
+                        false,
+                    )
+                    .await;
+                }
+            }
             ConfigCommand::Setup { config: path } => config::interactive_setup(&path).await?,
             ConfigCommand::Edit { config: path } => {
                 config::edit_file(&path)?;
@@ -221,7 +235,8 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
         | Command::Run { config, .. }
         | Command::Schedule { config, .. } => Some(config),
         Command::Config { command } => match command {
-            ConfigCommand::Setup { config }
+            ConfigCommand::Init { config }
+            | ConfigCommand::Setup { config }
             | ConfigCommand::Edit { config }
             | ConfigCommand::AddAccount { config, .. }
             | ConfigCommand::RemoveAccount { config, .. } => Some(config),
