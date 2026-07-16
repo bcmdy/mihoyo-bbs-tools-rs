@@ -22,10 +22,11 @@ pub async fn check() -> Result<UpdateInfo, HttpError> {
         .await?;
     let current = crate::VERSION.trim_start_matches('v');
     let latest = response.tag_name.trim_start_matches('v');
+    let update_available = version_is_newer(latest, current);
     Ok(UpdateInfo {
         current_version: crate::VERSION.to_owned(),
         latest_version: response.tag_name,
-        update_available: version_is_newer(latest, current),
+        update_available,
         release_url: response.html_url,
         config_compatibility: format!(
             "当前程序使用配置 version {}；升级前请查看发布说明中的兼容提示",
