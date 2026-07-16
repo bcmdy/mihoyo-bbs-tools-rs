@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    io::{self, BufRead, Write},
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -63,13 +63,11 @@ pub async fn add_account_from_stdin(
     path: &Path,
     name: Option<&str>,
 ) -> Result<String, ConfigError> {
-    eprintln!("请输入完整 Cookie（输入内容不会写入日志）：");
-    let mut cookie = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut cookie)
-        .map_err(|_| ConfigError::Edit("无法从标准输入读取 Cookie".to_owned()))?;
-    add_account(path, name, cookie.trim()).await
+    let cookie = super::input::prompt_secret("请输入完整 Cookie（输入内容不会显示）")?;
+    if cookie.is_empty() {
+        return Err(ConfigError::Edit("Cookie 不能为空".to_owned()));
+    }
+    add_account(path, name, &cookie).await
 }
 
 pub async fn add_account(

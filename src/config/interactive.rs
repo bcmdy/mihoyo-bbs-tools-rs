@@ -7,7 +7,7 @@ use super::{
     set_notification_provider, set_runtime, set_schedule,
 };
 use std::{
-    io::{self, BufRead, IsTerminal, Write},
+    io::{self, IsTerminal},
     path::Path,
 };
 
@@ -92,7 +92,7 @@ fn captcha(path: &Path) -> Result<(), ConfigError> {
         .endpoint
         .map(|url| url.to_string());
     let shown = current.as_ref().map(|_| "<已配置>");
-    let endpoint = prompt_optional("验证码端点", shown)?;
+    let endpoint = prompt_optional_hidden("验证码端点", shown)?;
     if endpoint.as_deref() == Some("<已配置>") {
         return Ok(());
     }
@@ -151,8 +151,9 @@ async fn account_cookie(path: &Path) -> Result<(), ConfigError> {
     let Some(name) = choose(path)? else {
         return Ok(());
     };
-    eprintln!("请输入新的完整 Cookie（输入内容不会写入日志，留空取消）：");
-    let cookie = prompt("")?;
+    let cookie = super::input::prompt_secret(
+        "请输入新的完整 Cookie（输入内容不会显示，留空取消）",
+    )?;
     if cookie.is_empty() {
         return Ok(());
     }
@@ -191,7 +192,7 @@ fn account_proxy(path: &Path) -> Result<(), ConfigError> {
         .expect("已选择的账号存在");
     let current = account.proxy.url.as_ref().map(|_| "<已配置>");
     println!("代理支持 http、https、socks5、socks5h；敏感代理不会回显");
-    let proxy = prompt_optional("代理 URL", current)?;
+    let proxy = prompt_optional_hidden("代理 URL", current)?;
     if proxy.as_deref() == Some("<已配置>") {
         return Ok(());
     }
@@ -209,9 +210,7 @@ fn account_cloud_games(path: &Path) -> Result<(), ConfigError> {
         .find(|account| account.name == name)
         .expect("已选择的账号存在")
         .cloud_games;
-    println!(
-        "已保存的云游戏 Token 不会作为当前值回显；新输入内容由终端正常显示，留空保留，输入 - 清空"
-    );
+    println!("已保存的云游戏 Token 不会回显；新输入同样隐藏，留空保留，输入 - 清空");
     let china_genshin_token =
         prompt_secret("国内云原神 Token", cloud.china.genshin.token.as_ref())?;
     let china_genshin_enabled = prompt_bool("启用国内云原神", cloud.china.genshin.enabled)?;
@@ -289,7 +288,7 @@ fn account_hoyolab(path: &Path) -> Result<(), ConfigError> {
         games: account.games,
         ..HoyolabConfig::default()
     });
-    println!("已保存的 HoYoLAB Cookie 不会作为当前值回显；新输入内容由终端正常显示");
+    println!("已保存的 HoYoLAB Cookie 不会回显；新输入同样隐藏");
     let current_cookie = (!current.cookie.is_empty()).then_some(&current.cookie);
     let cookie = prompt_secret("HoYoLAB 独立 Cookie", current_cookie)?.unwrap_or_default();
     let language = prompt_keep("HoYoLAB 语言(zh-cn/en-us/ja-jp/ko-kr)", &current.language)?;
@@ -414,6 +413,7 @@ struct ProviderField {
     name: &'static str,
     required: bool,
     default: Option<&'static str>,
+    secret: bool,
 }
 
 fn prompt_provider_fields(
@@ -427,7 +427,12 @@ fn prompt_provider_fields(
                 .default
                 .map(|value| format!("，默认 {value}"))
                 .unwrap_or_default();
-            let value = prompt(&format!("{}{}", field.name, default))?;
+            let label = format!("{}{}", field.name, default);
+            let value = if field.secret {
+                super::input::prompt_secret(&label)?
+            } else {
+                prompt(&label)?
+            };
             if editing && value.is_empty() {
                 values.push((field.name.to_owned(), None));
                 break;
@@ -571,6 +576,20 @@ const fn field(name: &'static str, required: bool, default: Option<&'static str>
         name,
         required,
         default,
+        secret: matches!(
+            name,
+            "token"
+                | "bot_token"
+                | "app_token"
+                | "sendkey"
+                | "secret"
+                | "key"
+                | "password"
+                | "webhook"
+                | "url"
+                | "api_url"
+                | "proxy"
+        ),
     }
 }
 
@@ -724,6 +743,23 @@ fn prompt_optional(label: &str, current: Option<&str>) -> Result<Option<String>,
     }
 }
 
+fn prompt_optional_hidden(
+    label: &str,
+    current: Option<&str>,
+) -> Result<Option<String>, ConfigError> {
+    let value = super::input::prompt_secret(&format!(
+        "{label}[{}] (留空保留，- 清空)",
+        current.unwrap_or("未设置")
+    ))?;
+    if value.is_empty() {
+        Ok(current.map(str::to_owned))
+    } else if value == "-" {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
 fn prompt_secret(
     label: &str,
     current: Option<&crate::auth::SecretString>,
@@ -733,7 +769,9 @@ fn prompt_secret(
     } else {
         "未设置"
     };
-    let value = prompt(&format!("{label}[{shown}] (留空保留，- 清空)"))?;
+    let value = super::input::prompt_secret(&format!(
+        "{label}[{shown}] (留空保留，- 清空)"
+    ))?;
     if value.is_empty() {
         Ok(current.map(|value| value.expose_secret().to_owned()))
     } else if value == "-" {
@@ -799,16 +837,7 @@ fn log_level_name(level: LogLevel) -> &'static str {
 }
 
 fn prompt(label: &str) -> Result<String, ConfigError> {
-    print!("{label}> ");
-    io::stdout()
-        .flush()
-        .map_err(|_| ConfigError::Edit("输出失败".into()))?;
-    let mut value = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut value)
-        .map_err(|_| ConfigError::Edit("读取失败".into()))?;
-    Ok(value.trim().into())
+    super::input::prompt_text(label)
 }
 
 fn read_number(max: usize) -> Result<Option<usize>, ConfigError> {

@@ -16,6 +16,7 @@ use crate::auth::{CookieJar, SecretString};
 
 mod dacapo;
 mod editor;
+pub(crate) mod input;
 mod interactive;
 mod legacy;
 pub use dacapo::{DacapoError, load_dacapo};
