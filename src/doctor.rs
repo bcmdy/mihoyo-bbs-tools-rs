@@ -137,7 +137,10 @@ pub async fn run(path: &Path, online: bool) -> DoctorReport {
         "配置",
         "结构与版本",
         DiagnosticStatus::Passed,
-        &format!("version 1，{} 个账号，结构有效", loaded.config.accounts.len()),
+        &format!(
+            "version 1，{} 个账号，结构有效",
+            loaded.config.accounts.len()
+        ),
         "无",
         "无需处理",
     );
@@ -193,6 +196,7 @@ pub async fn run(path: &Path, online: bool) -> DoctorReport {
 }
 
 impl DoctorReport {
+    #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
         category: &str,
@@ -265,7 +269,11 @@ async fn run_online(config: &Config, report: &mut DoctorReport) {
     .await;
 
     for account in config.accounts.iter().filter(|account| account.enabled) {
-        let proxy = account.proxy.url.as_ref().map(|value| value.expose_secret());
+        let proxy = account
+            .proxy
+            .url
+            .as_ref()
+            .map(|value| value.expose_secret());
         let account_client = match client(config, proxy) {
             Ok(client) => client,
             Err(error) => {
@@ -413,12 +421,7 @@ async fn check_identity(
     }
 }
 
-async fn check_connectivity(
-    report: &mut DoctorReport,
-    client: &HttpClient,
-    name: &str,
-    url: &str,
-) {
+async fn check_connectivity(report: &mut DoctorReport, client: &HttpClient, name: &str, url: &str) {
     check_endpoint(
         report,
         client,
@@ -478,7 +481,10 @@ fn directory_writable(directory: &Path) -> Result<(), String> {
     if !directory.is_dir() {
         return Err("目录不存在或不是文件夹".to_owned());
     }
-    let probe = directory.join(format!(".mihoyo-bbs-tools-doctor-{}.tmp", std::process::id()));
+    let probe = directory.join(format!(
+        ".mihoyo-bbs-tools-doctor-{}.tmp",
+        std::process::id()
+    ));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

@@ -164,9 +164,7 @@ fn remediation(record: &TaskRecord) -> &'static str {
             TaskOutcome::AuthenticationFailed => {
                 "Cookie 已失效；运行 `config setup`，选择“账号 -> 更新 Cookie”。"
             }
-            TaskOutcome::CaptchaRequired => {
-                "运行 `config setup` 检查验证码端点，或稍后重试。"
-            }
+            TaskOutcome::CaptchaRequired => "运行 `config setup` 检查验证码端点，或稍后重试。",
             TaskOutcome::NetworkFailed => {
                 "运行 `doctor --online` 检查网络、TLS 和该账号的代理设置。"
             }

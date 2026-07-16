@@ -72,6 +72,7 @@ impl EchoGuard {
         const ENABLE_ECHO_INPUT: u32 = 0x0004;
 
         #[link(name = "Kernel32")]
+        #[allow(non_snake_case)]
         unsafe extern "system" {
             fn GetStdHandle(std_handle: u32) -> *mut std::ffi::c_void;
             fn GetConsoleMode(handle: *mut std::ffi::c_void, mode: *mut u32) -> i32;
@@ -113,6 +114,7 @@ impl Drop for EchoGuard {
         #[cfg(windows)]
         {
             #[link(name = "Kernel32")]
+            #[allow(non_snake_case)]
             unsafe extern "system" {
                 fn SetConsoleMode(handle: *mut std::ffi::c_void, mode: u32) -> i32;
             }

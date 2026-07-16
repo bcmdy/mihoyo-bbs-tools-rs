@@ -1,4 +1,7 @@
-use std::{io::{IsTerminal, Read}, process::ExitCode};
+use std::{
+    io::{IsTerminal, Read},
+    process::ExitCode,
+};
 
 use clap::Parser;
 use mihoyo_bbs_tools::{
@@ -359,9 +362,8 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                         "自动运行管理首期仅支持 Windows 任务计划程序".to_owned(),
                     ));
                 }
-                let path = std::fs::canonicalize(&path).map_err(|_| {
-                    AppError::Task(format!("配置文件不存在：{}", path.display()))
-                })?;
+                let path = std::fs::canonicalize(&path)
+                    .map_err(|_| AppError::Task(format!("配置文件不存在：{}", path.display())))?;
                 if enable_windows_notification {
                     let loaded = config::load(&path)?;
                     let has_toast = push::provider_summaries(&loaded.config)
@@ -388,14 +390,19 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                 }
                 let executable = std::env::current_exe()
                     .map_err(|error| AppError::Task(format!("无法定位当前程序：{error}")))?;
-                let working_directory = executable.parent().unwrap_or_else(|| std::path::Path::new("."));
+                let working_directory = executable
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
                 let loaded = config::load(&path)?;
                 println!("将安装或更新 Windows 自动运行任务：");
                 println!("- 任务名称：{}", mihoyo_bbs_tools::automation::task_name());
                 println!("- 程序：{}", executable.display());
                 println!("- 工作目录：{}", working_directory.display());
                 println!("- 参数：run --config \"{}\"", path.display());
-                println!("- 每日本地时间：{time}（配置时区：{}）", loaded.config.runtime.timezone);
+                println!(
+                    "- 每日本地时间：{time}（配置时区：{}）",
+                    loaded.config.runtime.timezone
+                );
                 println!(
                     "- 登录条件：{}",
                     if run_whether_logged_on {
@@ -426,8 +433,14 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                 println!("任务名称：{}", mihoyo_bbs_tools::automation::task_name());
                 println!("状态：{}", status.state.as_deref().unwrap_or("未知"));
                 println!("已启用：{}", if status.enabled { "是" } else { "否" });
-                println!("下次运行：{}", status.next_run_time.as_deref().unwrap_or("未知"));
-                println!("上次运行：{}", status.last_run_time.as_deref().unwrap_or("从未运行"));
+                println!(
+                    "下次运行：{}",
+                    status.next_run_time.as_deref().unwrap_or("未知")
+                );
+                println!(
+                    "上次运行：{}",
+                    status.last_run_time.as_deref().unwrap_or("从未运行")
+                );
                 println!(
                     "上次退出码：{}",
                     status
@@ -442,12 +455,20 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                         .as_ref()
                         .map(|path| path.display().to_string())
                         .unwrap_or_else(|| "未知".to_owned()),
-                    if status.executable_exists { "有效" } else { "失效" }
+                    if status.executable_exists {
+                        "有效"
+                    } else {
+                        "失效"
+                    }
                 );
                 println!(
                     "配置路径：{}（{}）",
                     path.display(),
-                    if status.config_exists { "有效" } else { "失效" }
+                    if status.config_exists {
+                        "有效"
+                    } else {
+                        "失效"
+                    }
                 );
                 return Ok(u8::from(
                     !status.enabled || !status.executable_exists || !status.config_exists,

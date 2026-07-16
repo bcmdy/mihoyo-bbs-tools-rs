@@ -38,9 +38,12 @@ fn version_is_newer(candidate: &str, current: &str) -> bool {
     let candidate = version_parts(candidate);
     let current = version_parts(current);
     for index in 0..candidate.len().max(current.len()) {
-        match candidate.get(index).copied().unwrap_or(0).cmp(
-            &current.get(index).copied().unwrap_or(0),
-        ) {
+        match candidate
+            .get(index)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&current.get(index).copied().unwrap_or(0))
+        {
             std::cmp::Ordering::Greater => return true,
             std::cmp::Ordering::Less => return false,
             std::cmp::Ordering::Equal => {}

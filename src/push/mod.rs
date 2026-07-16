@@ -314,18 +314,20 @@ pub async fn test_providers(
                 timestamp
             ),
         };
-        report.deliveries.push(match provider.send(&notification).await {
-            Ok(()) => DeliveryResult {
-                provider: kind,
-                status: DeliveryStatus::Sent,
-                message: "测试通知发送成功".to_owned(),
-            },
-            Err(error) => DeliveryResult {
-                provider: kind,
-                status: DeliveryStatus::Failed,
-                message: error.to_string(),
-            },
-        });
+        report
+            .deliveries
+            .push(match provider.send(&notification).await {
+                Ok(()) => DeliveryResult {
+                    provider: kind,
+                    status: DeliveryStatus::Sent,
+                    message: "测试通知发送成功".to_owned(),
+                },
+                Err(error) => DeliveryResult {
+                    provider: kind,
+                    status: DeliveryStatus::Failed,
+                    message: error.to_string(),
+                },
+            });
     }
     Ok(report)
 }

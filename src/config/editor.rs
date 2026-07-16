@@ -39,11 +39,7 @@ impl EditSession {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let working = path.with_extension(format!(
-            "yaml.{}.{}.session",
-            std::process::id(),
-            stamp
-        ));
+        let working = path.with_extension(format!("yaml.{}.{}.session", std::process::id(), stamp));
         secure_write_new(&working, &original)?;
         Ok(Self {
             target: path.to_path_buf(),
@@ -178,13 +174,19 @@ pub async fn add_account_from_stdin(
     if cookie.is_empty() {
         return Err(ConfigError::Edit("Cookie 不能为空".to_owned()));
     }
-    let jar = CookieJar::parse(&cookie)
-        .map_err(|_| ConfigError::Edit("Cookie 格式无效".to_owned()))?;
+    let jar =
+        CookieJar::parse(&cookie).map_err(|_| ConfigError::Edit("Cookie 格式无效".to_owned()))?;
     let account = add_account(path, name, &cookie).await?;
     println!(
         "已识别 UID：{}，SToken：已包含，MID：{}",
-        jar.uid().map(mask_identifier).unwrap_or_else(|| "未识别".to_owned()),
-        if jar.mid().is_some() { "已包含" } else { "未包含" }
+        jar.uid()
+            .map(mask_identifier)
+            .unwrap_or_else(|| "未识别".to_owned()),
+        if jar.mid().is_some() {
+            "已包含"
+        } else {
+            "未包含"
+        }
     );
     Ok(account)
 }
@@ -225,11 +227,7 @@ pub async fn add_account(
             .iter()
             .any(|account| account_name_of(account) == Some(account_name.as_str()))
         {
-            account_name = format!(
-                "{}-{}",
-                account_name,
-                uid_suffix(uid)
-            );
+            account_name = format!("{}-{}", account_name, uid_suffix(uid));
             if accounts
                 .iter()
                 .any(|account| account_name_of(account) == Some(account_name.as_str()))
@@ -1035,11 +1033,9 @@ fn replace_validated_inner(
         let _ = fs::remove_file(&temporary);
         ConfigError::Edit(format!("修改后配置未通过校验，原配置未修改：{error}"))
     })?;
-    if create_backup_before_replace {
-        if let Err(error) = create_backup(path, 5) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
+    if create_backup_before_replace && let Err(error) = create_backup(path, 5) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
     }
     let backup = path.with_extension(format!("yaml.{}.backup", std::process::id()));
     fs::rename(path, &backup).map_err(|source| write_error(path, source))?;

@@ -83,16 +83,10 @@ pub fn install(options: &InstallOptions) -> Result<(), AutomationError> {
         &[
             ("TaskName", TASK_NAME.to_owned()),
             ("Executable", executable.display().to_string()),
-            (
-                "WorkingDirectory",
-                working_directory.display().to_string(),
-            ),
+            ("WorkingDirectory", working_directory.display().to_string()),
             ("Config", options.config.display().to_string()),
             ("Time", options.time.clone()),
-            (
-                "OnlyWhenLoggedOn",
-                options.only_when_logged_on.to_string(),
-            ),
+            ("OnlyWhenLoggedOn", options.only_when_logged_on.to_string()),
             ("RetryCount", options.retry_count.to_string()),
         ],
     )?;
@@ -177,9 +171,7 @@ fn run_script(script: &str, parameters: &[(&str, String)]) -> Result<String, Aut
         .map_err(|error| AutomationError::PowerShell(error.to_string()))?;
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr);
-        return Err(AutomationError::PowerShell(safe_powershell_error(
-            &message,
-        )));
+        return Err(AutomationError::PowerShell(safe_powershell_error(&message)));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }

@@ -85,11 +85,8 @@ pub async fn init(path: &Path) -> Result<InitResult, ConfigError> {
 
     loop {
         let remark = prompt("可选账号备注（留空不设置）")?;
-        let name = add_account_from_stdin(
-            &staged,
-            (!remark.is_empty()).then_some(remark.as_str()),
-        )
-        .await?;
+        let name = add_account_from_stdin(&staged, (!remark.is_empty()).then_some(remark.as_str()))
+            .await?;
         println!("已获取米游社昵称并暂存账号：{name}");
         println!("请选择该账号参与国内签到的游戏。");
         games_for(&staged, &name)?;
@@ -165,11 +162,7 @@ fn init_staging_path(path: &Path) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    path.with_extension(format!(
-        "yaml.{}.{}.session",
-        std::process::id(),
-        stamp
-    ))
+    path.with_extension(format!("yaml.{}.{}.session", std::process::id(), stamp))
 }
 
 fn runtime(path: &Path) -> Result<(), ConfigError> {
@@ -293,9 +286,8 @@ async fn account_cookie(path: &Path) -> Result<(), ConfigError> {
     let Some(name) = choose(path)? else {
         return Ok(());
     };
-    let cookie = super::input::prompt_secret(
-        "请输入新的完整 Cookie（输入内容不会显示，留空取消）",
-    )?;
+    let cookie =
+        super::input::prompt_secret("请输入新的完整 Cookie（输入内容不会显示，留空取消）")?;
     if cookie.is_empty() {
         return Ok(());
     }
@@ -458,7 +450,11 @@ fn notifications(path: &Path) -> Result<(), ConfigError> {
         let current = load(path)?.config.notifications;
         println!(
             "通知：[{}]，已配置 {} 个渠道\n1.通用选项 2.添加渠道 3.编辑渠道 4.删除渠道 0.返回",
-            if current.enabled { "已启用" } else { "已关闭" },
+            if current.enabled {
+                "已启用"
+            } else {
+                "已关闭"
+            },
             current.providers.len()
         );
         match read_number(4)? {
@@ -524,11 +520,8 @@ fn delete_notification_provider(path: &Path) -> Result<(), ConfigError> {
         let kind = provider_type(&providers[index]);
         println!("即将删除：{}（{kind}）", provider_display(kind));
         println!("接收目标：{}", provider_target(&providers[index]));
-        let value = prompt(&format!(
-            "再次输入 yes 或渠道编号 {} 确认删除",
-            index + 1
-        ))?;
-        if value == "yes" || value == (index + 1).to_string() {
+        let value = prompt(&format!("再次输入 yes 或渠道编号 {} 确认删除", index + 1))?;
+        if value == "yes" || value.parse::<usize>() == Ok(index + 1) {
             remove_notification_provider(path, index)?;
             println!("通知渠道已加入待保存删除列表");
         } else {
@@ -575,11 +568,8 @@ fn confirm_and_remove_account(path: &Path, name: &str) -> Result<(), ConfigError
             tasks.join("、")
         }
     );
-    let value = prompt(&format!(
-        "再次输入 yes 或账号编号 {} 确认删除",
-        index + 1
-    ))?;
-    if value == "yes" || value == (index + 1).to_string() {
+    let value = prompt(&format!("再次输入 yes 或账号编号 {} 确认删除", index + 1))?;
+    if value == "yes" || value.parse::<usize>() == Ok(index + 1) {
         remove_account(path, name)?;
         println!("账号已加入待保存删除列表");
     } else {
@@ -915,7 +905,8 @@ fn tasks_for(path: &Path, name: &str) -> Result<(), ConfigError> {
             "Web 活动",
         ],
         &selected,
-    )? else {
+    )?
+    else {
         return Ok(());
     };
     let mut bbs = [
@@ -935,7 +926,8 @@ fn tasks_for(path: &Path, name: &str) -> Result<(), ConfigError> {
             "米游社社区操作",
             &["社区签到", "阅读帖子", "点赞", "取消点赞", "分享"],
             &bbs,
-        )? else {
+        )?
+        else {
             return Ok(());
         };
         bbs = value;
@@ -948,7 +940,12 @@ fn tasks_for(path: &Path, name: &str) -> Result<(), ConfigError> {
             .enumerate()
             .filter_map(|(index, forum)| forums.contains(&forum.id).then_some(index as u8 + 1))
             .collect::<Vec<_>>();
-        let Some(selected_forums) = toggle_menu("社区签到板块（首项也用于获取帖子）", &labels, &current_forums)? else {
+        let Some(selected_forums) = toggle_menu(
+            "社区签到板块（首项也用于获取帖子）",
+            &labels,
+            &current_forums,
+        )?
+        else {
             return Ok(());
         };
         forums = selected_forums
@@ -989,9 +986,17 @@ fn games_for(path: &Path, name: &str) -> Result<(), ConfigError> {
         .collect::<Vec<_>>();
     let Some(selected) = toggle_menu(
         "国内签到游戏",
-        &["原神", "崩坏学园2", "崩坏3", "未定事件簿", "星穹铁道", "绝区零"],
+        &[
+            "原神",
+            "崩坏学园2",
+            "崩坏3",
+            "未定事件簿",
+            "星穹铁道",
+            "绝区零",
+        ],
         &current,
-    )? else {
+    )?
+    else {
         return Ok(());
     };
     set_account_games(path, name, &selected)
@@ -1139,9 +1144,7 @@ fn prompt_secret(
     } else {
         "未设置"
     };
-    let value = super::input::prompt_secret(&format!(
-        "{label}[{shown}] (留空保留，- 清空)"
-    ))?;
+    let value = super::input::prompt_secret(&format!("{label}[{shown}] (留空保留，- 清空)"))?;
     if value.is_empty() {
         Ok(current.map(|value| value.expose_secret().to_owned()))
     } else if value == "-" {
