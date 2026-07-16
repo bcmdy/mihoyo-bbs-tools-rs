@@ -32,14 +32,6 @@
             postInstall = ''
               install -Dm644 docs/使用说明.md \
                 "$out/share/doc/mihoyo-bbs-tools/使用说明.md"
-              install -Dm644 docs/快速开始.md \
-                "$out/share/doc/mihoyo-bbs-tools/快速开始.md"
-              install -Dm644 docs/Cookie与故障处理.md \
-                "$out/share/doc/mihoyo-bbs-tools/Cookie与故障处理.md"
-              install -Dm644 docs/configuration.md \
-                "$out/share/doc/mihoyo-bbs-tools/configuration.md"
-              install -Dm644 docs/security.md \
-                "$out/share/doc/mihoyo-bbs-tools/security.md"
               install -Dm644 config/config.example.yaml \
                 "$out/share/mihoyo-bbs-tools/config/config.example.yaml"
               install -Dm644 integrations/dacapo/template.yml \
