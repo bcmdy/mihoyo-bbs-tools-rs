@@ -16,6 +16,7 @@ use std::{
 pub struct InitResult {
     pub created: bool,
     pub run_now: bool,
+    pub test_notifications: bool,
 }
 
 pub async fn setup(path: &Path) -> Result<(), ConfigError> {
@@ -132,10 +133,13 @@ pub async fn init(path: &Path) -> Result<InitResult, ConfigError> {
     }
     super::install_new_config(&staged, path)?;
     println!("配置已创建并通过校验：{}", path.display());
+    let test_notifications = !config.notifications.providers.is_empty()
+        && super::input::confirm("现在发送一条测试通知？", true)?;
     let run_now = super::input::confirm("现在执行第一次运行？", false)?;
     Ok(InitResult {
         created: true,
         run_now,
+        test_notifications,
     })
 }
 

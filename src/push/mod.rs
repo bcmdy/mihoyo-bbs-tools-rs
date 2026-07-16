@@ -94,6 +94,38 @@ impl ProviderKind {
             Self::WindowsToast => "windows_toast",
         }
     }
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Telegram => "Telegram 机器人",
+            Self::Webhook => "通用 Webhook",
+            Self::Pushplus => "PushPlus",
+            Self::Ftqq => "Server 酱 Turbo",
+            Self::Pushme => "PushMe",
+            Self::Cqhttp => "CQHTTP QQ 机器人",
+            Self::Wecom => "企业微信应用",
+            Self::Wecomrobot => "企业微信群机器人",
+            Self::Pushdeer => "PushDeer",
+            Self::Dingrobot => "钉钉群机器人",
+            Self::Feishubot => "飞书群机器人",
+            Self::Bark => "Bark",
+            Self::Gotify => "Gotify",
+            Self::Ifttt => "IFTTT Webhooks",
+            Self::Qmsg => "Qmsg 酱",
+            Self::Discord => "Discord Webhook",
+            Self::Wxpusher => "WxPusher",
+            Self::Serverchan3 => "Server 酱 3",
+            Self::Smtp => "SMTP 邮件",
+            Self::WindowsToast => "Windows 本地通知",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderSummary {
+    pub index: usize,
+    pub kind: ProviderKind,
+    pub target: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -225,6 +257,98 @@ pub async fn send_report(config: &Config, report: &RunReport) -> PushReport {
     PushDispatcher::from_config(config)
         .dispatch(&notification)
         .await
+}
+
+pub fn provider_summaries(config: &Config) -> Vec<ProviderSummary> {
+    config
+        .notifications
+        .providers
+        .iter()
+        .enumerate()
+        .map(|(index, provider)| ProviderSummary {
+            index: index + 1,
+            kind: configured_kind(provider),
+            target: provider_target(provider),
+        })
+        .collect()
+}
+
+pub async fn test_providers(
+    config: &Config,
+    selected: Option<usize>,
+) -> Result<PushReport, String> {
+    if config.notifications.providers.is_empty() {
+        return Err("尚未配置通知渠道".to_owned());
+    }
+    if selected.is_some_and(|index| index == 0 || index > config.notifications.providers.len()) {
+        return Err(format!(
+            "通知渠道编号超出范围，应为 1 到 {}",
+            config.notifications.providers.len()
+        ));
+    }
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let timestamp = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
+    let mut report = PushReport::default();
+    for (index, configured) in config.notifications.providers.iter().enumerate() {
+        let number = index + 1;
+        if selected.is_some_and(|selected| selected != number) {
+            continue;
+        }
+        let provider = configured_provider(config, configured);
+        let kind = provider.kind();
+        let notification = Notification {
+            title: "「米游社工具」测试通知".to_owned(),
+            body: format!(
+                "这是一条测试通知。\n程序版本：{}\n通知渠道：{}（{}）\n发送时间：{}",
+                crate::VERSION,
+                kind.display_name(),
+                kind.as_str(),
+                timestamp
+            ),
+        };
+        report.deliveries.push(match provider.send(&notification).await {
+            Ok(()) => DeliveryResult {
+                provider: kind,
+                status: DeliveryStatus::Sent,
+                message: "测试通知发送成功".to_owned(),
+            },
+            Err(error) => DeliveryResult {
+                provider: kind,
+                status: DeliveryStatus::Failed,
+                message: error.to_string(),
+            },
+        });
+    }
+    Ok(report)
+}
+
+fn provider_target(provider: &NotificationProvider) -> String {
+    match provider {
+        NotificationProvider::Telegram { chat_id, .. } => mask_tail(chat_id),
+        NotificationProvider::Smtp { to, .. } => mask_email(to),
+        NotificationProvider::WindowsToast { .. } => "当前 Windows 桌面".to_owned(),
+        _ => "已配置（敏感地址不显示）".to_owned(),
+    }
+}
+
+fn mask_tail(value: &str) -> String {
+    let tail = value.chars().rev().take(4).collect::<Vec<_>>();
+    format!("***{}", tail.into_iter().rev().collect::<String>())
+}
+
+fn mask_email(value: &str) -> String {
+    let Some((name, domain)) = value.split_once('@') else {
+        return "***".to_owned();
+    };
+    format!("{}***@{domain}", name.chars().next().unwrap_or('*'))
 }
 
 fn configured_http(

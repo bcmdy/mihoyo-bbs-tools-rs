@@ -3,8 +3,8 @@ use std::{io::Read, process::ExitCode};
 use clap::Parser;
 use mihoyo_bbs_tools::{
     cli::{
-        CheckinRegion, Cli, Command, ConfigCommand, DirectoryRunArgs, QinglongArgs, ReportFormat,
-        RunTask,
+        CheckinRegion, Cli, Command, ConfigCommand, DirectoryRunArgs, NotificationCommand,
+        QinglongArgs, ReportFormat, RunTask,
     },
     config,
     error::AppError,
@@ -156,6 +156,26 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
         Command::Config { command } => match command {
             ConfigCommand::Init { config: path } => {
                 let result = config::interactive_init(&path).await?;
+                let mut notification_failed = false;
+                if result.created && result.test_notifications {
+                    let loaded = config::load(&path)?;
+                    let report = push::test_providers(&loaded.config, None)
+                        .await
+                        .map_err(AppError::Task)?;
+                    for delivery in &report.deliveries {
+                        println!(
+                            "[{}] {}：{}",
+                            if delivery.status == DeliveryStatus::Sent {
+                                "成功"
+                            } else {
+                                "失败"
+                            },
+                            delivery.provider.display_name(),
+                            delivery.message
+                        );
+                    }
+                    notification_failed = !report.all_succeeded();
+                }
                 if result.created && result.run_now {
                     return execute_run_command(
                         &path,
@@ -166,6 +186,9 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                         false,
                     )
                     .await;
+                }
+                if notification_failed {
+                    return Ok(1);
                 }
             }
             ConfigCommand::Setup { config: path } => config::interactive_setup(&path).await?,
@@ -180,6 +203,53 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             ConfigCommand::RemoveAccount { config: path, name } => {
                 config::remove_account(&path, &name)?;
                 println!("已删除账号：{name}");
+            }
+        },
+        Command::Notification { command } => match command {
+            NotificationCommand::List { config: path } => {
+                let loaded = config::load(&path)?;
+                let summaries = push::provider_summaries(&loaded.config);
+                println!(
+                    "通知总开关：{}；已配置 {} 个渠道",
+                    if loaded.config.notifications.enabled {
+                        "已启用"
+                    } else {
+                        "已关闭"
+                    },
+                    summaries.len()
+                );
+                for provider in summaries {
+                    println!(
+                        "{}. {}（{}） / {}",
+                        provider.index,
+                        provider.kind.display_name(),
+                        provider.kind.as_str(),
+                        provider.target
+                    );
+                }
+            }
+            NotificationCommand::Test {
+                config: path,
+                provider,
+            } => {
+                let loaded = config::load(&path)?;
+                let report = push::test_providers(&loaded.config, provider)
+                    .await
+                    .map_err(AppError::Task)?;
+                for delivery in &report.deliveries {
+                    println!(
+                        "[{}] {}（{}）：{}",
+                        if delivery.status == DeliveryStatus::Sent {
+                            "成功"
+                        } else {
+                            "失败"
+                        },
+                        delivery.provider.display_name(),
+                        delivery.provider.as_str(),
+                        delivery.message
+                    );
+                }
+                return Ok(u8::from(!report.all_succeeded()));
             }
         },
     }
@@ -259,6 +329,11 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
             | ConfigCommand::Edit { config }
             | ConfigCommand::AddAccount { config, .. }
             | ConfigCommand::RemoveAccount { config, .. } => Some(config),
+        },
+        Command::Notification { command } => match command {
+            NotificationCommand::List { config } | NotificationCommand::Test { config, .. } => {
+                Some(config)
+            }
         },
         _ => None,
     }

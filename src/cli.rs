@@ -108,6 +108,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// 查看通知渠道或发送不含账号信息的测试通知
+    Notification {
+        #[command(subcommand)]
+        command: NotificationCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -147,6 +152,25 @@ pub enum ConfigCommand {
         /// 要删除的账号名称，格式通常为 mys用户:<米游社昵称>
         #[arg(value_name = "ACCOUNT_NAME")]
         name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NotificationCommand {
+    /// 列出全部通知渠道及脱敏接收目标
+    List {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+    },
+    /// 向全部或指定渠道发送测试通知
+    Test {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+        /// 仅测试指定的 1-based 渠道编号
+        #[arg(long, value_name = "NUMBER")]
+        provider: Option<usize>,
     },
 }
 
