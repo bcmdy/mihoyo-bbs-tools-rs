@@ -5,6 +5,7 @@ pub mod checkin;
 pub mod cli;
 pub mod cloud_game;
 pub mod config;
+pub mod doctor;
 pub mod error;
 pub mod http;
 pub mod launcher;

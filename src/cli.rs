@@ -24,6 +24,18 @@ pub enum Command {
         #[arg(short, long, default_value = "config/config.yaml")]
         config: PathBuf,
     },
+    /// 检查配置、目录和平台；加 --online 后执行只读网络与凭据诊断
+    Doctor {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+        /// 发起只读网络请求；不会执行签到、社区操作、领取或通知发送
+        #[arg(long)]
+        online: bool,
+        /// 诊断报告输出格式
+        #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
+        output: ReportFormat,
+    },
     /// 执行国内游戏和/或 HoYoLAB 游戏签到
     Checkin {
         /// 配置文件路径

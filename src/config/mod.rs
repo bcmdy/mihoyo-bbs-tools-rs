@@ -720,6 +720,66 @@ pub enum NotificationProvider {
     },
 }
 
+impl NotificationProvider {
+    pub(crate) const fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Telegram { .. } => "telegram",
+            Self::Webhook { .. } => "webhook",
+            Self::Pushplus { .. } => "pushplus",
+            Self::Ftqq { .. } => "ftqq",
+            Self::Pushme { .. } => "pushme",
+            Self::Cqhttp { .. } => "cqhttp",
+            Self::Wecom { .. } => "wecom",
+            Self::Wecomrobot { .. } => "wecomrobot",
+            Self::Pushdeer { .. } => "pushdeer",
+            Self::Dingrobot { .. } => "dingrobot",
+            Self::Feishubot { .. } => "feishubot",
+            Self::Bark { .. } => "bark",
+            Self::Gotify { .. } => "gotify",
+            Self::Ifttt { .. } => "ifttt",
+            Self::Qmsg { .. } => "qmsg",
+            Self::Discord { .. } => "discord",
+            Self::Wxpusher { .. } => "wxpusher",
+            Self::Serverchan3 { .. } => "serverchan3",
+            Self::Smtp { .. } => "smtp",
+            Self::WindowsToast { .. } => "windows_toast",
+        }
+    }
+
+    pub(crate) fn diagnostic_url(&self) -> Option<Url> {
+        let url = match self {
+            Self::Telegram { api_url, .. } => Some(api_url.clone()),
+            Self::Webhook { url }
+            | Self::Cqhttp { url, .. }
+            | Self::Wecomrobot { url, .. } => Url::parse(url.expose_secret()).ok(),
+            Self::Ftqq { api_url, .. }
+            | Self::Pushme { api_url, .. }
+            | Self::Wecom { api_url, .. }
+            | Self::Pushdeer { api_url, .. }
+            | Self::Bark { api_url, .. }
+            | Self::Ifttt { api_url, .. }
+            | Self::Qmsg { api_url, .. }
+            | Self::Wxpusher { api_url, .. } => api_url.clone(),
+            Self::Dingrobot { webhook, .. }
+            | Self::Feishubot { webhook }
+            | Self::Discord { webhook } => Url::parse(webhook.expose_secret()).ok(),
+            Self::Gotify { api_url, .. } => Some(api_url.clone()),
+            Self::Pushplus { .. }
+            | Self::Serverchan3 { .. }
+            | Self::Smtp { .. }
+            | Self::WindowsToast { .. } => None,
+        }?;
+        Some(url_origin(url))
+    }
+}
+
+fn url_origin(mut url: Url) -> Url {
+    url.set_path("/");
+    url.set_query(None);
+    url.set_fragment(None);
+    url
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SmtpTlsMode {

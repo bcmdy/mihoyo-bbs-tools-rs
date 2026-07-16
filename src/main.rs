@@ -44,6 +44,24 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             }
             println!("配置有效：{} 个账号", loaded.config.accounts.len());
         }
+        Command::Doctor {
+            config: path,
+            online,
+            output,
+        } => {
+            let report = mihoyo_bbs_tools::doctor::run(&path, online).await;
+            let exit_code = report.exit_code();
+            match output {
+                ReportFormat::Text => print!("{}", report.render_text()),
+                ReportFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string(&report).map_err(|error| {
+                        AppError::Task(format!("JSON 诊断报告序列化失败：{error}"))
+                    })?
+                ),
+            }
+            return Ok(exit_code);
+        }
         Command::Checkin {
             config: path,
             region,
@@ -231,6 +249,7 @@ async fn finish_report(
 fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
     match &cli.command {
         Command::ValidateConfig { config }
+        | Command::Doctor { config, .. }
         | Command::Checkin { config, .. }
         | Command::Run { config, .. }
         | Command::Schedule { config, .. } => Some(config),
