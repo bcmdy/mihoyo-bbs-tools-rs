@@ -17,6 +17,7 @@
 - 验证码平台、HTTP/HTTPS/SOCKS 代理和 Telegram 独立代理。
 - Telegram、微信相关渠道、SMTP、Webhook、Windows 本地通知等多种推送方式。
 - 按日滚动文件日志、结构化 JSON 报告、目录批量运行和常驻调度。
+- 首次配置向导、离线/在线诊断、通知独立测试、受控备份恢复和 Windows 自动运行管理。
 - Windows x86_64、Linux x86_64/ARM64/ARMv7 发布包及多架构容器镜像。
 
 ## 下载
@@ -34,7 +35,7 @@
 
 发布包同时包含：
 
-- `快速开始.md`、`使用说明.md`、`configuration.md` 和 `security.md`；
+- `快速开始.md`、`使用说明.md`、`Cookie与故障处理.md`、`configuration.md` 和 `security.md`；
 - `config/config.example.yaml` 完整配置模板；
 - 可选的 `dacapo/template.yml` 第三方适配模板。
 
@@ -43,7 +44,7 @@
 Windows：
 
 ```powershell
-.\MihoyoBBSToolsRS.exe config add-account
+.\MihoyoBBSToolsRS.exe config init
 .\MihoyoBBSToolsRS.exe run
 ```
 
@@ -51,11 +52,11 @@ Linux：
 
 ```bash
 chmod +x MihoyoBBSToolsRS
-./MihoyoBBSToolsRS config add-account
+./MihoyoBBSToolsRS config init
 ./MihoyoBBSToolsRS run
 ```
 
-执行 `config add-account` 后按提示粘贴完整 Cookie。程序会提取 SToken、获取米游社昵称，并在配置不存在时自动创建 `config/config.yaml`。添加其他账号时再次执行同一命令；需要备注时使用 `--name "小号"`。
+`config init` 会隐藏输入 Cookie，取得米游社昵称，选择账号、游戏、社区操作和可选通知，最后确认后一次创建 `config/config.yaml`。中途取消或失败不会留下半成品配置。已有配置添加账号时继续使用 `config add-account`；需要备注时使用 `--name "小号"`。
 
 Cookie、SToken 和通知 Token 都属于账号凭据。只在程序提示后粘贴 Cookie，不要把它写进命令参数、截图、日志、Git 提交或公开聊天。
 
@@ -74,11 +75,16 @@ Cookie、SToken 和通知 Token 都属于账号凭据。只在程序提示后粘
 
 | 命令 | 用途 |
 |---|---|
+| `config init` | 首次创建配置并完成账号、任务和可选通知向导 |
 | `config add-account` | 安全输入 Cookie，添加账号或自动创建配置 |
-| `config setup` | 用数字菜单修改运行、账号、任务、通知等配置 |
+| `config setup` | 显示当前状态，暂存修改并在退出时统一确认 |
 | `run` | 执行配置中已启用的全部任务 |
+| `run --verbose` | 展开全部成功、已完成和跳过记录 |
 | `checkin --region china` | 只执行国内游戏签到 |
 | `validate-config` | 校验 YAML，不访问远程接口 |
+| `doctor` / `doctor --online` | 离线检查，或执行无任务副作用的只读在线诊断 |
+| `notification list` / `notification test` | 查看和独立测试通知渠道 |
+| `automation install` / `automation status` | 在 Windows 安装或检查每日自动运行 |
 | `create-launcher` | Windows 下生成可移动的异步启动 BAT |
 | `version`、`-V`、`--version` | 查看程序版本 |
 | `<命令> --help` | 查看某个子命令的完整参数 |
@@ -92,6 +98,8 @@ Cookie、SToken 和通知 Token 都属于账号凭据。只在程序提示后粘
 | `run-directory` | 依次运行目录中的多个 YAML |
 | `migrate-config` | 将 Python v11–v15 配置迁移为新版 YAML |
 | `print-example-config` | 输出当前版本的完整脱敏模板 |
+| `config backup` / `config list-backups` / `config restore` | 创建、查看或恢复受控配置备份 |
+| `update check` | 检查最新稳定版本，不自动下载或替换程序 |
 | `qinglong` / `ql` | 使用原 Python 项目的青龙环境变量入口 |
 | `dacapo` | 读取 DaCapo 生成的 JSON，以只读内存配置运行 |
 
@@ -106,7 +114,7 @@ Cookie、SToken 和通知 Token 都属于账号凭据。只在程序提示后粘
 .\MihoyoBBSToolsRS.exe validate-config
 ```
 
-数字菜单可以配置全部常用节点，包括多账号、国内与 HoYoLAB 游戏、社区板块、云游戏、角色黑名单、设备 ID/FP、代理、验证码、日志、调度及全部通知渠道。熟悉 YAML 的用户可参考 [配置字段说明](docs/configuration.md) 或运行 `config edit`。
+数字菜单可以配置全部常用节点，包括多账号、国内与 HoYoLAB 游戏、社区板块、云游戏、角色黑名单、设备 ID/FP、代理、验证码、日志、调度及全部通知渠道。所有菜单修改先暂存；退出时显示不含 Secret 的摘要，经确认后才原子替换真实配置并创建备份。熟悉 YAML 的用户可参考 [配置字段说明](docs/configuration.md) 或运行 `config edit`。
 
 相关文档：
 
@@ -118,7 +126,7 @@ Cookie、SToken 和通知 Token 都属于账号凭据。只在程序提示后粘
 
 ## 自动运行与可选部署
 
-普通 Windows 用户可以运行 `create-launcher` 生成异步启动 BAT，或使用任务计划程序定时执行 `run`。Linux 可使用 cron；需要程序常驻时可启用 `runtime.schedule` 后运行 `schedule`。
+普通 Windows 用户可直接运行 `automation install --time 09:00` 安装每日任务，再用 `automation status` 检查；无需手工打开任务计划程序。`create-launcher` 仍可生成异步启动 BAT。Linux 可使用 cron；需要程序常驻时可启用 `runtime.schedule` 后运行 `schedule`。
 
 仓库还提供以下可选方式，普通桌面用户无需配置：
 
