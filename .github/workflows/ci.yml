@@ -219,6 +219,7 @@ jobs:
           cp target/release/MihoyoBBSToolsRS "$package_dir/"
           cp docs/使用说明.md "$package_dir/使用说明.md"
           cp docs/快速开始.md "$package_dir/快速开始.md"
+          cp docs/Cookie与故障处理.md "$package_dir/Cookie与故障处理.md"
           cp docs/configuration.md "$package_dir/configuration.md"
           cp docs/security.md "$package_dir/security.md"
           cp config/config.example.yaml "$package_dir/config/"
@@ -248,6 +249,7 @@ jobs:
           Copy-Item -LiteralPath target/release/MihoyoBBSToolsRS.exe -Destination $packageDir
           Copy-Item -LiteralPath docs/使用说明.md -Destination (Join-Path $packageDir 使用说明.md)
           Copy-Item -LiteralPath docs/快速开始.md -Destination (Join-Path $packageDir 快速开始.md)
+          Copy-Item -LiteralPath docs/Cookie与故障处理.md -Destination (Join-Path $packageDir Cookie与故障处理.md)
           Copy-Item -LiteralPath docs/configuration.md -Destination (Join-Path $packageDir configuration.md)
           Copy-Item -LiteralPath docs/security.md -Destination (Join-Path $packageDir security.md)
           Copy-Item -LiteralPath config/config.example.yaml -Destination (Join-Path $packageDir config)
