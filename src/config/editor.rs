@@ -111,7 +111,7 @@ impl EditSession {
             path: self.working.clone(),
             source,
         })?;
-        replace_validated(&self.target, &updated)?;
+        replace_validated_with_backup(&self.target, &updated)?;
         self.committed = true;
         let _ = fs::remove_file(&self.working);
         Ok(())
@@ -167,7 +167,7 @@ pub fn edit_file(path: &Path) -> Result<(), ConfigError> {
         source,
     })?;
     let _ = fs::remove_file(temporary);
-    replace_validated(path, &updated)
+    replace_validated_user_edit(path, &updated)
 }
 
 pub async fn add_account_from_stdin(
@@ -262,7 +262,7 @@ pub async fn add_account(
     }
     let updated = validate_and_serialize(&root)?;
     if existed {
-        replace_validated(path, &updated)?;
+        replace_validated_user_edit(path, &updated)?;
     } else {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent).map_err(|source| write_error(path, source))?;
@@ -798,7 +798,7 @@ pub fn persist_refreshed_cookie(
     if current_cookie.contains("${") {
         return Ok(false);
     }
-    mutate_raw(path, |root| {
+    mutate_raw_without_backup(path, |root| {
         let account = find_account_mut(root, account_name)?;
         let credentials = account
             .entry(key("credentials"))
@@ -982,16 +982,49 @@ fn mutate_raw(
     let mut value = read_raw(path)?;
     mutate(&mut value)?;
     let updated = validate_and_serialize(&value)?;
+    replace_validated_user_edit(path, &updated)
+}
+
+fn mutate_raw_without_backup(
+    path: &Path,
+    mutate: impl FnOnce(&mut Value) -> Result<(), ConfigError>,
+) -> Result<(), ConfigError> {
+    let mut value = read_raw(path)?;
+    mutate(&mut value)?;
+    let updated = validate_and_serialize(&value)?;
     replace_validated(path, &updated)
 }
 
 fn replace_validated(path: &Path, updated: &str) -> Result<(), ConfigError> {
+    replace_validated_inner(path, updated, false)
+}
+
+fn replace_validated_with_backup(path: &Path, updated: &str) -> Result<(), ConfigError> {
+    replace_validated_inner(path, updated, true)
+}
+
+fn replace_validated_user_edit(path: &Path, updated: &str) -> Result<(), ConfigError> {
+    let backup = path.extension().and_then(|value| value.to_str()) != Some("session");
+    replace_validated_inner(path, updated, backup)
+}
+
+fn replace_validated_inner(
+    path: &Path,
+    updated: &str,
+    create_backup_before_replace: bool,
+) -> Result<(), ConfigError> {
     let temporary = temporary_path(path);
     secure_write_new(&temporary, updated)?;
     load(&temporary).map_err(|error| {
         let _ = fs::remove_file(&temporary);
         ConfigError::Edit(format!("修改后配置未通过校验，原配置未修改：{error}"))
     })?;
+    if create_backup_before_replace {
+        if let Err(error) = create_backup(path, 5) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+    }
     let backup = path.with_extension(format!("yaml.{}.backup", std::process::id()));
     fs::rename(path, &backup).map_err(|source| write_error(path, source))?;
     if let Err(source) = fs::rename(&temporary, path) {
@@ -1000,6 +1033,70 @@ fn replace_validated(path: &Path, updated: &str) -> Result<(), ConfigError> {
         return Err(write_error(path, source));
     }
     let _ = fs::remove_file(backup);
+    Ok(())
+}
+
+pub fn create_backup(path: &Path, keep: usize) -> Result<PathBuf, ConfigError> {
+    if keep == 0 || keep > 50 {
+        return Err(ConfigError::Edit(
+            "配置备份保留数量必须在 1 到 50 之间".to_owned(),
+        ));
+    }
+    load(path)?;
+    let source = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let directory = parent.join("backups");
+    fs::create_dir_all(&directory).map_err(|source| write_error(&directory, source))?;
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("config");
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let timestamp = format!(
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
+    let mut backup = directory.join(format!("{stem}-{timestamp}.yaml"));
+    let mut suffix = 1;
+    while backup.exists() {
+        backup = directory.join(format!("{stem}-{timestamp}-{suffix}.yaml"));
+        suffix += 1;
+    }
+    secure_write_new(&backup, &source)?;
+    prune_backups(&directory, stem, keep)?;
+    Ok(backup)
+}
+
+fn prune_backups(directory: &Path, stem: &str, keep: usize) -> Result<(), ConfigError> {
+    let prefix = format!("{stem}-");
+    let mut backups = fs::read_dir(directory)
+        .map_err(|source| ConfigError::Read {
+            path: directory.to_path_buf(),
+            source,
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().and_then(|value| value.to_str()) == Some("yaml")
+                && path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .collect::<Vec<_>>();
+    backups.sort();
+    let remove_count = backups.len().saturating_sub(keep);
+    for backup in backups.into_iter().take(remove_count) {
+        fs::remove_file(&backup).map_err(|source| write_error(&backup, source))?;
+    }
     Ok(())
 }
 
