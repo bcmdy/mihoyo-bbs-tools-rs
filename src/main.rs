@@ -3,8 +3,8 @@ use std::{io::Read, process::ExitCode};
 use clap::Parser;
 use mihoyo_bbs_tools::{
     cli::{
-        CheckinRegion, Cli, Command, ConfigCommand, DirectoryRunArgs, NotificationCommand,
-        QinglongArgs, ReportFormat, RunTask,
+        AutomationCommand, CheckinRegion, Cli, Command, ConfigCommand, DirectoryRunArgs,
+        NotificationCommand, QinglongArgs, ReportFormat, RunTask,
     },
     config,
     error::AppError,
@@ -176,6 +176,21 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                     }
                     notification_failed = !report.all_succeeded();
                 }
+                if let Some(time) = result.automation_time {
+                    let path = std::fs::canonicalize(&path).map_err(|error| {
+                        AppError::Task(format!("无法解析配置绝对路径：{error}"))
+                    })?;
+                    mihoyo_bbs_tools::automation::install(
+                        &mihoyo_bbs_tools::automation::InstallOptions {
+                            config: path,
+                            time,
+                            only_when_logged_on: true,
+                            retry_count: 3,
+                        },
+                    )
+                    .map_err(|error| AppError::Task(error.to_string()))?;
+                    println!("Windows 每日自动运行任务已安装");
+                }
                 if result.created && result.run_now {
                     return execute_run_command(
                         &path,
@@ -250,6 +265,124 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                     );
                 }
                 return Ok(u8::from(!report.all_succeeded()));
+            }
+        },
+        Command::Automation { command } => match command {
+            AutomationCommand::Install {
+                config: path,
+                time,
+                run_whether_logged_on,
+                retry_count,
+                enable_windows_notification,
+            } => {
+                if !cfg!(windows) {
+                    return Err(AppError::Task(
+                        "自动运行管理首期仅支持 Windows 任务计划程序".to_owned(),
+                    ));
+                }
+                let path = std::fs::canonicalize(&path).map_err(|_| {
+                    AppError::Task(format!("配置文件不存在：{}", path.display()))
+                })?;
+                if enable_windows_notification {
+                    let loaded = config::load(&path)?;
+                    let has_toast = push::provider_summaries(&loaded.config)
+                        .iter()
+                        .any(|provider| provider.kind == push::ProviderKind::WindowsToast);
+                    if !has_toast {
+                        config::set_notification_provider(
+                            &path,
+                            None,
+                            "windows_toast",
+                            &[(
+                                "title_prefix".to_owned(),
+                                Some("MihoyoBBSTools RS".to_owned()),
+                            )],
+                        )?;
+                    }
+                    let loaded = config::load(&path)?;
+                    config::set_notification_options(
+                        &path,
+                        true,
+                        loaded.config.notifications.error_only,
+                        loaded.config.notifications.block_keywords,
+                    )?;
+                }
+                let executable = std::env::current_exe()
+                    .map_err(|error| AppError::Task(format!("无法定位当前程序：{error}")))?;
+                let working_directory = executable.parent().unwrap_or_else(|| std::path::Path::new("."));
+                let loaded = config::load(&path)?;
+                println!("将安装或更新 Windows 自动运行任务：");
+                println!("- 任务名称：{}", mihoyo_bbs_tools::automation::task_name());
+                println!("- 程序：{}", executable.display());
+                println!("- 工作目录：{}", working_directory.display());
+                println!("- 参数：run --config \"{}\"", path.display());
+                println!("- 每日本地时间：{time}（配置时区：{}）", loaded.config.runtime.timezone);
+                println!(
+                    "- 登录条件：{}",
+                    if run_whether_logged_on {
+                        "用户未登录时也运行（S4U）"
+                    } else {
+                        "仅在用户登录时运行"
+                    }
+                );
+                println!("- 失败后重试：{retry_count} 次，每次间隔 5 分钟");
+                mihoyo_bbs_tools::automation::install(
+                    &mihoyo_bbs_tools::automation::InstallOptions {
+                        config: path,
+                        time,
+                        only_when_logged_on: !run_whether_logged_on,
+                        retry_count,
+                    },
+                )
+                .map_err(|error| AppError::Task(error.to_string()))?;
+                println!("自动运行任务已安装");
+            }
+            AutomationCommand::Status { config: path } => {
+                let status = mihoyo_bbs_tools::automation::status(&path)
+                    .map_err(|error| AppError::Task(error.to_string()))?;
+                if !status.installed {
+                    println!("自动运行任务尚未安装");
+                    return Ok(1);
+                }
+                println!("任务名称：{}", mihoyo_bbs_tools::automation::task_name());
+                println!("状态：{}", status.state.as_deref().unwrap_or("未知"));
+                println!("已启用：{}", if status.enabled { "是" } else { "否" });
+                println!("下次运行：{}", status.next_run_time.as_deref().unwrap_or("未知"));
+                println!("上次运行：{}", status.last_run_time.as_deref().unwrap_or("从未运行"));
+                println!(
+                    "上次退出码：{}",
+                    status
+                        .last_result
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "未知".to_owned())
+                );
+                println!(
+                    "程序路径：{}（{}）",
+                    status
+                        .executable
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "未知".to_owned()),
+                    if status.executable_exists { "有效" } else { "失效" }
+                );
+                println!(
+                    "配置路径：{}（{}）",
+                    path.display(),
+                    if status.config_exists { "有效" } else { "失效" }
+                );
+                return Ok(u8::from(
+                    !status.enabled || !status.executable_exists || !status.config_exists,
+                ));
+            }
+            AutomationCommand::RunNow => {
+                mihoyo_bbs_tools::automation::run_now()
+                    .map_err(|error| AppError::Task(error.to_string()))?;
+                println!("已触发自动运行任务；可使用 `automation status` 查看结果");
+            }
+            AutomationCommand::Uninstall => {
+                mihoyo_bbs_tools::automation::uninstall()
+                    .map_err(|error| AppError::Task(error.to_string()))?;
+                println!("自动运行任务已移除；配置和日志未删除");
             }
         },
     }
@@ -334,6 +467,12 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
             NotificationCommand::List { config } | NotificationCommand::Test { config, .. } => {
                 Some(config)
             }
+        },
+        Command::Automation { command } => match command {
+            AutomationCommand::Install { config, .. } | AutomationCommand::Status { config } => {
+                Some(config)
+            }
+            AutomationCommand::RunNow | AutomationCommand::Uninstall => None,
         },
         _ => None,
     }

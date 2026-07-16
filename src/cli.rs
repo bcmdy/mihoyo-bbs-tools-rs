@@ -113,6 +113,11 @@ pub enum Command {
         #[command(subcommand)]
         command: NotificationCommand,
     },
+    /// 安装、查看、立即运行或移除系统自动运行任务
+    Automation {
+        #[command(subcommand)]
+        command: AutomationCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -172,6 +177,38 @@ pub enum NotificationCommand {
         #[arg(long, value_name = "NUMBER")]
         provider: Option<usize>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AutomationCommand {
+    /// 在 Windows 任务计划程序中安装或更新每日任务
+    Install {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+        /// 每日本地时间，使用 HH:MM 24 小时格式
+        #[arg(long, default_value = "09:00")]
+        time: String,
+        /// 使用 S4U 在用户未登录时运行；本地桌面通知届时不可见
+        #[arg(long)]
+        run_whether_logged_on: bool,
+        /// 整个任务失败后的五分钟重试次数
+        #[arg(long, default_value_t = 3)]
+        retry_count: u8,
+        /// 在配置中启用 Windows 本地通知渠道
+        #[arg(long)]
+        enable_windows_notification: bool,
+    },
+    /// 查看任务状态、运行记录和路径有效性
+    Status {
+        /// 任务使用的配置文件路径
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+    },
+    /// 立即触发已安装的任务
+    RunNow,
+    /// 仅移除本项目固定名称的任务，保留配置和日志
+    Uninstall,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

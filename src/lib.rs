@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod automation;
 pub mod bbs;
 pub mod captcha;
 pub mod checkin;
