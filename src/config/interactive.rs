@@ -709,62 +709,81 @@ fn provider_types() -> &'static [&'static str] {
 
 fn provider_fields(kind: &str) -> &'static [ProviderField] {
     const TELEGRAM: &[ProviderField] = &[
-        field("bot_token", true, None),
+        secret_field("bot_token", true, None),
         field("chat_id", true, None),
-        field("api_url", true, Some("https://api.telegram.org")),
-        field("proxy", false, None),
+        secret_field("api_url", true, Some("https://api.telegram.org")),
+        secret_field("proxy", false, None),
     ];
-    const WEBHOOK: &[ProviderField] = &[field("url", true, None)];
-    const PUSHPLUS: &[ProviderField] = &[field("token", true, None), field("topic", false, None)];
-    const FTQQ: &[ProviderField] = &[field("sendkey", true, None), field("api_url", false, None)];
-    const TOKEN_URL: &[ProviderField] =
-        &[field("token", true, None), field("api_url", false, None)];
+    const WEBHOOK: &[ProviderField] = &[secret_field("url", true, None)];
+    const PUSHPLUS: &[ProviderField] = &[
+        secret_field("token", true, None),
+        field("topic", false, None),
+    ];
+    const FTQQ: &[ProviderField] = &[
+        secret_field("sendkey", true, None),
+        secret_field("api_url", false, None),
+    ];
+    const TOKEN_URL: &[ProviderField] = &[
+        secret_field("token", true, None),
+        secret_field("api_url", false, None),
+    ];
     const CQHTTP: &[ProviderField] = &[
-        field("url", true, None),
+        secret_field("url", true, None),
         field("qq", false, None),
         field("group", false, None),
     ];
     const WECOM: &[ProviderField] = &[
         field("corp_id", true, None),
         field("agent_id", true, None),
-        field("secret", true, None),
+        secret_field("secret", true, None),
         field("to_user", true, Some("@all")),
-        field("api_url", false, None),
+        secret_field("api_url", false, None),
     ];
-    const WECOM_ROBOT: &[ProviderField] = &[field("url", true, None), field("mobile", false, None)];
-    const DING: &[ProviderField] = &[field("webhook", true, None), field("secret", false, None)];
-    const WEBHOOK_ONLY: &[ProviderField] = &[field("webhook", true, None)];
+    const WECOM_ROBOT: &[ProviderField] = &[
+        secret_field("url", true, None),
+        field("mobile", false, None),
+    ];
+    const DING: &[ProviderField] = &[
+        secret_field("webhook", true, None),
+        secret_field("secret", false, None),
+    ];
+    const WEBHOOK_ONLY: &[ProviderField] = &[secret_field("webhook", true, None)];
     const BARK: &[ProviderField] = &[
-        field("token", true, None),
-        field("api_url", false, None),
+        secret_field("token", true, None),
+        secret_field("api_url", false, None),
         field("icon", false, None),
     ];
     const GOTIFY: &[ProviderField] = &[
-        field("token", true, None),
-        field("api_url", true, None),
+        secret_field("token", true, None),
+        secret_field("api_url", true, None),
         field("priority", true, Some("0")),
     ];
     const IFTTT: &[ProviderField] = &[
         field("event", true, None),
-        field("key", true, None),
-        field("api_url", false, None),
+        secret_field("key", true, None),
+        secret_field("api_url", false, None),
     ];
-    const QMSG: &[ProviderField] = &[field("key", true, None), field("api_url", false, None)];
+    const QMSG: &[ProviderField] = &[
+        secret_field("key", true, None),
+        secret_field("api_url", false, None),
+    ];
     const WXPUSHER: &[ProviderField] = &[
-        field("app_token", true, None),
+        secret_field("app_token", true, None),
         field("uids", false, None),
         field("topic_ids", false, None),
-        field("api_url", false, None),
+        secret_field("api_url", false, None),
     ];
-    const SERVERCHAN3: &[ProviderField] =
-        &[field("sendkey", true, None), field("tags", false, None)];
+    const SERVERCHAN3: &[ProviderField] = &[
+        secret_field("sendkey", true, None),
+        field("tags", false, None),
+    ];
     const SMTP: &[ProviderField] = &[
         field("host", true, None),
         field("port", true, Some("465")),
         field("from", true, None),
         field("to", true, None),
         field("username", true, None),
-        field("password", true, None),
+        secret_field("password", true, None),
         field("subject", true, Some("MihoyoBBSTools RS")),
         field("tls", true, Some("implicit")),
         field("timeout_seconds", false, None),
@@ -799,20 +818,20 @@ const fn field(name: &'static str, required: bool, default: Option<&'static str>
         name,
         required,
         default,
-        secret: matches!(
-            name,
-            "token"
-                | "bot_token"
-                | "app_token"
-                | "sendkey"
-                | "secret"
-                | "key"
-                | "password"
-                | "webhook"
-                | "url"
-                | "api_url"
-                | "proxy"
-        ),
+        secret: false,
+    }
+}
+
+const fn secret_field(
+    name: &'static str,
+    required: bool,
+    default: Option<&'static str>,
+) -> ProviderField {
+    ProviderField {
+        name,
+        required,
+        default,
+        secret: true,
     }
 }
 
