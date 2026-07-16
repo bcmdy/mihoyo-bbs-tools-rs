@@ -162,6 +162,9 @@ pub enum ConfigCommand {
         /// 要删除的账号名称，格式通常为 mys用户:<米游社昵称>
         #[arg(value_name = "ACCOUNT_NAME")]
         name: String,
+        /// 跳过交互确认；自动化环境必须显式提供
+        #[arg(long)]
+        yes: bool,
     },
     /// 立即创建一份受控配置备份
     Backup {

@@ -215,9 +215,35 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                 let added = config::add_account_from_stdin(&path, name.as_deref()).await?;
                 println!("已添加账号：{added}");
             }
-            ConfigCommand::RemoveAccount { config: path, name } => {
-                config::remove_account(&path, &name)?;
-                println!("已删除账号：{name}");
+            ConfigCommand::RemoveAccount {
+                config: path,
+                name,
+                yes,
+            } => {
+                let loaded = config::load(&path)?;
+                let account = loaded
+                    .config
+                    .accounts
+                    .iter()
+                    .find(|account| account.name == name)
+                    .ok_or_else(|| AppError::Task(format!("未找到账号 {name:?}")))?;
+                println!("即将删除账号：{}", account.name);
+                println!("备注：{}", account.remark.as_deref().unwrap_or("未设置"));
+                let confirmed = if yes {
+                    true
+                } else if std::io::stdin().is_terminal() {
+                    config::confirm_interactive("确认删除该账号？", false)?
+                } else {
+                    return Err(AppError::Task(
+                        "非交互环境删除账号必须显式提供 --yes".to_owned(),
+                    ));
+                };
+                if confirmed {
+                    config::remove_account(&path, &name)?;
+                    println!("已删除账号：{name}");
+                } else {
+                    println!("已取消删除账号");
+                }
             }
             ConfigCommand::Backup { config: path, keep } => {
                 let backup = config::create_backup(&path, keep)?;
