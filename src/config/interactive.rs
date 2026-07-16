@@ -1,5 +1,5 @@
 use super::{
-    ConfigError, HoyolabConfig, LogLevel, NotificationProvider, RoleBlacklistConfig,
+    ConfigError, EditSession, HoyolabConfig, LogLevel, NotificationProvider, RoleBlacklistConfig,
     add_account_from_stdin, edit_file, load, remove_account, remove_notification_provider,
     replace_account_cookie, set_account_china_checkin, set_account_cloud_games, set_account_device,
     set_account_games, set_account_general, set_account_hoyolab, set_account_proxy,
@@ -15,19 +15,41 @@ pub async fn setup(path: &Path) -> Result<(), ConfigError> {
     if !io::stdin().is_terminal() {
         return Err(ConfigError::Edit("config setup 需要交互式终端".into()));
     }
+    let session = EditSession::begin(path)?;
+    let working = session.path().to_path_buf();
     loop {
-        println!("配置节点：1.全局运行 2.验证码 3.账号 4.通知 5.校验 6.高级 YAML 编辑 0.退出");
+        println!(
+            "配置节点：1.全局运行 2.验证码 3.账号 4.通知 5.校验暂存配置 6.高级 YAML 编辑 0.保存并退出"
+        );
         match read_number(6)? {
-            None | Some(0) => return Ok(()),
-            Some(1) => runtime(path)?,
-            Some(2) => captcha(path)?,
-            Some(3) => accounts(path).await?,
-            Some(4) => notifications(path)?,
-            Some(5) => println!("配置有效：{} 个账号", load(path)?.config.accounts.len()),
-            Some(6) => edit_file(path)?,
+            None | Some(0) => break,
+            Some(1) => runtime(&working)?,
+            Some(2) => captcha(&working)?,
+            Some(3) => accounts(&working).await?,
+            Some(4) => notifications(&working)?,
+            Some(5) => println!(
+                "暂存配置有效：{} 个账号",
+                load(&working)?.config.accounts.len()
+            ),
+            Some(6) => edit_file(&working)?,
             _ => {}
         }
     }
+    if !session.has_changes()? {
+        println!("配置没有变化，未写入文件");
+        return Ok(());
+    }
+    println!("\n待保存变更：");
+    for change in session.summary()? {
+        println!("- {change}");
+    }
+    if super::input::confirm("保存这些变更？", true)? {
+        session.commit()?;
+        println!("配置已保存：{}", path.display());
+    } else {
+        println!("已放弃全部暂存变更，原配置未修改");
+    }
+    Ok(())
 }
 
 fn runtime(path: &Path) -> Result<(), ConfigError> {
@@ -313,7 +335,12 @@ fn account_hoyolab(path: &Path) -> Result<(), ConfigError> {
 
 fn notifications(path: &Path) -> Result<(), ConfigError> {
     loop {
-        println!("通知：1.通用选项 2.添加渠道 3.编辑渠道 4.删除渠道 0.返回");
+        let current = load(path)?.config.notifications;
+        println!(
+            "通知：[{}]，已配置 {} 个渠道\n1.通用选项 2.添加渠道 3.编辑渠道 4.删除渠道 0.返回",
+            if current.enabled { "已启用" } else { "已关闭" },
+            current.providers.len()
+        );
         match read_number(4)? {
             None | Some(0) => return Ok(()),
             Some(1) => notification_options(path)?,
@@ -385,7 +412,8 @@ fn choose_provider(providers: &[NotificationProvider]) -> Result<Option<usize>, 
         return Ok(None);
     }
     for (index, provider) in providers.iter().enumerate() {
-        println!("{}. {}", index + 1, provider_type(provider));
+        let kind = provider_type(provider);
+        println!("{}. {}（{kind}）", index + 1, provider_display(kind));
     }
     Ok(read_number(providers.len())?.and_then(
         |number| {
@@ -397,7 +425,7 @@ fn choose_provider(providers: &[NotificationProvider]) -> Result<Option<usize>, 
 fn choose_provider_type() -> Result<Option<&'static str>, ConfigError> {
     let types = provider_types();
     for (index, kind) in types.iter().enumerate() {
-        println!("{}. {kind}", index + 1);
+        println!("{}. {}（{kind}）", index + 1, provider_display(kind));
     }
     Ok(read_number(types.len())?.and_then(|number| {
         if number == 0 {
@@ -618,49 +646,110 @@ fn provider_type(provider: &NotificationProvider) -> &'static str {
     }
 }
 
+pub(crate) fn provider_display(kind: &str) -> &'static str {
+    match kind {
+        "telegram" => "Telegram 机器人",
+        "webhook" => "通用 Webhook",
+        "pushplus" => "PushPlus",
+        "ftqq" => "Server 酱 Turbo",
+        "pushme" => "PushMe",
+        "cqhttp" => "CQHTTP QQ 机器人",
+        "wecom" => "企业微信应用",
+        "wecomrobot" => "企业微信群机器人",
+        "pushdeer" => "PushDeer",
+        "dingrobot" => "钉钉群机器人",
+        "feishubot" => "飞书群机器人",
+        "bark" => "Bark",
+        "gotify" => "Gotify",
+        "ifttt" => "IFTTT Webhooks",
+        "qmsg" => "Qmsg 酱",
+        "discord" => "Discord Webhook",
+        "wxpusher" => "WxPusher",
+        "serverchan3" => "Server 酱 3",
+        "smtp" => "SMTP 邮件",
+        "windows_toast" => "Windows 本地通知",
+        _ => "未知通知渠道",
+    }
+}
+
 fn tasks(path: &Path) -> Result<(), ConfigError> {
     let Some(name) = choose(path)? else {
         return Ok(());
     };
-    println!("任务：1.国内签到 2.HoYoLAB 3.米游社 4.国内云游戏 5.海外云游戏 6.Web活动；留空取消");
-    let Some(selected) = read_choice(6)? else {
+    let account = load(path)?
+        .config
+        .accounts
+        .into_iter()
+        .find(|account| account.name == name)
+        .expect("已选择的账号存在");
+    let current = &account.tasks;
+    let selected = [
+        current.china_game_checkin,
+        current.hoyolab_checkin,
+        current.bbs.enabled,
+        current.china_cloud_game,
+        current.overseas_cloud_game,
+        current.web_activity.enabled,
+    ]
+    .into_iter()
+    .enumerate()
+    .filter_map(|(index, enabled)| enabled.then_some(index as u8 + 1))
+    .collect::<Vec<_>>();
+    let Some(selected) = toggle_menu(
+        "账号任务",
+        &[
+            "国内游戏签到",
+            "HoYoLAB 签到",
+            "米游社社区任务",
+            "国内云游戏",
+            "海外云游戏",
+            "Web 活动",
+        ],
+        &selected,
+    )? else {
         return Ok(());
     };
-    if selected == [0] {
-        return Ok(());
-    }
-    let (bbs, forums) = if selected.contains(&3) {
-        println!("米游社：1.签到 2.阅读 3.点赞 4.取消点赞 5.分享；留空取消");
-        let Some(value) = read_choice(5)? else {
+    let mut bbs = [
+        current.bbs.sign,
+        current.bbs.read,
+        current.bbs.like,
+        current.bbs.cancel_like,
+        current.bbs.share,
+    ]
+    .into_iter()
+    .enumerate()
+    .filter_map(|(index, enabled)| enabled.then_some(index as u8 + 1))
+    .collect::<Vec<_>>();
+    let mut forums = current.bbs.forums.clone();
+    if selected.contains(&3) {
+        let Some(value) = toggle_menu(
+            "米游社社区操作",
+            &["社区签到", "阅读帖子", "点赞", "取消点赞", "分享"],
+            &bbs,
+        )? else {
             return Ok(());
         };
-        if value == [0] {
-            return Ok(());
-        }
-        let choices = crate::bbs::SUPPORTED_FORUMS
+        bbs = value;
+        let labels = crate::bbs::SUPPORTED_FORUMS
+            .iter()
+            .map(|forum| forum.name)
+            .collect::<Vec<_>>();
+        let current_forums = crate::bbs::SUPPORTED_FORUMS
             .iter()
             .enumerate()
-            .map(|(index, forum)| format!("{}.{}", index + 1, forum.name))
-            .collect::<Vec<_>>()
-            .join(" ");
-        println!("社区板块（首项也用于获取帖子）：{choices}；可多选，留空取消");
-        let Some(selected_forums) = read_choice(crate::bbs::SUPPORTED_FORUMS.len() as u8)? else {
+            .filter_map(|(index, forum)| forums.contains(&forum.id).then_some(index as u8 + 1))
+            .collect::<Vec<_>>();
+        let Some(selected_forums) = toggle_menu("社区签到板块（首项也用于获取帖子）", &labels, &current_forums)? else {
             return Ok(());
         };
-        if selected_forums == [0] {
-            return Ok(());
-        }
-        let forums = selected_forums
+        forums = selected_forums
             .iter()
             .filter_map(|number| {
                 crate::bbs::SUPPORTED_FORUMS.get((*number as usize).saturating_sub(1))
             })
             .map(|forum| forum.id)
             .collect();
-        (value, forums)
-    } else {
-        (Vec::new(), Vec::new())
-    };
+    }
     set_account_tasks(path, &name, &selected, &bbs, &forums)
 }
 
@@ -668,13 +757,30 @@ fn games(path: &Path) -> Result<(), ConfigError> {
     let Some(name) = choose(path)? else {
         return Ok(());
     };
-    println!("游戏：1.原神 2.崩坏学园2 3.崩坏3 4.未定事件簿 5.星穹铁道 6.绝区零；留空取消");
-    let Some(selected) = read_choice(6)? else {
+    let current = load(path)?
+        .config
+        .accounts
+        .into_iter()
+        .find(|account| account.name == name)
+        .expect("已选择的账号存在")
+        .games
+        .into_iter()
+        .map(|game| match game {
+            super::Game::Genshin => 1,
+            super::Game::Honkai2 => 2,
+            super::Game::Honkai3rd => 3,
+            super::Game::TearsOfThemis => 4,
+            super::Game::StarRail => 5,
+            super::Game::ZenlessZoneZero => 6,
+        })
+        .collect::<Vec<_>>();
+    let Some(selected) = toggle_menu(
+        "国内签到游戏",
+        &["原神", "崩坏学园2", "崩坏3", "未定事件簿", "星穹铁道", "绝区零"],
+        &current,
+    )? else {
         return Ok(());
     };
-    if selected == [0] {
-        return Ok(());
-    }
     set_account_games(path, &name, &selected)
 }
 
@@ -686,7 +792,13 @@ fn choose(path: &Path) -> Result<Option<String>, ConfigError> {
             .as_deref()
             .map(|value| format!("（{value}）"))
             .unwrap_or_default();
-        println!("{}. {}{}", index + 1, account.name, remark);
+        println!(
+            "{}. [{}] {}{}",
+            index + 1,
+            if account.enabled { "x" } else { " " },
+            account.name,
+            remark
+        );
     }
     Ok(read_number(config.accounts.len())?.and_then(|number| {
         if number == 0 {
@@ -699,12 +811,57 @@ fn choose(path: &Path) -> Result<Option<String>, ConfigError> {
 
 fn prompt_bool(label: &str, current: bool) -> Result<bool, ConfigError> {
     loop {
-        let value = prompt(&format!("{label}[{}] (true/false，留空保留)", current))?;
+        let value = prompt(&format!(
+            "{label}[{}] (启用/关闭，留空保留)",
+            if current { "已启用" } else { "已关闭" }
+        ))?;
         match value.to_ascii_lowercase().as_str() {
             "" => return Ok(current),
             "1" | "true" | "yes" | "y" => return Ok(true),
             "0" | "false" | "no" | "n" => return Ok(false),
-            _ => println!("请输入 true/false、yes/no 或 1/0"),
+            "启用" | "开启" => return Ok(true),
+            "关闭" | "禁用" => return Ok(false),
+            _ => println!("请输入启用/关闭、yes/no 或 1/0"),
+        }
+    }
+}
+
+fn toggle_menu(
+    title: &str,
+    labels: &[&str],
+    current: &[u8],
+) -> Result<Option<Vec<u8>>, ConfigError> {
+    let mut selected = current.to_vec();
+    loop {
+        println!("\n{title}：");
+        for (index, label) in labels.iter().enumerate() {
+            let number = index as u8 + 1;
+            println!(
+                "{}. [{}] {label}",
+                number,
+                if selected.contains(&number) { "x" } else { " " }
+            );
+        }
+        println!("输入编号切换，a 全选，n 全不选，s 保存，0 取消");
+        let value = prompt("")?;
+        match value.to_ascii_lowercase().as_str() {
+            "s" => return Ok(Some(selected)),
+            "0" | "q" | "" => return Ok(None),
+            "a" => selected = (1..=labels.len() as u8).collect(),
+            "n" => selected.clear(),
+            _ => match parse_choices(&value, labels.len() as u8) {
+                Ok(numbers) => {
+                    for number in numbers {
+                        if let Some(index) = selected.iter().position(|value| *value == number) {
+                            selected.remove(index);
+                        } else {
+                            selected.push(number);
+                        }
+                    }
+                    selected.sort_unstable();
+                }
+                Err(error) => println!("{error}"),
+            },
         }
     }
 }

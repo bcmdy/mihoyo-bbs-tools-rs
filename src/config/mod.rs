@@ -21,7 +21,7 @@ mod interactive;
 mod legacy;
 pub use dacapo::{DacapoError, load_dacapo};
 pub use editor::{
-    add_account_from_stdin, edit_file, persist_refreshed_cookie, remove_account,
+    EditSession, add_account_from_stdin, edit_file, persist_refreshed_cookie, remove_account,
     remove_notification_provider, replace_account_cookie, set_account_china_checkin,
     set_account_cloud_games, set_account_device, set_account_games, set_account_general,
     set_account_hoyolab, set_account_proxy, set_account_tasks, set_captcha_endpoint, set_logging,

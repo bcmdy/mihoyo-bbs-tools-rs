@@ -21,6 +21,117 @@ use super::{
     open_secure_new, validate,
 };
 
+pub struct EditSession {
+    target: PathBuf,
+    working: PathBuf,
+    original: String,
+    committed: bool,
+}
+
+impl EditSession {
+    pub fn begin(path: &Path) -> Result<Self, ConfigError> {
+        load(path)?;
+        let original = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let working = path.with_extension(format!(
+            "yaml.{}.{}.session",
+            std::process::id(),
+            stamp
+        ));
+        secure_write_new(&working, &original)?;
+        Ok(Self {
+            target: path.to_path_buf(),
+            working,
+            original,
+            committed: false,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.working
+    }
+
+    pub fn has_changes(&self) -> Result<bool, ConfigError> {
+        let current = fs::read_to_string(&self.working).map_err(|source| ConfigError::Read {
+            path: self.working.clone(),
+            source,
+        })?;
+        Ok(current != self.original)
+    }
+
+    pub fn summary(&self) -> Result<Vec<String>, ConfigError> {
+        let before = load(&self.target)?.config;
+        let after = load(&self.working)?.config;
+        let mut changes = Vec::new();
+        if serialized_differs(&before.runtime, &after.runtime)? {
+            changes.push("全局运行设置已更新".to_owned());
+        }
+        if serialized_differs(&before.captcha, &after.captcha)? {
+            changes.push("验证码设置已更新（敏感地址不显示）".to_owned());
+        }
+        for account in &before.accounts {
+            match after
+                .accounts
+                .iter()
+                .find(|candidate| candidate.name == account.name)
+            {
+                None => changes.push(format!("账号“{}”已删除", account.name)),
+                Some(updated) if serialized_differs(account, updated)? => {
+                    changes.push(format!("账号“{}”的设置已更新", account.name));
+                }
+                Some(_) => {}
+            }
+        }
+        for account in &after.accounts {
+            if !before
+                .accounts
+                .iter()
+                .any(|candidate| candidate.name == account.name)
+            {
+                changes.push(format!("账号“{}”已添加", account.name));
+            }
+        }
+        if serialized_differs(&before.notifications, &after.notifications)? {
+            changes.push("通知设置已更新（敏感凭据不显示）".to_owned());
+        }
+        if changes.is_empty() && self.has_changes()? {
+            changes.push("高级 YAML 内容或格式已更新".to_owned());
+        }
+        Ok(changes)
+    }
+
+    pub fn commit(mut self) -> Result<(), ConfigError> {
+        let updated = fs::read_to_string(&self.working).map_err(|source| ConfigError::Read {
+            path: self.working.clone(),
+            source,
+        })?;
+        replace_validated(&self.target, &updated)?;
+        self.committed = true;
+        let _ = fs::remove_file(&self.working);
+        Ok(())
+    }
+}
+
+impl Drop for EditSession {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_file(&self.working);
+        }
+    }
+}
+
+fn serialized_differs<T: serde::Serialize>(before: &T, after: &T) -> Result<bool, ConfigError> {
+    let before = serde_yaml_ng::to_value(before).map_err(ConfigError::Serialize)?;
+    let after = serde_yaml_ng::to_value(after).map_err(ConfigError::Serialize)?;
+    Ok(before != after)
+}
+
 pub fn edit_file(path: &Path) -> Result<(), ConfigError> {
     let original = fs::read_to_string(path).map_err(|source| ConfigError::Read {
         path: path.to_path_buf(),
