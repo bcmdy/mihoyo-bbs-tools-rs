@@ -50,6 +50,9 @@ pub enum Command {
         /// 任务报告输出格式；JSON 模式只向标准输出写入一个 JSON 对象
         #[arg(long, value_enum, default_value_t = ReportFormat::Text)]
         output: ReportFormat,
+        /// 展开全部成功、已完成和跳过记录；不改变 JSON 输出
+        #[arg(long)]
+        verbose: bool,
     },
     /// 依次执行目录中的多个 YAML 配置，单个文件失败不阻止后续文件
     #[command(alias = "run-multi")]
@@ -380,5 +383,18 @@ mod tests {
         assert!(read_only);
         assert!(no_notify);
         assert_eq!(output, ReportFormat::Json);
+    }
+
+    #[test]
+    fn run_accepts_verbose_text_output() {
+        let cli = Cli::try_parse_from(["MihoyoBBSToolsRS", "run", "--verbose"]).unwrap();
+        let Command::Run {
+            verbose, output, ..
+        } = cli.command
+        else {
+            panic!("expected run command");
+        };
+        assert!(verbose);
+        assert_eq!(output, ReportFormat::Text);
     }
 }

@@ -64,7 +64,7 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             if matches!(region, CheckinRegion::Hoyolab | CheckinRegion::All) {
                 report.extend(service::run_hoyolab_checkin(&loaded.config).await);
             }
-            return finish_report(&loaded.config, &report, ReportFormat::Text, false).await;
+            return finish_report(&loaded.config, &report, ReportFormat::Text, false, false).await;
         }
         Command::Run {
             config: path,
@@ -72,8 +72,9 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             read_only,
             no_notify,
             output,
+            verbose,
         } => {
-            return execute_run_command(&path, &tasks, read_only, no_notify, output).await;
+            return execute_run_command(&path, &tasks, read_only, no_notify, output, verbose).await;
         }
         Command::RunDirectory(args) => return execute_directory(args).await,
         Command::Qinglong(args) => return execute_qinglong(args).await,
@@ -109,7 +110,8 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
                 }
                 let persistence = credential_persistence(loaded.source, &path);
                 let (config, report) = execute_run(loaded.config, persistence, &tasks).await;
-                last_exit = finish_report(&config, &report, ReportFormat::Text, false).await?;
+                last_exit =
+                    finish_report(&config, &report, ReportFormat::Text, false, false).await?;
                 tracing::info!(exit_code = last_exit, "定时任务本轮结束");
                 first = false;
                 service::wait_schedule_interval(&schedule).await;
@@ -165,8 +167,13 @@ async fn finish_report(
     report: &service::RunReport,
     output: ReportFormat,
     no_notify: bool,
+    verbose: bool,
 ) -> Result<u8, AppError> {
-    let rendered = report.render_text();
+    let rendered = if verbose {
+        report.render_verbose_text()
+    } else {
+        report.render_text()
+    };
     tracing::info!("任务报告\n{}", rendered.trim_end());
     let push_report = if no_notify {
         push::PushReport::default()
@@ -266,7 +273,7 @@ async fn execute_config_path(path: &std::path::Path, tasks: &[RunTask]) -> Resul
     }
     let persistence = credential_persistence(loaded.source, path);
     let (config, report) = execute_run(loaded.config, persistence, tasks).await;
-    finish_report(&config, &report, ReportFormat::Text, false).await
+    finish_report(&config, &report, ReportFormat::Text, false, false).await
 }
 
 async fn execute_run_command(
@@ -275,6 +282,7 @@ async fn execute_run_command(
     read_only: bool,
     no_notify: bool,
     output: ReportFormat,
+    verbose: bool,
 ) -> Result<u8, AppError> {
     let loaded = if path == std::path::Path::new("-") {
         let mut source = String::new();
@@ -294,7 +302,7 @@ async fn execute_run_command(
         credential_persistence(loaded.source, path)
     };
     let (config, report) = execute_run(loaded.config, persistence, tasks).await;
-    finish_report(&config, &report, output, no_notify).await
+    finish_report(&config, &report, output, no_notify, verbose).await
 }
 
 async fn execute_directory(args: DirectoryRunArgs) -> Result<u8, AppError> {
@@ -319,7 +327,8 @@ async fn execute_directory(args: DirectoryRunArgs) -> Result<u8, AppError> {
                 }
                 let persistence = credential_persistence(loaded.source, &path);
                 let (config, report) = execute_run(loaded.config, persistence, &args.tasks).await;
-                let exit_code = finish_report(&config, &report, ReportFormat::Text, false).await?;
+                let exit_code =
+                    finish_report(&config, &report, ReportFormat::Text, false, false).await?;
                 batch.push_completed(source, exit_code);
             }
             Err(error) => {
@@ -376,7 +385,7 @@ async fn execute_dacapo(path: &std::path::Path, tasks: &[RunTask]) -> Result<u8,
         tasks,
     )
     .await;
-    finish_report(&config, &report, ReportFormat::Text, false).await
+    finish_report(&config, &report, ReportFormat::Text, false, false).await
 }
 
 async fn wait_directory_delay(minimum: u64, maximum: u64) {
