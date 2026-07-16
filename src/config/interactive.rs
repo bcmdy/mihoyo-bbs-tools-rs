@@ -146,7 +146,7 @@ async fn accounts(path: &Path) -> Result<(), ConfigError> {
             Some(10) => games(path)?,
             Some(11) => {
                 if let Some(name) = choose(path)? {
-                    remove_account(path, &name)?;
+                    confirm_and_remove_account(path, &name)?;
                 }
             }
             _ => {}
@@ -401,9 +401,94 @@ fn edit_notification_provider(path: &Path) -> Result<(), ConfigError> {
 fn delete_notification_provider(path: &Path) -> Result<(), ConfigError> {
     let providers = load(path)?.config.notifications.providers;
     if let Some(index) = choose_provider(&providers)? {
-        remove_notification_provider(path, index)?;
+        let kind = provider_type(&providers[index]);
+        println!("即将删除：{}（{kind}）", provider_display(kind));
+        println!("接收目标：{}", provider_target(&providers[index]));
+        let value = prompt(&format!(
+            "再次输入 yes 或渠道编号 {} 确认删除",
+            index + 1
+        ))?;
+        if value == "yes" || value == (index + 1).to_string() {
+            remove_notification_provider(path, index)?;
+            println!("通知渠道已加入待保存删除列表");
+        } else {
+            println!("已取消删除通知渠道");
+        }
     }
     Ok(())
+}
+
+fn confirm_and_remove_account(path: &Path, name: &str) -> Result<(), ConfigError> {
+    let config = load(path)?.config;
+    let index = config
+        .accounts
+        .iter()
+        .position(|account| account.name == name)
+        .ok_or_else(|| ConfigError::Edit(format!("未找到账号 {name:?}")))?;
+    let account = &config.accounts[index];
+    println!("即将删除账号：{}", account.name);
+    println!("备注：{}", account.remark.as_deref().unwrap_or("未设置"));
+    let mut tasks = Vec::new();
+    if account.tasks.china_game_checkin {
+        tasks.push("国内游戏签到");
+    }
+    if account.tasks.hoyolab_checkin {
+        tasks.push("HoYoLAB 签到");
+    }
+    if account.tasks.bbs.enabled {
+        tasks.push("米游社社区任务");
+    }
+    if account.tasks.china_cloud_game {
+        tasks.push("国内云游戏");
+    }
+    if account.tasks.overseas_cloud_game {
+        tasks.push("海外云游戏");
+    }
+    if account.tasks.web_activity.enabled {
+        tasks.push("Web 活动");
+    }
+    println!(
+        "受影响任务：{}",
+        if tasks.is_empty() {
+            "无".to_owned()
+        } else {
+            tasks.join("、")
+        }
+    );
+    let value = prompt(&format!(
+        "再次输入 yes 或账号编号 {} 确认删除",
+        index + 1
+    ))?;
+    if value == "yes" || value == (index + 1).to_string() {
+        remove_account(path, name)?;
+        println!("账号已加入待保存删除列表");
+    } else {
+        println!("已取消删除账号");
+    }
+    Ok(())
+}
+
+fn provider_target(provider: &NotificationProvider) -> String {
+    match provider {
+        NotificationProvider::Telegram { chat_id, .. } => mask_tail(chat_id),
+        NotificationProvider::Smtp { to, .. } => mask_email(to),
+        NotificationProvider::WindowsToast { .. } => "当前 Windows 桌面".to_owned(),
+        _ => "已配置（敏感地址不显示）".to_owned(),
+    }
+}
+
+fn mask_tail(value: &str) -> String {
+    let tail = value.chars().rev().take(4).collect::<Vec<_>>();
+    let tail = tail.into_iter().rev().collect::<String>();
+    format!("***{tail}")
+}
+
+fn mask_email(value: &str) -> String {
+    let Some((name, domain)) = value.split_once('@') else {
+        return "***".to_owned();
+    };
+    let first = name.chars().next().unwrap_or('*');
+    format!("{first}***@{domain}")
 }
 
 fn choose_provider(providers: &[NotificationProvider]) -> Result<Option<usize>, ConfigError> {
