@@ -212,6 +212,8 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
             return;
         }
     };
+    let mut logged_unknown_missions = HashSet::new();
+    log_unknown_missions(&account.name, &summary, &mut logged_unknown_missions);
     let plan = BbsPlan::from_summary(&summary).filtered(&account.tasks.bbs);
     report.push(record(
         &account.name,
@@ -441,6 +443,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
                 return;
             }
         };
+        log_unknown_missions(&account.name, &summary, &mut logged_unknown_missions);
         timed_out |= reconcile_task_results(
             report,
             &account.name,
@@ -777,6 +780,23 @@ fn mission_status(summary: &CoinSummary, kind: MissionKind) -> MissionStatus {
         Some(mission) if mission.award_received => MissionStatus::Completed,
         Some(_) => MissionStatus::Pending,
         None => MissionStatus::Missing,
+    }
+}
+
+fn log_unknown_missions(account: &str, summary: &CoinSummary, logged: &mut HashSet<i64>) {
+    for mission in &summary.missions {
+        let MissionKind::Other(mission_id) = mission.kind else {
+            continue;
+        };
+        if logged.insert(mission_id) {
+            tracing::warn!(
+                account,
+                mission_id,
+                award_received = mission.award_received,
+                happened_times = mission.happened_times,
+                "发现未映射的米游币任务，已保留状态但不会自动执行"
+            );
+        }
     }
 }
 
@@ -1138,6 +1158,18 @@ mod tests {
         assert_eq!(plan.required_posts(), 1);
 
         assert!(BbsPlan::from_summary(&summary(100, Vec::new())).is_complete());
+    }
+
+    #[test]
+    fn unknown_missions_are_recorded_once_without_entering_the_plan() {
+        let summary = summary(20, vec![mission(MissionKind::Other(999), false, 2)]);
+        let mut logged = HashSet::new();
+
+        log_unknown_missions("测试账号", &summary, &mut logged);
+        log_unknown_missions("测试账号", &summary, &mut logged);
+
+        assert_eq!(logged, HashSet::from([999]));
+        assert!(BbsPlan::from_summary(&summary).is_complete());
     }
 
     #[test]
