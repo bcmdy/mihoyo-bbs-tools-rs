@@ -105,6 +105,11 @@ impl HttpClient {
         HttpClientBuilder::default()
     }
 
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
+    }
+
     pub async fn get_json<T>(&self, url: Url) -> Result<T, HttpError>
     where
         T: DeserializeOwned,
