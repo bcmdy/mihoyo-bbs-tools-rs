@@ -170,7 +170,7 @@ pub async fn add_account_from_stdin(
     path: &Path,
     name: Option<&str>,
 ) -> Result<String, ConfigError> {
-    let cookie = super::input::prompt_secret("请输入完整 Cookie（输入内容不会显示）")?;
+    let cookie = super::input::prompt_secret("请输入完整 Cookie（输入内容以 * 显示）")?;
     if cookie.is_empty() {
         return Err(ConfigError::Edit("Cookie 不能为空".to_owned()));
     }

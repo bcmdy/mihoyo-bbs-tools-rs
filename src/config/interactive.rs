@@ -81,7 +81,7 @@ pub async fn init(path: &Path) -> Result<InitResult, ConfigError> {
     let _cleanup = StagedConfig(staged.clone());
     println!("首次配置向导");
     println!("目标配置：{}", path.display());
-    println!("Cookie、Token 和通知凭据均使用隐藏输入，向导完成前不会写入正式配置。");
+    println!("Cookie、Token 和通知凭据均使用星号掩码输入，向导完成前不会写入正式配置。");
 
     loop {
         let remark = prompt("可选账号备注（留空不设置）")?;
@@ -286,7 +286,7 @@ async fn account_cookie(path: &Path) -> Result<(), ConfigError> {
         return Ok(());
     };
     let cookie =
-        super::input::prompt_secret("请输入新的完整 Cookie（输入内容不会显示，留空取消）")?;
+        super::input::prompt_secret("请输入新的完整 Cookie（输入内容以 * 显示，留空取消）")?;
     if cookie.is_empty() {
         return Ok(());
     }
@@ -324,7 +324,7 @@ fn account_proxy(path: &Path) -> Result<(), ConfigError> {
         .find(|account| account.name == name)
         .expect("已选择的账号存在");
     let current = account.proxy.url.as_ref().map(|_| "<已配置>");
-    println!("代理支持 http、https、socks5、socks5h；敏感代理不会回显");
+    println!("代理支持 http、https、socks5、socks5h；已保存的敏感代理不会回显，新输入以 * 显示");
     let proxy = prompt_optional_hidden("代理 URL", current)?;
     if proxy.as_deref() == Some("<已配置>") {
         return Ok(());
@@ -343,7 +343,7 @@ fn account_cloud_games(path: &Path) -> Result<(), ConfigError> {
         .find(|account| account.name == name)
         .expect("已选择的账号存在")
         .cloud_games;
-    println!("已保存的云游戏 Token 不会回显；新输入同样隐藏，留空保留，输入 - 清空");
+    println!("已保存的云游戏 Token 不会回显；新输入以 * 显示，留空保留，输入 - 清空");
     let china_genshin_token =
         prompt_secret("国内云原神 Token", cloud.china.genshin.token.as_ref())?;
     let china_genshin_enabled = prompt_bool("启用国内云原神", cloud.china.genshin.enabled)?;
@@ -421,7 +421,7 @@ fn account_hoyolab(path: &Path) -> Result<(), ConfigError> {
         games: account.games,
         ..HoyolabConfig::default()
     });
-    println!("已保存的 HoYoLAB Cookie 不会回显；新输入同样隐藏");
+    println!("已保存的 HoYoLAB Cookie 不会回显；新输入以 * 显示");
     let current_cookie = (!current.cookie.is_empty()).then_some(&current.cookie);
     let cookie = prompt_secret("HoYoLAB 独立 Cookie", current_cookie)?.unwrap_or_default();
     let language = prompt_keep("HoYoLAB 语言(zh-cn/en-us/ja-jp/ko-kr)", &current.language)?;
@@ -508,7 +508,7 @@ fn edit_notification_provider(path: &Path) -> Result<(), ConfigError> {
         return Ok(());
     };
     let kind = provider_type(&providers[index]);
-    println!("编辑 {kind}：留空保留原值，输入 - 清空可选字段；敏感值不会回显");
+    println!("编辑 {kind}：留空保留原值，输入 - 清空可选字段；敏感旧值不会回显，新输入以 * 显示");
     let fields = prompt_provider_fields(kind, true)?;
     set_notification_provider(path, Some(index), kind, &fields)
 }
