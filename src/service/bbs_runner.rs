@@ -459,16 +459,18 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
 
     let remaining = BbsPlan::from_summary(&summary).filtered(&account.tasks.bbs);
     let all_confirmed = remaining.is_complete() && !timed_out && !high_risk_blocked;
-    report.push(record(
-        &account.name,
-        "米游币",
-        "完成确认",
-        completion_outcome(all_confirmed),
-        &format!(
-            "复查后已领取 {}，还可领取 {}，当前共 {} 米游币",
-            summary.already_received_points, summary.can_get_points, summary.total_points
-        ),
-    ));
+    if all_confirmed {
+        report.push(record(
+            &account.name,
+            "米游币",
+            "完成确认",
+            TaskOutcome::Success,
+            &format!(
+                "复查后已领取 {}，还可领取 {}，当前共 {} 米游币",
+                summary.already_received_points, summary.can_get_points, summary.total_points
+            ),
+        ));
+    }
 }
 
 async fn run_reads(
@@ -738,7 +740,7 @@ fn push_state_sync_timeout(report: &mut RunReport, account: &str, task: &str, at
         account,
         task,
         "米游币任务",
-        TaskOutcome::Failed,
+        TaskOutcome::StateSyncTimeout,
         &format!(
             "状态同步超时：已执行 {attempts} 轮并在每轮后等待 3 秒复查，服务端仍未确认{task}任务完成"
         ),
@@ -770,14 +772,6 @@ fn mission_status(summary: &CoinSummary, kind: MissionKind) -> MissionStatus {
         Some(mission) if mission.award_received => MissionStatus::Completed,
         Some(_) => MissionStatus::Pending,
         None => MissionStatus::Missing,
-    }
-}
-
-fn completion_outcome(confirmed: bool) -> TaskOutcome {
-    if confirmed {
-        TaskOutcome::Success
-    } else {
-        TaskOutcome::Failed
     }
 }
 
@@ -1205,7 +1199,10 @@ mod tests {
         ));
         assert_eq!(stale_report.exit_code(), 1);
         assert_eq!(stale_report.records.len(), 1);
-        assert_eq!(stale_report.records[0].outcome, TaskOutcome::Failed);
+        assert_eq!(
+            stale_report.records[0].outcome,
+            TaskOutcome::StateSyncTimeout
+        );
         assert!(
             stale_report
                 .records
