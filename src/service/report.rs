@@ -57,16 +57,12 @@ impl RunReport {
             .any(|record| record.outcome == TaskOutcome::NetworkFailed)
         {
             5
-        } else if self
-            .records
-            .iter()
-            .any(|record| {
-                matches!(
-                    record.outcome,
-                    TaskOutcome::StateSyncTimeout | TaskOutcome::Failed
-                )
-            })
-        {
+        } else if self.records.iter().any(|record| {
+            matches!(
+                record.outcome,
+                TaskOutcome::StateSyncTimeout | TaskOutcome::Failed
+            )
+        }) {
             1
         } else {
             0
@@ -194,10 +190,7 @@ impl RunReport {
                     })
                     .count();
                 if count > 0 {
-                    let _ = writeln!(
-                        output,
-                        "  / {task}：已完成 {count} 项；任务状态复查已确认"
-                    );
+                    let _ = writeln!(output, "  / {task}：已完成 {count} 项；任务状态复查已确认");
                 }
             }
         }
@@ -277,13 +270,12 @@ fn is_repeated_community_detail(record: &TaskRecord) -> bool {
 }
 
 fn write_success_record(output: &mut String, record: &TaskRecord) {
-    let completed_prefix = if is_coin_summary_record(record)
-        && record.outcome == TaskOutcome::AlreadyCompleted
-    {
-        "今日已完成；"
-    } else {
-        ""
-    };
+    let completed_prefix =
+        if is_coin_summary_record(record) && record.outcome == TaskOutcome::AlreadyCompleted {
+            "今日已完成；"
+        } else {
+            ""
+        };
     let _ = writeln!(
         output,
         "  / {} / {}：{}{}",
@@ -480,10 +472,8 @@ mod tests {
             message: "已领取 50，还可领取 0，当前共 4219 米游币".to_owned(),
         });
 
-        assert!(
-            report
-                .render_text()
-                .contains("/ 米游币 / 任务状态：今日已完成；已领取 50，还可领取 0，当前共 4219 米游币")
-        );
+        assert!(report.render_text().contains(
+            "/ 米游币 / 任务状态：今日已完成；已领取 50，还可领取 0，当前共 4219 米游币"
+        ));
     }
 }
