@@ -4,7 +4,7 @@ runtime:
   timezone: Asia/Shanghai
   request_timeout_seconds: 30
   retry_count: 3
-  game_checkin_max_attempts: 3
+  task_max_attempts: 3
   random_delay_seconds: 10
   log_level: info
   logging:

@@ -142,7 +142,7 @@ async fn run_china_account(config: &Config, account: &AccountConfig) -> RunRepor
                 .china_checkin
                 .role_blacklist
                 .for_game(*configured_game),
-            max_attempts: config.runtime.game_checkin_max_attempts,
+            max_attempts: config.runtime.task_max_attempts,
         };
         run_game(&mut report, &mut signer, game, context).await;
     }
@@ -223,7 +223,7 @@ pub async fn run_hoyolab_checkin(config: &Config) -> RunReport {
                 &account.name,
                 &client,
                 game,
-                config.runtime.game_checkin_max_attempts,
+                config.runtime.task_max_attempts,
             )
             .await;
         }

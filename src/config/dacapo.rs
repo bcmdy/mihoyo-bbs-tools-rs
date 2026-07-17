@@ -146,7 +146,7 @@ fn parse_dacapo(source: &str, account_name: &str) -> Result<LoadedConfig, Dacapo
     let config = Config {
         version: super::CURRENT_CONFIG_VERSION,
         runtime: RuntimeConfig {
-            game_checkin_max_attempts: retries,
+            task_max_attempts: retries,
             ..RuntimeConfig::default()
         },
         captcha: CaptchaConfig::default(),
@@ -984,7 +984,7 @@ mod tests {
     fn direct_and_wrapped_values_convert_without_temp_files() {
         let loaded = parse_dacapo(&minimal(""), "DaCapo:test").unwrap();
         assert_eq!(loaded.source, ConfigSource::Dacapo);
-        assert_eq!(loaded.config.runtime.game_checkin_max_attempts, 3);
+        assert_eq!(loaded.config.runtime.task_max_attempts, 3);
         let account = &loaded.config.accounts[0];
         assert_eq!(account.name, "DaCapo:test");
         assert_eq!(account.credentials.stoken.expose_secret(), "v2_secret");
@@ -1023,7 +1023,7 @@ mod tests {
         );
         let loaded = parse_dacapo(&source, "DaCapo:test").unwrap();
         let account = &loaded.config.accounts[0];
-        assert_eq!(loaded.config.runtime.game_checkin_max_attempts, 5);
+        assert_eq!(loaded.config.runtime.task_max_attempts, 5);
         assert_eq!(account.games, vec![Game::Genshin]);
         assert_eq!(
             account.china_checkin.role_blacklist.genshin,

@@ -111,8 +111,11 @@ pub struct RuntimeConfig {
     pub request_timeout_seconds: u64,
     #[serde(default = "default_retry_count")]
     pub retry_count: u32,
-    #[serde(default = "default_game_checkin_max_attempts")]
-    pub game_checkin_max_attempts: u32,
+    #[serde(
+        default = "default_task_max_attempts",
+        alias = "game_checkin_max_attempts"
+    )]
+    pub task_max_attempts: u32,
     #[serde(default = "default_random_delay")]
     pub random_delay_seconds: u64,
     #[serde(default)]
@@ -129,7 +132,7 @@ impl Default for RuntimeConfig {
             timezone: default_timezone(),
             request_timeout_seconds: default_timeout(),
             retry_count: default_retry_count(),
-            game_checkin_max_attempts: default_game_checkin_max_attempts(),
+            task_max_attempts: default_task_max_attempts(),
             random_delay_seconds: default_random_delay(),
             log_level: LogLevel::default(),
             logging: LoggingConfig::default(),
@@ -959,8 +962,8 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     if config.runtime.retry_count > 10 {
         errors.push("runtime.retry_count 必须在 0..=10 之间".to_owned());
     }
-    if !(1..=10).contains(&config.runtime.game_checkin_max_attempts) {
-        errors.push("runtime.game_checkin_max_attempts 必须在 1..=10 之间".to_owned());
+    if !(1..=10).contains(&config.runtime.task_max_attempts) {
+        errors.push("runtime.task_max_attempts 必须在 1..=10 之间".to_owned());
     }
     if config.runtime.random_delay_seconds > 3600 {
         errors.push("runtime.random_delay_seconds 必须在 0..=3600 之间".to_owned());
@@ -1487,6 +1490,7 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                 "timezone",
                 "request_timeout_seconds",
                 "retry_count",
+                "task_max_attempts",
                 "game_checkin_max_attempts",
                 "random_delay_seconds",
                 "log_level",
@@ -1842,7 +1846,7 @@ const fn default_timeout() -> u64 {
 const fn default_retry_count() -> u32 {
     3
 }
-const fn default_game_checkin_max_attempts() -> u32 {
+const fn default_task_max_attempts() -> u32 {
     3
 }
 const fn default_random_delay() -> u64 {
@@ -2018,7 +2022,7 @@ accounts:
         let loaded = parse(MINIMAL).unwrap();
         assert_eq!(loaded.config.runtime.request_timeout_seconds, 30);
         assert_eq!(loaded.config.runtime.timezone, "Asia/Shanghai");
-        assert_eq!(loaded.config.runtime.game_checkin_max_attempts, 3);
+        assert_eq!(loaded.config.runtime.task_max_attempts, 3);
         assert_eq!(loaded.config.runtime.schedule, ScheduleConfig::default());
         assert_eq!(
             loaded.config.accounts[0].credentials.cookie.expose_secret(),
@@ -2030,6 +2034,17 @@ accounts:
             ChinaCheckinConfig::default()
         );
         assert!(loaded.config.accounts[0].hoyolab.is_none());
+        assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn accepts_legacy_game_checkin_attempts_as_task_attempts() {
+        let source = MINIMAL.replace(
+            "accounts:",
+            "runtime:\n  game_checkin_max_attempts: 5\naccounts:",
+        );
+        let loaded = parse(&source).unwrap();
+        assert_eq!(loaded.config.runtime.task_max_attempts, 5);
         assert!(loaded.warnings.is_empty());
     }
 
@@ -2460,14 +2475,14 @@ accounts:
     }
 
     #[test]
-    fn rejects_game_checkin_attempts_outside_safe_range() {
+    fn rejects_task_attempts_outside_safe_range() {
         for max_attempts in [0, 11] {
             let source = MINIMAL.replace(
                 "accounts:",
-                &format!("runtime:\n  game_checkin_max_attempts: {max_attempts}\naccounts:"),
+                &format!("runtime:\n  task_max_attempts: {max_attempts}\naccounts:"),
             );
             assert!(
-                matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("runtime.game_checkin_max_attempts")))
+                matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("runtime.task_max_attempts")))
             );
         }
     }
