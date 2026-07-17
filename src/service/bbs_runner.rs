@@ -1,4 +1,4 @@
-use std::{path::Path, time::Duration};
+use std::{collections::HashSet, path::Path, time::Duration};
 
 use crate::{
     auth::{Credentials, SecretString},
@@ -18,6 +18,10 @@ use super::{
 const READ_TARGET: u32 = 3;
 const LIKE_TARGET: u32 = 5;
 #[cfg(not(test))]
+const BBS_CONFIRM_DELAY: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const BBS_CONFIRM_DELAY: Duration = Duration::ZERO;
+#[cfg(not(test))]
 const CAPTCHA_RETRY_DELAY: Duration = Duration::from_secs(3);
 #[cfg(test)]
 const CAPTCHA_RETRY_DELAY: Duration = Duration::ZERO;
@@ -27,16 +31,32 @@ struct CompletedRequests {
     forum_signs: Vec<(String, bool)>,
     reads: Vec<PostRef>,
     likes: Vec<(PostRef, bool)>,
-    share: Option<PostRef>,
+    shares: Vec<PostRef>,
 }
 
-impl CompletedRequests {
-    fn is_empty(&self) -> bool {
-        self.forum_signs.is_empty()
-            && self.reads.is_empty()
-            && self.likes.is_empty()
-            && self.share.is_none()
+#[derive(Clone, Copy, Debug, Default)]
+struct TaskAttempts {
+    sign: u32,
+    read: u32,
+    like: u32,
+    share: u32,
+}
+
+impl TaskAttempts {
+    fn record(&mut self, plan: BbsPlan) {
+        self.sign += if plan.sign { 1 } else { 0 };
+        self.read += if plan.read > 0 { 1 } else { 0 };
+        self.like += if plan.like > 0 { 1 } else { 0 };
+        self.share += if plan.share { 1 } else { 0 };
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StoppedTasks {
+    sign: bool,
+    read: bool,
+    like: bool,
+    share: bool,
 }
 
 pub async fn run_bbs(config: &Config) -> RunReport {
@@ -185,7 +205,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
     );
     let mut signer = DsSigner::new(SystemClock, ThreadRandom);
 
-    let summary = match client.missions().await {
+    let mut summary = match client.missions().await {
         Ok(summary) => summary,
         Err(error) => {
             push_error(report, &account.name, "任务状态", error);
@@ -229,190 +249,226 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
         return;
     }
 
+    let max_attempts = config.runtime.task_max_attempts.max(1);
     let mut completed_requests = CompletedRequests::default();
+    let mut attempts = TaskAttempts::default();
+    let mut stopped = StoppedTasks::default();
+    let mut used_reads = HashSet::new();
+    let mut used_likes = HashSet::new();
+    let mut used_shares = HashSet::new();
+    let mut timed_out = false;
     let mut high_risk_blocked = false;
-    if plan.sign {
-        for forum in &forums {
-            let request = ForumSignRequest::new(forum.gids);
-            match sign_forum_with_captcha(
-                &client,
-                captcha.as_ref(),
-                &mut signer,
-                &request,
-                config.runtime.task_max_attempts,
-            )
-            .await
-            {
-                Ok(solved) => completed_requests
-                    .forum_signs
-                    .push((forum.name.to_owned(), solved)),
-                Err(ActionError::Captcha(message)) => {
-                    push_captcha_error(report, &account.name, forum.name, &message);
-                    high_risk_blocked = true;
-                    break;
-                }
-                Err(ActionError::Bbs(error)) => {
-                    let terminal = is_terminal(&error);
-                    push_error(report, &account.name, forum.name, error);
-                    if terminal {
-                        confirm_completed_requests(
-                            report,
-                            &account.name,
-                            &client,
-                            &completed_requests,
-                        )
-                        .await;
-                        return;
+
+    loop {
+        let plan = BbsPlan::from_summary(&summary)
+            .filtered(&account.tasks.bbs)
+            .without_stopped(stopped);
+        if plan.is_complete() {
+            break;
+        }
+        attempts.record(plan);
+        let mut stop_after_confirmation = false;
+
+        if plan.sign {
+            for forum in &forums {
+                let request = ForumSignRequest::new(forum.gids);
+                match sign_forum_with_captcha(
+                    &client,
+                    captcha.as_ref(),
+                    &mut signer,
+                    &request,
+                    max_attempts,
+                )
+                .await
+                {
+                    Ok(solved) => completed_requests
+                        .forum_signs
+                        .push((forum.name.to_owned(), solved)),
+                    Err(ActionError::Captcha(message)) => {
+                        push_captcha_error(report, &account.name, forum.name, &message);
+                        high_risk_blocked = true;
+                        break;
+                    }
+                    Err(ActionError::Bbs(error)) => {
+                        let terminal = is_terminal(&error);
+                        push_error(report, &account.name, forum.name, error);
+                        if terminal {
+                            stop_after_confirmation = true;
+                            break;
+                        }
                     }
                 }
             }
         }
-    }
 
-    let required_posts = plan.required_posts();
-    let selected = if required_posts == 0 {
-        Vec::new()
-    } else {
-        let ds = signer.sign_app().to_string();
-        match client.posts(forums[0].forum_id, 20, &ds).await {
-            Ok(posts) => client.select_posts(&posts, required_posts),
+        let post_pool =
+            if !high_risk_blocked && !stop_after_confirmation && plan.required_posts() > 0 {
+                let ds = signer.sign_app().to_string();
+                match client.posts(forums[0].forum_id, 20, &ds).await {
+                    Ok(posts) => posts,
+                    Err(error) => {
+                        let terminal = is_terminal(&error);
+                        push_error(report, &account.name, "帖子列表", error);
+                        if terminal {
+                            stop_after_confirmation = true;
+                        }
+                        Vec::new()
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+
+        if !high_risk_blocked && !stop_after_confirmation && plan.read > 0 {
+            let selected =
+                select_unseen_posts(&client, &post_pool, plan.read as usize, &mut used_reads);
+            match run_reads(
+                report,
+                &account.name,
+                &client,
+                &mut signer,
+                &selected,
+                plan.read,
+                &mut completed_requests.reads,
+            )
+            .await
+            {
+                FlowSignal::Continue => {}
+                FlowSignal::BlockHighRisk => high_risk_blocked = true,
+                FlowSignal::Stop => stop_after_confirmation = true,
+            }
+        }
+
+        if !high_risk_blocked && !stop_after_confirmation && plan.like > 0 {
+            let selected =
+                select_unseen_posts(&client, &post_pool, plan.like as usize, &mut used_likes);
+            for post in &selected {
+                match set_like_with_captcha(
+                    &client,
+                    captcha.as_ref(),
+                    &mut signer,
+                    &post.post_id,
+                    false,
+                    max_attempts,
+                )
+                .await
+                {
+                    Ok(solved) => completed_requests.likes.push((post.clone(), solved)),
+                    Err(ActionError::Captcha(message)) => {
+                        push_captcha_error(report, &account.name, &post.subject, &message);
+                        high_risk_blocked = true;
+                        break;
+                    }
+                    Err(ActionError::Bbs(error)) => {
+                        let terminal = is_terminal(&error);
+                        push_error(report, &account.name, &post.subject, error);
+                        if terminal {
+                            stop_after_confirmation = true;
+                            break;
+                        }
+                        continue;
+                    }
+                }
+
+                if !account.tasks.bbs.cancel_like {
+                    continue;
+                }
+                match set_like_with_captcha(
+                    &client,
+                    captcha.as_ref(),
+                    &mut signer,
+                    &post.post_id,
+                    true,
+                    max_attempts,
+                )
+                .await
+                {
+                    Ok(solved) => report.push(post_record(
+                        &account.name,
+                        "取消点赞",
+                        post,
+                        TaskOutcome::Success,
+                        if solved {
+                            "验证码通过后已恢复点赞状态"
+                        } else {
+                            "已恢复点赞状态"
+                        },
+                    )),
+                    Err(ActionError::Captcha(message)) => {
+                        push_captcha_error(report, &account.name, &post.subject, &message);
+                        high_risk_blocked = true;
+                        break;
+                    }
+                    Err(ActionError::Bbs(error)) => {
+                        let terminal = is_terminal(&error);
+                        push_error(report, &account.name, &post.subject, error);
+                        if terminal {
+                            stop_after_confirmation = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !high_risk_blocked && !stop_after_confirmation && plan.share {
+            let selected = select_unseen_posts(&client, &post_pool, 1, &mut used_shares);
+            if let Some(post) = selected.first() {
+                let ds = signer.sign_app().to_string();
+                match client.share_post(&post.post_id, &ds).await {
+                    Ok(()) => completed_requests.shares.push(post.clone()),
+                    Err(error) => {
+                        let terminal = is_terminal(&error);
+                        push_error(report, &account.name, &post.subject, error);
+                        if terminal {
+                            stop_after_confirmation = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        tokio::time::sleep(BBS_CONFIRM_DELAY).await;
+        summary = match client.missions().await {
+            Ok(summary) => summary,
             Err(error) => {
-                push_error(report, &account.name, "帖子列表", error);
-                confirm_completed_requests(report, &account.name, &client, &completed_requests)
-                    .await;
+                push_error(report, &account.name, "任务完成复查", error);
                 return;
             }
-        }
-    };
+        };
+        timed_out |= reconcile_task_results(
+            report,
+            &account.name,
+            plan,
+            &mut completed_requests,
+            &summary,
+            attempts,
+            max_attempts,
+            &mut stopped,
+        );
 
-    match run_reads(
-        report,
+        if high_risk_blocked {
+            let pending = BbsPlan::from_summary(&summary).filtered(&account.tasks.bbs);
+            push_blocked_actions(report, &account.name, &pending);
+            break;
+        }
+        if stop_after_confirmation {
+            break;
+        }
+    }
+
+    let remaining = BbsPlan::from_summary(&summary).filtered(&account.tasks.bbs);
+    let all_confirmed = remaining.is_complete() && !timed_out && !high_risk_blocked;
+    report.push(record(
         &account.name,
-        &client,
-        &mut signer,
-        &selected,
-        plan.read,
-        &mut completed_requests.reads,
-    )
-    .await
-    {
-        FlowSignal::Continue => {}
-        FlowSignal::BlockHighRisk => high_risk_blocked = true,
-        FlowSignal::Stop => {
-            confirm_completed_requests(report, &account.name, &client, &completed_requests).await;
-            return;
-        }
-    }
-
-    if high_risk_blocked {
-        push_blocked_actions(report, &account.name, &plan);
-        confirm_completed_requests(report, &account.name, &client, &completed_requests).await;
-        return;
-    }
-
-    for post in selected.iter().take(plan.like as usize) {
-        match set_like_with_captcha(
-            &client,
-            captcha.as_ref(),
-            &mut signer,
-            &post.post_id,
-            false,
-            config.runtime.task_max_attempts,
-        )
-        .await
-        {
-            Ok(solved) => completed_requests.likes.push((post.clone(), solved)),
-            Err(ActionError::Captcha(message)) => {
-                push_captcha_error(report, &account.name, &post.subject, &message);
-                high_risk_blocked = true;
-                break;
-            }
-            Err(ActionError::Bbs(error)) => {
-                let terminal = is_terminal(&error);
-                push_error(report, &account.name, &post.subject, error);
-                if terminal {
-                    confirm_completed_requests(report, &account.name, &client, &completed_requests)
-                        .await;
-                    return;
-                }
-                continue;
-            }
-        }
-
-        if !account.tasks.bbs.cancel_like {
-            continue;
-        }
-        match set_like_with_captcha(
-            &client,
-            captcha.as_ref(),
-            &mut signer,
-            &post.post_id,
-            true,
-            config.runtime.task_max_attempts,
-        )
-        .await
-        {
-            Ok(solved) => report.push(post_record(
-                &account.name,
-                "取消点赞",
-                post,
-                TaskOutcome::Success,
-                if solved {
-                    "验证码通过后已恢复点赞状态"
-                } else {
-                    "已恢复点赞状态"
-                },
-            )),
-            Err(ActionError::Captcha(message)) => {
-                push_captcha_error(report, &account.name, &post.subject, &message);
-                high_risk_blocked = true;
-                break;
-            }
-            Err(ActionError::Bbs(error)) => {
-                let terminal = is_terminal(&error);
-                push_error(report, &account.name, &post.subject, error);
-                if terminal {
-                    confirm_completed_requests(report, &account.name, &client, &completed_requests)
-                        .await;
-                    return;
-                }
-            }
-        }
-    }
-
-    if high_risk_blocked {
-        if plan.share {
-            report.push(record(
-                &account.name,
-                "分享",
-                "后续动作",
-                TaskOutcome::Skipped,
-                "此前触发验证码，已停止高风险动作",
-            ));
-        }
-        confirm_completed_requests(report, &account.name, &client, &completed_requests).await;
-        return;
-    }
-
-    if plan.share {
-        if let Some(post) = selected.first() {
-            let ds = signer.sign_app().to_string();
-            match client.share_post(&post.post_id, &ds).await {
-                Ok(()) => completed_requests.share = Some(post.clone()),
-                Err(error) => push_error(report, &account.name, &post.subject, error),
-            }
-        } else {
-            report.push(record(
-                &account.name,
-                "分享",
-                "帖子",
-                TaskOutcome::Skipped,
-                "没有可用帖子",
-            ));
-        }
-    }
-
-    confirm_completed_requests(report, &account.name, &client, &completed_requests).await;
+        "米游币",
+        "完成确认",
+        completion_outcome(all_confirmed),
+        &format!(
+            "复查后已领取 {}，还可领取 {}，当前共 {} 米游币",
+            summary.already_received_points, summary.can_get_points, summary.total_points
+        ),
+    ));
 }
 
 async fn run_reads(
@@ -444,115 +500,277 @@ async fn run_reads(
     FlowSignal::Continue
 }
 
-async fn confirm_completed_requests(
-    report: &mut RunReport,
-    account: &str,
+fn select_unseen_posts(
     client: &BbsClient,
-    completed: &CompletedRequests,
-) {
-    if completed.is_empty() {
-        return;
-    }
-
-    match client.missions().await {
-        Ok(summary) => push_completion_results(report, account, completed, &summary),
-        Err(error) => push_error(report, account, "任务完成复查", error),
-    }
+    posts: &[PostRef],
+    count: usize,
+    used: &mut HashSet<String>,
+) -> Vec<PostRef> {
+    let available = posts
+        .iter()
+        .filter(|post| !used.contains(&post.post_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let selected = client.select_posts(&available, count);
+    used.extend(selected.iter().map(|post| post.post_id.clone()));
+    selected
 }
 
-fn push_completion_results(
+#[allow(clippy::too_many_arguments)]
+fn reconcile_task_results(
     report: &mut RunReport,
     account: &str,
-    completed: &CompletedRequests,
+    requested: BbsPlan,
+    completed: &mut CompletedRequests,
     summary: &CoinSummary,
-) {
-    let sign_confirmed = mission_confirmed(summary, MissionKind::Sign);
-    let read_confirmed = mission_confirmed(summary, MissionKind::Read);
-    let like_confirmed = mission_confirmed(summary, MissionKind::Like);
-    let share_confirmed = mission_confirmed(summary, MissionKind::Share);
+    attempts: TaskAttempts,
+    max_attempts: u32,
+    stopped: &mut StoppedTasks,
+) -> bool {
+    let mut timed_out = false;
 
-    for (forum, captcha_solved) in &completed.forum_signs {
+    if requested.sign {
+        match mission_status(summary, MissionKind::Sign) {
+            MissionStatus::Completed => {
+                push_confirmed_signs(report, account, completed, attempts.sign);
+                stopped.sign = true;
+            }
+            MissionStatus::Pending if attempts.sign >= max_attempts => {
+                completed.forum_signs.clear();
+                push_state_sync_timeout(report, account, "社区签到", attempts.sign);
+                stopped.sign = true;
+                timed_out = true;
+            }
+            MissionStatus::Missing => {
+                completed.forum_signs.clear();
+                push_missing_mission(report, account, "社区签到");
+                stopped.sign = true;
+            }
+            MissionStatus::Pending => {}
+        }
+    }
+
+    if requested.read > 0 {
+        match mission_status(summary, MissionKind::Read) {
+            MissionStatus::Completed => {
+                push_confirmed_posts(report, account, "阅读", &mut completed.reads, attempts.read);
+                stopped.read = true;
+            }
+            MissionStatus::Pending if attempts.read >= max_attempts => {
+                completed.reads.clear();
+                push_state_sync_timeout(report, account, "阅读", attempts.read);
+                stopped.read = true;
+                timed_out = true;
+            }
+            MissionStatus::Missing => {
+                completed.reads.clear();
+                push_missing_mission(report, account, "阅读");
+                stopped.read = true;
+            }
+            MissionStatus::Pending => {}
+        }
+    }
+
+    if requested.like > 0 {
+        match mission_status(summary, MissionKind::Like) {
+            MissionStatus::Completed => {
+                push_confirmed_likes(report, account, completed, attempts.like);
+                stopped.like = true;
+            }
+            MissionStatus::Pending if attempts.like >= max_attempts => {
+                completed.likes.clear();
+                push_state_sync_timeout(report, account, "点赞", attempts.like);
+                stopped.like = true;
+                timed_out = true;
+            }
+            MissionStatus::Missing => {
+                completed.likes.clear();
+                push_missing_mission(report, account, "点赞");
+                stopped.like = true;
+            }
+            MissionStatus::Pending => {}
+        }
+    }
+
+    if requested.share {
+        match mission_status(summary, MissionKind::Share) {
+            MissionStatus::Completed => {
+                push_confirmed_posts(
+                    report,
+                    account,
+                    "分享",
+                    &mut completed.shares,
+                    attempts.share,
+                );
+                stopped.share = true;
+            }
+            MissionStatus::Pending if attempts.share >= max_attempts => {
+                completed.shares.clear();
+                push_state_sync_timeout(report, account, "分享", attempts.share);
+                stopped.share = true;
+                timed_out = true;
+            }
+            MissionStatus::Missing => {
+                completed.shares.clear();
+                push_missing_mission(report, account, "分享");
+                stopped.share = true;
+            }
+            MissionStatus::Pending => {}
+        }
+    }
+
+    timed_out
+}
+
+fn push_confirmed_signs(
+    report: &mut RunReport,
+    account: &str,
+    completed: &mut CompletedRequests,
+    attempts: u32,
+) {
+    let mut seen = HashSet::new();
+    let signs = std::mem::take(&mut completed.forum_signs);
+    if signs.is_empty() {
         report.push(record(
             account,
             "社区签到",
-            forum,
-            completion_outcome(sign_confirmed),
-            if sign_confirmed {
-                if *captcha_solved {
-                    "验证码通过后提交签到，任务状态复查已确认米游币领取"
+            "米游币任务",
+            TaskOutcome::Success,
+            &format!("第 {attempts} 轮复查确认社区签到任务完成"),
+        ));
+        return;
+    }
+    for (forum, captcha_solved) in signs {
+        if !seen.insert(forum.clone()) {
+            continue;
+        }
+        report.push(record(
+            account,
+            "社区签到",
+            &forum,
+            TaskOutcome::Success,
+            &format!(
+                "{}第 {attempts} 轮复查确认社区签到米游币领取",
+                if captcha_solved {
+                    "验证码通过后提交签到，"
                 } else {
-                    "签到请求已提交，任务状态复查已确认米游币领取"
+                    ""
                 }
-            } else {
-                "签到请求返回成功，但任务状态复查未确认米游币领取"
-            },
+            ),
         ));
     }
-    for post in &completed.reads {
+}
+
+fn push_confirmed_posts(
+    report: &mut RunReport,
+    account: &str,
+    task: &str,
+    completed: &mut Vec<PostRef>,
+    attempts: u32,
+) {
+    let mut seen = HashSet::new();
+    let posts = std::mem::take(completed);
+    if posts.is_empty() {
+        report.push(record(
+            account,
+            task,
+            "米游币任务",
+            TaskOutcome::Success,
+            &format!("第 {attempts} 轮复查确认{task}任务完成"),
+        ));
+        return;
+    }
+    for post in posts {
+        if !seen.insert(post.post_id.clone()) {
+            continue;
+        }
         report.push(post_record(
             account,
-            "阅读",
-            post,
-            completion_outcome(read_confirmed),
-            if read_confirmed {
-                "任务状态复查已确认阅读米游币领取"
-            } else {
-                "阅读请求返回成功，但任务状态复查未确认米游币领取"
-            },
+            task,
+            &post,
+            TaskOutcome::Success,
+            &format!("第 {attempts} 轮复查确认{task}米游币领取"),
         ));
     }
-    for (post, captcha_solved) in &completed.likes {
+}
+
+fn push_confirmed_likes(
+    report: &mut RunReport,
+    account: &str,
+    completed: &mut CompletedRequests,
+    attempts: u32,
+) {
+    let mut seen = HashSet::new();
+    let likes = std::mem::take(&mut completed.likes);
+    if likes.is_empty() {
+        report.push(record(
+            account,
+            "点赞",
+            "米游币任务",
+            TaskOutcome::Success,
+            &format!("第 {attempts} 轮复查确认点赞任务完成"),
+        ));
+        return;
+    }
+    for (post, captcha_solved) in likes {
+        if !seen.insert(post.post_id.clone()) {
+            continue;
+        }
         report.push(post_record(
             account,
             "点赞",
-            post,
-            completion_outcome(like_confirmed),
-            if like_confirmed {
-                if *captcha_solved {
-                    "验证码通过后提交点赞，任务状态复查已确认米游币领取"
+            &post,
+            TaskOutcome::Success,
+            &format!(
+                "{}第 {attempts} 轮复查确认点赞米游币领取",
+                if captcha_solved {
+                    "验证码通过后提交点赞，"
                 } else {
-                    "任务状态复查已确认点赞米游币领取"
+                    ""
                 }
-            } else {
-                "点赞请求返回成功，但任务状态复查未确认米游币领取"
-            },
+            ),
         ));
     }
-    if let Some(post) = &completed.share {
-        report.push(post_record(
-            account,
-            "分享",
-            post,
-            completion_outcome(share_confirmed),
-            if share_confirmed {
-                "任务状态复查已确认分享米游币领取"
-            } else {
-                "分享请求返回成功，但任务状态复查未确认米游币领取"
-            },
-        ));
-    }
+}
 
-    let all_confirmed = (completed.forum_signs.is_empty() || sign_confirmed)
-        && (completed.reads.is_empty() || read_confirmed)
-        && (completed.likes.is_empty() || like_confirmed)
-        && (completed.share.is_none() || share_confirmed);
+fn push_state_sync_timeout(report: &mut RunReport, account: &str, task: &str, attempts: u32) {
     report.push(record(
         account,
-        "米游币",
-        "完成确认",
-        completion_outcome(all_confirmed),
+        task,
+        "米游币任务",
+        TaskOutcome::Failed,
         &format!(
-            "复查后已领取 {}，还可领取 {}，当前共 {} 米游币",
-            summary.already_received_points, summary.can_get_points, summary.total_points
+            "状态同步超时：已执行 {attempts} 轮并在每轮后等待 3 秒复查，服务端仍未确认{task}任务完成"
         ),
     ));
 }
 
-fn mission_confirmed(summary: &CoinSummary, kind: MissionKind) -> bool {
-    summary.can_get_points == 0
-        || summary
-            .mission(kind)
-            .is_some_and(|mission| mission.award_received)
+fn push_missing_mission(report: &mut RunReport, account: &str, task: &str) {
+    report.push(record(
+        account,
+        task,
+        "米游币任务",
+        TaskOutcome::Failed,
+        "任务状态响应缺少对应任务，状态未知，已停止重试",
+    ));
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MissionStatus {
+    Completed,
+    Pending,
+    Missing,
+}
+
+fn mission_status(summary: &CoinSummary, kind: MissionKind) -> MissionStatus {
+    if summary.can_get_points == 0 {
+        return MissionStatus::Completed;
+    }
+    match summary.mission(kind) {
+        Some(mission) if mission.award_received => MissionStatus::Completed,
+        Some(_) => MissionStatus::Pending,
+        None => MissionStatus::Missing,
+    }
 }
 
 fn completion_outcome(confirmed: bool) -> TaskOutcome {
@@ -729,6 +947,22 @@ impl BbsPlan {
         self
     }
 
+    fn without_stopped(mut self, stopped: StoppedTasks) -> Self {
+        if stopped.sign {
+            self.sign = false;
+        }
+        if stopped.read {
+            self.read = 0;
+        }
+        if stopped.like {
+            self.like = 0;
+        }
+        if stopped.share {
+            self.share = false;
+        }
+        self
+    }
+
     fn is_complete(self) -> bool {
         !self.sign && self.read == 0 && self.like == 0 && !self.share
     }
@@ -742,7 +976,7 @@ fn pending_once(summary: &CoinSummary, kind: MissionKind) -> bool {
     summary
         .mission(kind)
         .map(|mission| !mission.award_received)
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 fn remaining(summary: &CoinSummary, kind: MissionKind, target: u32) -> u32 {
@@ -755,7 +989,7 @@ fn remaining(summary: &CoinSummary, kind: MissionKind, target: u32) -> u32 {
                 target.saturating_sub(mission.happened_times)
             }
         })
-        .unwrap_or(target)
+        .unwrap_or(0)
 }
 
 fn is_terminal(error: &BbsError) -> bool {
@@ -878,31 +1112,13 @@ mod tests {
         }
     }
 
-    fn test_client(server: &MockServer) -> BbsClient {
-        let http = HttpClient::builder()
-            .retry(RetryPolicy {
-                attempts: 1,
-                base_delay: Duration::ZERO,
-            })
-            .build()
-            .unwrap();
-        let base = Url::parse(&format!("{}/", server.uri())).unwrap();
-        BbsClient::new(
-            http,
-            SecretString::new("stuid=123;stoken=test-secret"),
-            SecretString::new("cookie_token=test-secret"),
-            "test-device-id",
-        )
-        .endpoints(BbsEndpoints::from_base_url(&base).unwrap())
-    }
-
     #[test]
     fn completed_coin_day_produces_no_actions() {
         assert!(BbsPlan::from_summary(&summary(0, Vec::new())).is_complete());
     }
 
     #[test]
-    fn plan_uses_saturating_remaining_counts_and_fresh_day_defaults() {
+    fn plan_uses_only_mapped_missions_returned_by_server() {
         let plan = BbsPlan::from_summary(&summary(
             20,
             vec![
@@ -917,39 +1133,17 @@ mod tests {
                 sign: false,
                 read: 1,
                 like: 0,
-                share: true,
+                share: false,
             }
         );
         assert_eq!(plan.required_posts(), 1);
 
-        let fresh = BbsPlan::from_summary(&summary(100, Vec::new()));
-        assert_eq!(fresh.read, READ_TARGET);
-        assert_eq!(fresh.like, LIKE_TARGET);
-        assert!(fresh.sign && fresh.share);
+        assert!(BbsPlan::from_summary(&summary(100, Vec::new())).is_complete());
     }
 
-    #[tokio::test]
-    async fn completed_request_success_depends_on_rechecked_mission_state() {
-        let confirmed_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/apihub/wapi/getUserMissionsState"))
-            .and(query_param("point_sn", "myb"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "retcode": 0,
-                "message": "OK",
-                "data": {
-                    "can_get_points": 20,
-                    "already_received_points": 80,
-                    "total_points": 180,
-                    "states": [
-                        {"mission_id": 59, "is_get_award": true, "happened_times": 3}
-                    ]
-                }
-            })))
-            .expect(1)
-            .mount(&confirmed_server)
-            .await;
-        let requests = CompletedRequests {
+    #[test]
+    fn rechecked_task_is_confirmed_or_times_out_independently() {
+        let mut requests = CompletedRequests {
             reads: vec![PostRef {
                 post_id: "42".to_owned(),
                 subject: "测试帖子".to_owned(),
@@ -957,14 +1151,24 @@ mod tests {
             ..CompletedRequests::default()
         };
         let mut confirmed_report = RunReport::default();
-        confirm_completed_requests(
+        let mut confirmed_stopped = StoppedTasks::default();
+        assert!(!reconcile_task_results(
             &mut confirmed_report,
             "测试账号",
-            &test_client(&confirmed_server),
-            &requests,
-        )
-        .await;
-        assert_eq!(confirmed_report.records.len(), 2);
+            BbsPlan {
+                read: 1,
+                ..BbsPlan::default()
+            },
+            &mut requests,
+            &summary(20, vec![mission(MissionKind::Read, true, 3)]),
+            TaskAttempts {
+                read: 2,
+                ..TaskAttempts::default()
+            },
+            3,
+            &mut confirmed_stopped,
+        ));
+        assert_eq!(confirmed_report.records.len(), 1);
         assert!(
             confirmed_report
                 .records
@@ -977,54 +1181,46 @@ mod tests {
                 .iter()
                 .any(|record| record.message.contains("复查"))
         );
+        assert!(confirmed_stopped.read);
+        assert!(requests.reads.is_empty());
 
-        let stale_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/apihub/wapi/getUserMissionsState"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "retcode": 0,
-                "message": "OK",
-                "data": {
-                    "can_get_points": 30,
-                    "already_received_points": 70,
-                    "total_points": 170,
-                    "states": [
-                        {"mission_id": 59, "is_get_award": false, "happened_times": 3}
-                    ]
-                }
-            })))
-            .expect(1)
-            .mount(&stale_server)
-            .await;
+        let mut stale_requests = CompletedRequests::default();
         let mut stale_report = RunReport::default();
-        confirm_completed_requests(
+        let mut stale_stopped = StoppedTasks::default();
+        assert!(reconcile_task_results(
             &mut stale_report,
             "测试账号",
-            &test_client(&stale_server),
-            &requests,
-        )
-        .await;
+            BbsPlan {
+                read: 1,
+                ..BbsPlan::default()
+            },
+            &mut stale_requests,
+            &summary(30, vec![mission(MissionKind::Read, false, 3)]),
+            TaskAttempts {
+                read: 3,
+                ..TaskAttempts::default()
+            },
+            3,
+            &mut stale_stopped,
+        ));
         assert_eq!(stale_report.exit_code(), 1);
+        assert_eq!(stale_report.records.len(), 1);
+        assert_eq!(stale_report.records[0].outcome, TaskOutcome::Failed);
         assert!(
             stale_report
                 .records
                 .iter()
-                .all(|record| record.outcome == TaskOutcome::Failed)
+                .any(|record| record.message.contains("状态同步超时"))
         );
-        assert!(
-            stale_report
-                .records
-                .iter()
-                .any(|record| record.message.contains("未确认"))
-        );
+        assert!(stale_stopped.read);
     }
 
     #[test]
     fn no_remaining_points_confirms_an_omitted_mission() {
-        assert!(mission_confirmed(
-            &summary(0, Vec::new()),
-            MissionKind::Share
-        ));
+        assert_eq!(
+            mission_status(&summary(0, Vec::new()), MissionKind::Share),
+            MissionStatus::Completed
+        );
     }
 
     #[test]
@@ -1186,8 +1382,7 @@ mod tests {
             .respond_with(move |_request: &Request| {
                 let attempt = solve_responder_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if attempt == 1 {
-                    ResponseTemplate::new(200)
-                        .set_body_json(json!({"data": {"result": "fail"}}))
+                    ResponseTemplate::new(200).set_body_json(json!({"data": {"result": "fail"}}))
                 } else {
                     ResponseTemplate::new(200).set_body_json(json!({
                         "data": {
