@@ -9,12 +9,12 @@
 ## 主要功能
 
 - 国内游戏签到与 HoYoLAB 国际服游戏签到。
-- 米游社社区签到，可独立选择板块；阅读、点赞、取消点赞和分享均可单独开关。
+- 米游社社区签到，可独立选择板块；阅读、点赞、取消点赞和分享均可单独开关，并按各自任务状态受控复查与重试。
 - 国内云原神、云绝区零和国际服云原神签到。
-- 多账号独立 Cookie、任务、设备、代理和游戏配置，并统一汇总运行结果与通知。
+- 多账号独立 Cookie、任务、设备、代理和游戏配置；普通报告、日志和通知按账号展示游戏奖励与米游币汇总。
 - 游戏签到提交后复查、失败时按配置重试，并显示累计天数和当天奖励。
 - 国内 Cookie 凭据失效时使用 SToken 自动刷新；普通 YAML 可安全写回。
-- 验证码平台、HTTP/HTTPS/SOCKS 代理和 Telegram 独立代理。
+- 验证码平台异常后等待并重新创建挑战，支持 HTTP/HTTPS/SOCKS 代理和 Telegram 独立代理。
 - Telegram、微信相关渠道、SMTP、Webhook、Windows 本地通知等多种推送方式。
 - 按日滚动文件日志、结构化 JSON 报告、目录批量运行和常驻调度。
 - 首次配置向导、离线/在线诊断、通知独立测试、受控备份恢复和 Windows 自动运行管理。
@@ -56,7 +56,7 @@ chmod +x MihoyoBBSToolsRS
 ./MihoyoBBSToolsRS run
 ```
 
-`config init` 会隐藏输入 Cookie，取得米游社昵称，选择账号、游戏、社区操作和可选通知，最后确认后一次创建 `config/config.yaml`。中途取消或失败不会留下半成品配置。已有配置添加账号时继续使用 `config add-account`；需要备注时使用 `--name "小号"`。
+`config init` 会用 `*` 掩码显示 Cookie 输入，取得米游社昵称，选择账号、游戏、社区操作和可选通知，最后确认后一次创建 `config/config.yaml`。中途取消或失败不会留下半成品配置。已有配置添加账号时继续使用 `config add-account`；需要备注时使用 `--name "小号"`。
 
 Cookie、SToken 和通知 Token 都属于账号凭据。只在程序提示后粘贴 Cookie，不要把它写进命令参数、截图、日志、Git 提交或公开聊天。
 
@@ -79,7 +79,7 @@ Cookie、SToken 和通知 Token 都属于账号凭据。只在程序提示后粘
 | `config add-account` | 安全输入 Cookie，添加账号或自动创建配置 |
 | `config setup` | 显示当前状态，暂存修改并在退出时统一确认 |
 | `run` | 执行配置中已启用的全部任务 |
-| `run --verbose` | 展开全部成功、已完成和跳过记录 |
+| `run --verbose` | 在按账号的关键摘要后展开全部逐项记录 |
 | `checkin --region china` | 只执行国内游戏签到 |
 | `validate-config` | 校验 YAML，不访问远程接口 |
 | `doctor` / `doctor --online` | 离线检查，或执行无任务副作用的只读在线诊断 |
