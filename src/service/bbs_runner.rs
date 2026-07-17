@@ -266,10 +266,11 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
         if plan.is_complete() {
             break;
         }
-        attempts.record(plan);
         let mut stop_after_confirmation = false;
+        let mut attempted = BbsPlan::default();
 
         if plan.sign {
+            attempted.sign = true;
             for forum in &forums {
                 let request = ForumSignRequest::new(forum.gids);
                 match sign_forum_with_captcha(
@@ -320,6 +321,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
             };
 
         if !high_risk_blocked && !stop_after_confirmation && plan.read > 0 {
+            attempted.read = plan.read;
             let selected =
                 select_unseen_posts(&client, &post_pool, plan.read as usize, &mut used_reads);
             match run_reads(
@@ -340,6 +342,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
         }
 
         if !high_risk_blocked && !stop_after_confirmation && plan.like > 0 {
+            attempted.like = plan.like;
             let selected =
                 select_unseen_posts(&client, &post_pool, plan.like as usize, &mut used_likes);
             for post in &selected {
@@ -412,6 +415,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
         }
 
         if !high_risk_blocked && !stop_after_confirmation && plan.share {
+            attempted.share = true;
             let selected = select_unseen_posts(&client, &post_pool, 1, &mut used_shares);
             if let Some(post) = selected.first() {
                 let ds = signer.sign_app().to_string();
@@ -428,6 +432,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
             }
         }
 
+        attempts.record(attempted);
         tokio::time::sleep(BBS_CONFIRM_DELAY).await;
         summary = match client.missions().await {
             Ok(summary) => summary,
@@ -439,7 +444,7 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
         timed_out |= reconcile_task_results(
             report,
             &account.name,
-            plan,
+            attempted,
             &mut completed_requests,
             &summary,
             attempts,
@@ -1133,6 +1138,20 @@ mod tests {
         assert_eq!(plan.required_posts(), 1);
 
         assert!(BbsPlan::from_summary(&summary(100, Vec::new())).is_complete());
+    }
+
+    #[test]
+    fn attempt_counter_ignores_tasks_not_entered_after_an_earlier_block() {
+        let mut attempts = TaskAttempts::default();
+        attempts.record(BbsPlan {
+            sign: true,
+            ..BbsPlan::default()
+        });
+
+        assert_eq!(attempts.sign, 1);
+        assert_eq!(attempts.read, 0);
+        assert_eq!(attempts.like, 0);
+        assert_eq!(attempts.share, 0);
     }
 
     #[test]
