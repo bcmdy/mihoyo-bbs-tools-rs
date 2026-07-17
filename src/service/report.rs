@@ -346,6 +346,10 @@ mod tests {
         }
     }
 
+    fn coin_summary_message(received: u32, remaining: u32, total: u32) -> String {
+        format!("已领取 {received}，还可领取 {remaining}，当前共 {total} 米游币")
+    }
+
     #[test]
     fn exit_code_uses_documented_priority() {
         let mut report = RunReport::default();
@@ -401,6 +405,7 @@ mod tests {
 
     #[test]
     fn text_report_groups_accounts_and_keeps_rewards_and_coin_summary() {
+        let coin_summary = coin_summary_message(17, 33, 2468);
         let mut report = RunReport::default();
         report.push(TaskRecord {
             account: "账号甲".to_owned(),
@@ -421,7 +426,7 @@ mod tests {
             task: "米游币".to_owned(),
             subject: "完成确认".to_owned(),
             outcome: TaskOutcome::Success,
-            message: "复查后已领取 50，还可领取 0，当前共 4219 米游币".to_owned(),
+            message: format!("复查后{coin_summary}"),
         });
         report.push(TaskRecord {
             account: "账号乙".to_owned(),
@@ -434,7 +439,7 @@ mod tests {
         assert!(text.contains("/ 国内游戏签到 / 原神 / ***1234："));
         assert!(text.contains("今日奖励：原石 ×20"));
         assert!(text.contains("/ 社区签到 / 原神："));
-        assert!(text.contains("已领取 50，还可领取 0，当前共 4219 米游币"));
+        assert!(text.contains(&coin_summary));
         assert!(!text.contains("/ 米游币 / 完成确认："));
     }
 
@@ -463,17 +468,18 @@ mod tests {
 
     #[test]
     fn already_completed_coin_summary_remains_visible() {
+        let coin_summary = coin_summary_message(23, 27, 1357);
         let mut report = RunReport::default();
         report.push(TaskRecord {
             account: "账号甲".to_owned(),
             task: "米游币".to_owned(),
             subject: "任务状态".to_owned(),
             outcome: TaskOutcome::AlreadyCompleted,
-            message: "已领取 50，还可领取 0，当前共 4219 米游币".to_owned(),
+            message: coin_summary.clone(),
         });
 
-        assert!(report.render_text().contains(
-            "/ 米游币 / 任务状态：今日已完成；已领取 50，还可领取 0，当前共 4219 米游币"
-        ));
+        assert!(report.render_text().contains(&format!(
+            "/ 米游币 / 任务状态：今日已完成；{coin_summary}"
+        )));
     }
 }
