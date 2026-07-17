@@ -478,8 +478,10 @@ mod tests {
             message: coin_summary.clone(),
         });
 
-        assert!(report.render_text().contains(&format!(
-            "/ 米游币 / 任务状态：今日已完成；{coin_summary}"
-        )));
+        assert!(
+            report
+                .render_text()
+                .contains(&format!("/ 米游币 / 任务状态：今日已完成；{coin_summary}"))
+        );
     }
 }
