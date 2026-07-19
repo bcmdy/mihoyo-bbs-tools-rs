@@ -353,11 +353,7 @@ async fn prepare_task_baseline(context: &mut BbsTaskContext<'_>, task: &str) {
     }
     match context.client.missions().await {
         Ok(summary) => {
-            log_unknown_missions(
-                context.account,
-                &summary,
-                context.logged_unknown_missions,
-            );
+            log_unknown_missions(context.account, &summary, context.logged_unknown_missions);
             tracing::info!(
                 account = context.account,
                 task,
@@ -392,10 +388,7 @@ fn coin_summary_record(account: &str, subject: &str, summary: &CoinSummary) -> T
     )
 }
 
-async fn run_sign_task(
-    context: &mut BbsTaskContext<'_>,
-    forums: &[&ForumSpec],
-) -> TaskRunResult {
+async fn run_sign_task(context: &mut BbsTaskContext<'_>, forums: &[&ForumSpec]) -> TaskRunResult {
     let mut completed = Vec::new();
     for attempt in 1..=context.max_attempts {
         let before = current_task_baseline(context);
@@ -412,7 +405,7 @@ async fn run_sign_task(
                 &request,
                 context.max_attempts,
             )
-                .await
+            .await
             {
                 Ok(result) => {
                     all_idempotent &= result.already_signed;
@@ -452,7 +445,13 @@ async fn run_sign_task(
             Ok(after) => after,
             Err(result) => return result,
         };
-        log_task_recheck(context.account, "社区签到", attempt, before.as_ref(), &after);
+        log_task_recheck(
+            context.account,
+            "社区签到",
+            attempt,
+            before.as_ref(),
+            &after,
+        );
         let idempotent = completed_this_round == forums.len() && all_idempotent;
         let confirmed = task_confirmed(before.as_ref(), &after, MissionKind::Sign, idempotent);
         let credited_points = credited_points(before.as_ref(), &after);
@@ -494,7 +493,11 @@ async fn run_read_task(
         let count = if attempt == 1 {
             first_count
         } else {
-            retry_action_count(context.latest_summary.as_ref(), MissionKind::Read, READ_TARGET)
+            retry_action_count(
+                context.latest_summary.as_ref(),
+                MissionKind::Read,
+                READ_TARGET,
+            )
         };
         let selected = match select_task_posts(context, forum, count, &mut used).await {
             Ok(selected) => selected,
@@ -562,7 +565,11 @@ async fn run_like_task(
         let count = if attempt == 1 {
             first_count
         } else {
-            retry_action_count(context.latest_summary.as_ref(), MissionKind::Like, LIKE_TARGET)
+            retry_action_count(
+                context.latest_summary.as_ref(),
+                MissionKind::Like,
+                LIKE_TARGET,
+            )
         };
         let selected = match select_task_posts(context, forum, count, &mut used).await {
             Ok(selected) => selected,
@@ -677,10 +684,7 @@ async fn run_like_task(
     TaskRunResult::TimedOut
 }
 
-async fn run_share_task(
-    context: &mut BbsTaskContext<'_>,
-    forum: &ForumSpec,
-) -> TaskRunResult {
+async fn run_share_task(context: &mut BbsTaskContext<'_>, forum: &ForumSpec) -> TaskRunResult {
     let mut completed = Vec::new();
     let mut used = HashSet::new();
     for attempt in 1..=context.max_attempts {
@@ -782,11 +786,7 @@ async fn recheck_task(
     tokio::time::sleep(BBS_CONFIRM_DELAY).await;
     match context.client.missions().await {
         Ok(summary) => {
-            log_unknown_missions(
-                context.account,
-                &summary,
-                context.logged_unknown_missions,
-            );
+            log_unknown_missions(context.account, &summary, context.logged_unknown_missions);
             Ok(summary)
         }
         Err(error) => {
@@ -848,11 +848,7 @@ fn credited_points(before: Option<&CoinSummary>, after: &CoinSummary) -> u32 {
         after
             .already_received_points
             .saturating_sub(before.already_received_points)
-            .max(
-                before
-                    .can_get_points
-                    .saturating_sub(after.can_get_points),
-            )
+            .max(before.can_get_points.saturating_sub(after.can_get_points))
     })
 }
 
@@ -881,9 +877,7 @@ fn log_task_recheck(
             after
                 .already_received_points
                 .saturating_sub(before.already_received_points),
-            before
-                .can_get_points
-                .saturating_sub(after.can_get_points),
+            before.can_get_points.saturating_sub(after.can_get_points),
         )
     });
     tracing::info!(
@@ -1505,18 +1499,10 @@ mod tests {
 
     #[test]
     fn confirmation_uses_only_the_current_task_and_positive_coin_delta() {
-        let before = summary_with_points(
-            30,
-            0,
-            4219,
-            vec![mission(MissionKind::Other(62), true, 1)],
-        );
-        let unchanged = summary_with_points(
-            30,
-            0,
-            4219,
-            vec![mission(MissionKind::Other(64), true, 1)],
-        );
+        let before =
+            summary_with_points(30, 0, 4219, vec![mission(MissionKind::Other(62), true, 1)]);
+        let unchanged =
+            summary_with_points(30, 0, 4219, vec![mission(MissionKind::Other(64), true, 1)]);
         assert!(!task_confirmed(
             Some(&before),
             &unchanged,
@@ -1549,10 +1535,7 @@ mod tests {
     fn later_rounds_use_rechecked_progress_without_becoming_zero_action_rounds() {
         assert_eq!(
             retry_action_count(
-                Some(&summary(
-                    30,
-                    vec![mission(MissionKind::Read, false, 2)]
-                )),
+                Some(&summary(30, vec![mission(MissionKind::Read, false, 2)])),
                 MissionKind::Read,
                 READ_TARGET
             ),

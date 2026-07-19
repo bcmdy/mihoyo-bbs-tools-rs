@@ -57,9 +57,7 @@ impl CaptchaError {
             Self::Http(HttpError::Decode(_)) => "验证码平台返回无效 JSON",
             Self::Http(HttpError::Connect(_)) => "无法连接验证码平台",
             Self::Http(
-                HttpError::InvalidUrl(_)
-                | HttpError::InvalidProxy(_)
-                | HttpError::Build(_),
+                HttpError::InvalidUrl(_) | HttpError::InvalidProxy(_) | HttpError::Build(_),
             ) => "验证码平台 HTTP 配置无效",
             Self::Rejected(_) => "验证码平台返回失败结果",
             Self::InvalidResponse(_) => "验证码平台响应缺少有效结果",

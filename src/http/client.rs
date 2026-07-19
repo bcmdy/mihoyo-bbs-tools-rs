@@ -299,7 +299,10 @@ fn is_retryable(error: &reqwest::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
 
     #[test]
     fn proxy_without_scheme_defaults_to_http() {
@@ -341,6 +344,9 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(result, Err(HttpError::Status(StatusCode::INTERNAL_SERVER_ERROR))));
+        assert!(matches!(
+            result,
+            Err(HttpError::Status(StatusCode::INTERNAL_SERVER_ERROR))
+        ));
     }
 }
