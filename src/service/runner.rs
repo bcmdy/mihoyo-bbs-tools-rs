@@ -422,7 +422,8 @@ async fn submit_china_sign_once(
                 Ok(solution) => solution,
                 Err(error) => {
                     return ChinaSubmitResult::CaptchaBlocked(format!(
-                        "验证码平台求解失败：{error}"
+                        "验证码平台求解失败：{}",
+                        error.safe_reason()
                     ));
                 }
             };
