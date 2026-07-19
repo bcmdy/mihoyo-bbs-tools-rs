@@ -261,7 +261,11 @@ fn is_hidden_summary_record(record: &TaskRecord) -> bool {
 }
 
 fn is_coin_summary_record(record: &TaskRecord) -> bool {
-    record.task == "米游币" && matches!(record.subject.as_str(), "任务状态" | "完成确认")
+    record.task == "米游币"
+        && matches!(
+            record.subject.as_str(),
+            "任务状态" | "完成确认" | "实时汇总"
+        )
 }
 
 fn is_repeated_community_detail(record: &TaskRecord) -> bool {

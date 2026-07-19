@@ -154,6 +154,37 @@ impl HttpClient {
         Err(HttpError::Connect("重试次数已耗尽".to_owned()))
     }
 
+    /// 对可能产生外部副作用的 GET 只发送一次，并解析 JSON 响应。
+    ///
+    /// 少数第三方接口使用 GET 记录阅读或分享等业务动作；这些请求不能套用通用网络重试，
+    /// 是否再次执行必须由业务层在状态复查后决定。
+    pub async fn get_json_once_with<T>(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+        query: &[(&str, String)],
+    ) -> Result<T, HttpError>
+    where
+        T: DeserializeOwned,
+    {
+        match self
+            .inner
+            .request(Method::GET, url)
+            .headers(headers)
+            .query(query)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => response
+                .json()
+                .await
+                .map_err(|error| HttpError::Decode(error.to_string())),
+            Ok(response) => Err(HttpError::Status(response.status())),
+            Err(error) if error.is_timeout() => Err(HttpError::Timeout),
+            Err(error) => Err(HttpError::Connect(error.to_string())),
+        }
+    }
+
     /// 对可能产生外部副作用的 POST 只发送一次，由业务层决定是否可以再次尝试。
     pub async fn post_json_once<B, T>(
         &self,
@@ -268,6 +299,7 @@ fn is_retryable(error: &reqwest::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
 
     #[test]
     fn proxy_without_scheme_defaults_to_http() {
@@ -283,5 +315,32 @@ mod tests {
             normalize_proxy_url("file:///tmp/proxy"),
             Err(HttpError::InvalidProxy(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn side_effect_get_is_sent_once_even_when_retry_policy_allows_more_attempts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/side-effect"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 3,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+        let result: Result<serde_json::Value, HttpError> = client
+            .get_json_once_with(
+                Url::parse(&format!("{}/side-effect", server.uri())).unwrap(),
+                HeaderMap::new(),
+                &[],
+            )
+            .await;
+
+        assert!(matches!(result, Err(HttpError::Status(StatusCode::INTERNAL_SERVER_ERROR))));
     }
 }

@@ -37,6 +37,12 @@ pub enum BbsError {
     Api { retcode: i64, message: String },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ForumSignState {
+    Submitted,
+    AlreadySigned,
+}
+
 #[derive(Clone, Debug)]
 pub struct BbsEndpoints {
     pub missions: Url,
@@ -168,7 +174,7 @@ impl BbsClient {
     pub async fn read_post(&self, post_id: &str, ds: &str) -> Result<(), BbsError> {
         let response: ApiEnvelope<serde_json::Value> = self
             .http
-            .get_json_with(
+            .get_json_once_with(
                 self.endpoints.read.clone(),
                 self.app_headers(ds)?,
                 &[("post_id", post_id.to_owned())],
@@ -202,7 +208,7 @@ impl BbsClient {
     pub async fn share_post(&self, post_id: &str, ds: &str) -> Result<(), BbsError> {
         let response: ApiEnvelope<serde_json::Value> = self
             .http
-            .get_json_with(
+            .get_json_once_with(
                 self.endpoints.share.clone(),
                 self.app_headers(ds)?,
                 &[
@@ -268,7 +274,7 @@ impl BbsClient {
         request: &ForumSignRequest<'_>,
         ds: &str,
         captcha_challenge: Option<&str>,
-    ) -> Result<(), BbsError> {
+    ) -> Result<ForumSignState, BbsError> {
         let response: ApiEnvelope<serde_json::Value> = self
             .http
             .post_json_once(
@@ -277,7 +283,11 @@ impl BbsClient {
                 request,
             )
             .await?;
-        self.success(response)
+        if forum_sign_already_completed(&response.message) {
+            return Ok(ForumSignState::AlreadySigned);
+        }
+        self.success(response)?;
+        Ok(ForumSignState::Submitted)
     }
 
     pub fn select_posts(&self, posts: &[PostRef], count: usize) -> Vec<PostRef> {
@@ -405,6 +415,15 @@ struct ApiEnvelope<T> {
     #[serde(default)]
     message: String,
     data: Option<T>,
+}
+
+fn forum_sign_already_completed(message: &str) -> bool {
+    let normalized = message.trim().to_ascii_lowercase();
+    normalized.contains("已签到")
+        || normalized.contains("已经签到")
+        || normalized.contains("重复签到")
+        || normalized.contains("already sign")
+        || normalized.contains("already check")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -789,9 +808,33 @@ mod tests {
             .mount(&server)
             .await;
 
-        client(&server)
-            .sign_forum_once(&ForumSignRequest::new("2"), "body-ds", None)
-            .await
-            .unwrap();
+        assert_eq!(
+            client(&server)
+                .sign_forum_once(&ForumSignRequest::new("2"), "body-ds", None)
+                .await
+                .unwrap(),
+            ForumSignState::Submitted
+        );
+    }
+
+    #[tokio::test]
+    async fn forum_sign_maps_already_signed_message_to_idempotent_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/apihub/app/api/signIn"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0, "message": "今日已签到", "data": {}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_eq!(
+            client(&server)
+                .sign_forum_once(&ForumSignRequest::new("2"), "body-ds", None)
+                .await
+                .unwrap(),
+            ForumSignState::AlreadySigned
+        );
     }
 }

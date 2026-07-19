@@ -2,9 +2,12 @@ use std::{collections::HashSet, path::Path, time::Duration};
 
 use crate::{
     auth::{Credentials, SecretString},
-    bbs::{BbsClient, BbsError, CoinSummary, ForumSignRequest, MissionKind, PostRef, forum_by_id},
+    bbs::{
+        BbsClient, BbsError, CoinSummary, ForumSignRequest, ForumSignState, ForumSpec, MissionKind,
+        PostRef, forum_by_id,
+    },
     captcha::CaptchaClient,
-    config::{AccountConfig, Config},
+    config::{AccountConfig, BbsTaskConfig, Config},
     http::{HttpClient, RetryPolicy},
     signing::{DsSigner, SystemClock, ThreadRandom},
 };
@@ -25,39 +28,6 @@ const BBS_CONFIRM_DELAY: Duration = Duration::ZERO;
 const CAPTCHA_RETRY_DELAY: Duration = Duration::from_secs(3);
 #[cfg(test)]
 const CAPTCHA_RETRY_DELAY: Duration = Duration::ZERO;
-
-#[derive(Default)]
-struct CompletedRequests {
-    forum_signs: Vec<(String, bool)>,
-    reads: Vec<PostRef>,
-    likes: Vec<(PostRef, bool)>,
-    shares: Vec<PostRef>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct TaskAttempts {
-    sign: u32,
-    read: u32,
-    like: u32,
-    share: u32,
-}
-
-impl TaskAttempts {
-    fn record(&mut self, plan: BbsPlan) {
-        self.sign += if plan.sign { 1 } else { 0 };
-        self.read += if plan.read > 0 { 1 } else { 0 };
-        self.like += if plan.like > 0 { 1 } else { 0 };
-        self.share += if plan.share { 1 } else { 0 };
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct StoppedTasks {
-    sign: bool,
-    read: bool,
-    like: bool,
-    share: bool,
-}
 
 pub async fn run_bbs(config: &Config) -> RunReport {
     let mut runtime_config = config.clone();
@@ -205,44 +175,57 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
     );
     let mut signer = DsSigner::new(SystemClock, ThreadRandom);
 
-    let mut summary = match client.missions().await {
-        Ok(summary) => summary,
-        Err(error) => {
-            push_error(report, &account.name, "任务状态", error);
-            return;
-        }
-    };
-    let mut logged_unknown_missions = HashSet::new();
-    log_unknown_missions(&account.name, &summary, &mut logged_unknown_missions);
-    let plan = BbsPlan::from_summary(&summary).filtered(&account.tasks.bbs);
-    report.push(record(
+    run_account_tasks(
+        report,
         &account.name,
-        "米游币",
-        "任务状态",
-        if plan.is_complete() {
-            TaskOutcome::AlreadyCompleted
-        } else {
-            TaskOutcome::Success
-        },
-        &format!(
-            "已领取 {}，还可领取 {}，当前共 {} 米游币",
-            summary.already_received_points, summary.can_get_points, summary.total_points
-        ),
-    ));
-    if plan.is_complete() {
-        return;
-    }
+        &account.tasks.bbs,
+        &client,
+        captcha.as_ref(),
+        &mut signer,
+        config.runtime.task_max_attempts.max(1),
+    )
+    .await;
+}
 
-    let forums = account
-        .tasks
-        .bbs
+struct BbsTaskContext<'a> {
+    report: &'a mut RunReport,
+    account: &'a str,
+    client: &'a BbsClient,
+    captcha: Option<&'a CaptchaClient>,
+    signer: &'a mut DsSigner<SystemClock, ThreadRandom>,
+    max_attempts: u32,
+    logged_unknown_missions: &'a mut HashSet<i64>,
+    latest_summary: &'a mut Option<CoinSummary>,
+    latest_is_post_action: bool,
+    coin_delta_allowed: bool,
+    coin_delta_tainted: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TaskRunResult {
+    Confirmed,
+    TimedOut,
+    StopTask,
+    StopAccount,
+}
+
+async fn run_account_tasks(
+    report: &mut RunReport,
+    account: &str,
+    tasks: &BbsTaskConfig,
+    client: &BbsClient,
+    captcha: Option<&CaptchaClient>,
+    signer: &mut DsSigner<SystemClock, ThreadRandom>,
+    max_attempts: u32,
+) {
+    let forums = tasks
         .forums
         .iter()
         .filter_map(|id| forum_by_id(*id))
         .collect::<Vec<_>>();
     if forums.is_empty() {
         report.push(record(
-            &account.name,
+            account,
             "米游社任务",
             "社区板块",
             TaskOutcome::Failed,
@@ -251,234 +234,680 @@ async fn run_account(report: &mut RunReport, config: &Config, account: &AccountC
         return;
     }
 
-    let max_attempts = config.runtime.task_max_attempts.max(1);
-    let mut completed_requests = CompletedRequests::default();
-    let mut attempts = TaskAttempts::default();
-    let mut stopped = StoppedTasks::default();
-    let mut used_reads = HashSet::new();
-    let mut used_likes = HashSet::new();
-    let mut used_shares = HashSet::new();
-    let mut timed_out = false;
-    let mut high_risk_blocked = false;
-
-    loop {
-        let plan = BbsPlan::from_summary(&summary)
-            .filtered(&account.tasks.bbs)
-            .without_stopped(stopped);
-        if plan.is_complete() {
-            break;
+    let plan = BbsPlan::from_config(tasks);
+    let mut logged_unknown_missions = HashSet::new();
+    let mut latest_summary = match client.missions().await {
+        Ok(summary) => {
+            log_unknown_missions(account, &summary, &mut logged_unknown_missions);
+            tracing::info!(
+                account,
+                already_received_points = summary.already_received_points,
+                can_get_points = summary.can_get_points,
+                total_points = summary.total_points,
+                "已记录社区任务执行前的实时米游币基线"
+            );
+            Some(summary)
         }
-        let mut stop_after_confirmation = false;
-        let mut attempted = BbsPlan::default();
+        Err(error) => {
+            tracing::warn!(
+                account,
+                error = %error,
+                "米游币初始状态查询失败，账号配置仍授权执行首轮任务"
+            );
+            None
+        }
+    };
 
-        if plan.sign {
-            attempted.sign = true;
-            for forum in &forums {
-                let request = ForumSignRequest::new(forum.gids);
-                match sign_forum_with_captcha(
-                    &client,
-                    captcha.as_ref(),
-                    &mut signer,
-                    &request,
-                    max_attempts,
-                )
+    let has_initial_summary = latest_summary.is_some();
+    let mut context = BbsTaskContext {
+        report,
+        account,
+        client,
+        captcha,
+        signer,
+        max_attempts: max_attempts.max(1),
+        logged_unknown_missions: &mut logged_unknown_missions,
+        latest_summary: &mut latest_summary,
+        latest_is_post_action: false,
+        coin_delta_allowed: has_initial_summary,
+        coin_delta_tainted: false,
+    };
+    let mut all_confirmed = true;
+
+    if plan.sign {
+        let result = run_sign_task(&mut context, &forums).await;
+        if apply_task_result(result, &mut context, &mut all_confirmed) {
+            push_latest_coin_summary(&mut context, all_confirmed);
+            return;
+        }
+    }
+    if plan.read > 0 {
+        prepare_task_baseline(&mut context, "阅读").await;
+        let result = run_read_task(&mut context, forums[0], plan.read).await;
+        if apply_task_result(result, &mut context, &mut all_confirmed) {
+            push_latest_coin_summary(&mut context, all_confirmed);
+            return;
+        }
+    }
+    if plan.like > 0 {
+        prepare_task_baseline(&mut context, "点赞").await;
+        let result = run_like_task(&mut context, forums[0], plan.like, tasks.cancel_like).await;
+        if apply_task_result(result, &mut context, &mut all_confirmed) {
+            push_latest_coin_summary(&mut context, all_confirmed);
+            return;
+        }
+    }
+    if plan.share {
+        prepare_task_baseline(&mut context, "分享").await;
+        let result = run_share_task(&mut context, forums[0]).await;
+        if apply_task_result(result, &mut context, &mut all_confirmed) {
+            push_latest_coin_summary(&mut context, all_confirmed);
+            return;
+        }
+    }
+    push_latest_coin_summary(&mut context, all_confirmed);
+}
+
+fn apply_task_result(
+    result: TaskRunResult,
+    context: &mut BbsTaskContext<'_>,
+    all_confirmed: &mut bool,
+) -> bool {
+    match result {
+        TaskRunResult::Confirmed => false,
+        TaskRunResult::TimedOut | TaskRunResult::StopTask => {
+            *all_confirmed = false;
+            context.coin_delta_allowed = false;
+            context.coin_delta_tainted = true;
+            false
+        }
+        TaskRunResult::StopAccount => {
+            *all_confirmed = false;
+            context.coin_delta_allowed = false;
+            context.coin_delta_tainted = true;
+            true
+        }
+    }
+}
+
+fn push_latest_coin_summary(context: &mut BbsTaskContext<'_>, all_confirmed: bool) {
+    if !context.latest_is_post_action {
+        return;
+    }
+    let Some(summary) = context.latest_summary.as_ref().cloned() else {
+        return;
+    };
+    let subject = if all_confirmed {
+        "完成确认"
+    } else {
+        "实时汇总"
+    };
+    context
+        .report
+        .push(coin_summary_record(context.account, subject, &summary));
+}
+
+async fn prepare_task_baseline(context: &mut BbsTaskContext<'_>, task: &str) {
+    if context.coin_delta_allowed {
+        return;
+    }
+    match context.client.missions().await {
+        Ok(summary) => {
+            log_unknown_missions(
+                context.account,
+                &summary,
+                context.logged_unknown_missions,
+            );
+            tracing::info!(
+                account = context.account,
+                task,
+                already_received_points = summary.already_received_points,
+                can_get_points = summary.can_get_points,
+                total_points = summary.total_points,
+                "已在执行下一项社区任务前刷新米游币归因基线"
+            );
+            *context.latest_summary = Some(summary);
+            context.latest_is_post_action = true;
+            context.coin_delta_allowed = !context.coin_delta_tainted;
+        }
+        Err(error) => tracing::warn!(
+            account = context.account,
+            task,
+            error_kind = bbs_error_kind(&error),
+            "下一项社区任务执行前无法刷新基线，将禁用米游币差值确认"
+        ),
+    }
+}
+
+fn coin_summary_record(account: &str, subject: &str, summary: &CoinSummary) -> TaskRecord {
+    record(
+        account,
+        "米游币",
+        subject,
+        TaskOutcome::Success,
+        &format!(
+            "已领取 {}，还可领取 {}，当前共 {} 米游币",
+            summary.already_received_points, summary.can_get_points, summary.total_points
+        ),
+    )
+}
+
+async fn run_sign_task(
+    context: &mut BbsTaskContext<'_>,
+    forums: &[&ForumSpec],
+) -> TaskRunResult {
+    let mut completed = Vec::new();
+    for attempt in 1..=context.max_attempts {
+        let before = current_task_baseline(context);
+        let completed_before = completed.len();
+        let mut all_idempotent = true;
+        let mut blocking_error = false;
+
+        for forum in forums {
+            let request = ForumSignRequest::new(forum.gids);
+            match sign_forum_with_captcha(
+                context.client,
+                context.captcha,
+                context.signer,
+                &request,
+                context.max_attempts,
+            )
                 .await
-                {
-                    Ok(solved) => completed_requests
-                        .forum_signs
-                        .push((forum.name.to_owned(), solved)),
-                    Err(ActionError::Captcha(message)) => {
-                        push_captcha_error(report, &account.name, forum.name, &message);
-                        high_risk_blocked = true;
+            {
+                Ok(result) => {
+                    all_idempotent &= result.already_signed;
+                    completed.push((
+                        forum.name.to_owned(),
+                        result.captcha_solved,
+                        result.already_signed,
+                    ));
+                }
+                Err(ActionError::Captcha(message)) => {
+                    all_idempotent = false;
+                    push_captcha_error(context.report, context.account, forum.name, &message);
+                    blocking_error = true;
+                    break;
+                }
+                Err(ActionError::Bbs(error)) => {
+                    all_idempotent = false;
+                    let terminal = is_terminal(&error);
+                    push_error(context.report, context.account, forum.name, error);
+                    if terminal {
+                        blocking_error = true;
                         break;
-                    }
-                    Err(ActionError::Bbs(error)) => {
-                        let terminal = is_terminal(&error);
-                        push_error(report, &account.name, forum.name, error);
-                        if terminal {
-                            stop_after_confirmation = true;
-                            break;
-                        }
                     }
                 }
             }
         }
 
-        let post_pool =
-            if !high_risk_blocked && !stop_after_confirmation && plan.required_posts() > 0 {
-                let ds = signer.sign_app().to_string();
-                match client.posts(forums[0].forum_id, 20, &ds).await {
-                    Ok(posts) => posts,
-                    Err(error) => {
-                        let terminal = is_terminal(&error);
-                        push_error(report, &account.name, "帖子列表", error);
-                        if terminal {
-                            stop_after_confirmation = true;
-                        }
-                        Vec::new()
-                    }
-                }
+        let completed_this_round = completed.len() - completed_before;
+        if completed_this_round == 0 {
+            return if blocking_error {
+                TaskRunResult::StopAccount
             } else {
-                Vec::new()
+                TaskRunResult::StopTask
             };
+        }
+        let after = match recheck_task(context, "社区签到", attempt).await {
+            Ok(after) => after,
+            Err(result) => return result,
+        };
+        log_task_recheck(context.account, "社区签到", attempt, before.as_ref(), &after);
+        let idempotent = completed_this_round == forums.len() && all_idempotent;
+        let confirmed = task_confirmed(before.as_ref(), &after, MissionKind::Sign, idempotent);
+        let credited_points = credited_points(before.as_ref(), &after);
+        store_rechecked_summary(context, after);
+        if confirmed {
+            push_confirmed_signs(
+                context.report,
+                context.account,
+                &mut completed,
+                attempt,
+                credited_points,
+            );
+            return if blocking_error {
+                TaskRunResult::StopAccount
+            } else {
+                TaskRunResult::Confirmed
+            };
+        }
+        if blocking_error {
+            return TaskRunResult::StopAccount;
+        }
+        if attempt == context.max_attempts {
+            push_state_sync_timeout(context.report, context.account, "社区签到", attempt);
+            return TaskRunResult::TimedOut;
+        }
+        log_task_retry(context.account, "社区签到", attempt, context.max_attempts);
+    }
+    TaskRunResult::TimedOut
+}
 
-        if !high_risk_blocked && !stop_after_confirmation && plan.read > 0 {
-            attempted.read = plan.read;
-            let selected =
-                select_unseen_posts(&client, &post_pool, plan.read as usize, &mut used_reads);
-            match run_reads(
-                report,
-                &account.name,
-                &client,
-                &mut signer,
-                &selected,
-                plan.read,
-                &mut completed_requests.reads,
+async fn run_read_task(
+    context: &mut BbsTaskContext<'_>,
+    forum: &ForumSpec,
+    first_count: u32,
+) -> TaskRunResult {
+    let mut completed = Vec::new();
+    let mut used = HashSet::new();
+    for attempt in 1..=context.max_attempts {
+        let count = if attempt == 1 {
+            first_count
+        } else {
+            retry_action_count(context.latest_summary.as_ref(), MissionKind::Read, READ_TARGET)
+        };
+        let selected = match select_task_posts(context, forum, count, &mut used).await {
+            Ok(selected) => selected,
+            Err(result) => return result,
+        };
+        let before = current_task_baseline(context);
+        let completed_before = completed.len();
+        let signal = run_reads(
+            context.report,
+            context.account,
+            context.client,
+            context.signer,
+            &selected,
+            count,
+            &mut completed,
+        )
+        .await;
+        if completed.len() == completed_before {
+            return flow_stop_result(signal);
+        }
+        let after = match recheck_task(context, "阅读", attempt).await {
+            Ok(after) => after,
+            Err(result) => return result,
+        };
+        log_task_recheck(context.account, "阅读", attempt, before.as_ref(), &after);
+        let confirmed = task_confirmed(before.as_ref(), &after, MissionKind::Read, false);
+        let credited_points = credited_points(before.as_ref(), &after);
+        store_rechecked_summary(context, after);
+        if confirmed {
+            push_confirmed_posts(
+                context.report,
+                context.account,
+                "阅读",
+                &mut completed,
+                attempt,
+                credited_points,
+            );
+            return if signal == FlowSignal::Continue {
+                TaskRunResult::Confirmed
+            } else {
+                TaskRunResult::StopAccount
+            };
+        }
+        if signal != FlowSignal::Continue {
+            return TaskRunResult::StopAccount;
+        }
+        if attempt == context.max_attempts {
+            push_state_sync_timeout(context.report, context.account, "阅读", attempt);
+            return TaskRunResult::TimedOut;
+        }
+        log_task_retry(context.account, "阅读", attempt, context.max_attempts);
+    }
+    TaskRunResult::TimedOut
+}
+
+async fn run_like_task(
+    context: &mut BbsTaskContext<'_>,
+    forum: &ForumSpec,
+    first_count: u32,
+    cancel_like: bool,
+) -> TaskRunResult {
+    let mut completed = Vec::new();
+    let mut used = HashSet::new();
+    for attempt in 1..=context.max_attempts {
+        let count = if attempt == 1 {
+            first_count
+        } else {
+            retry_action_count(context.latest_summary.as_ref(), MissionKind::Like, LIKE_TARGET)
+        };
+        let selected = match select_task_posts(context, forum, count, &mut used).await {
+            Ok(selected) => selected,
+            Err(result) => return result,
+        };
+        let before = current_task_baseline(context);
+        let completed_before = completed.len();
+        let mut signal = FlowSignal::Continue;
+
+        for post in &selected {
+            match set_like_with_captcha(
+                context.client,
+                context.captcha,
+                context.signer,
+                &post.post_id,
+                false,
+                context.max_attempts,
             )
             .await
             {
-                FlowSignal::Continue => {}
-                FlowSignal::BlockHighRisk => high_risk_blocked = true,
-                FlowSignal::Stop => stop_after_confirmation = true,
-            }
-        }
-
-        if !high_risk_blocked && !stop_after_confirmation && plan.like > 0 {
-            attempted.like = plan.like;
-            let selected =
-                select_unseen_posts(&client, &post_pool, plan.like as usize, &mut used_likes);
-            for post in &selected {
-                match set_like_with_captcha(
-                    &client,
-                    captcha.as_ref(),
-                    &mut signer,
-                    &post.post_id,
-                    false,
-                    max_attempts,
-                )
-                .await
-                {
-                    Ok(solved) => completed_requests.likes.push((post.clone(), solved)),
-                    Err(ActionError::Captcha(message)) => {
-                        push_captcha_error(report, &account.name, &post.subject, &message);
-                        high_risk_blocked = true;
+                Ok(solved) => completed.push((post.clone(), solved)),
+                Err(ActionError::Captcha(message)) => {
+                    push_captcha_error(context.report, context.account, &post.subject, &message);
+                    signal = FlowSignal::BlockHighRisk;
+                    break;
+                }
+                Err(ActionError::Bbs(error)) => {
+                    let terminal = is_terminal(&error);
+                    push_error(context.report, context.account, &post.subject, error);
+                    if terminal {
+                        signal = FlowSignal::Stop;
                         break;
                     }
-                    Err(ActionError::Bbs(error)) => {
-                        let terminal = is_terminal(&error);
-                        push_error(report, &account.name, &post.subject, error);
-                        if terminal {
-                            stop_after_confirmation = true;
-                            break;
-                        }
-                        continue;
-                    }
-                }
-
-                if !account.tasks.bbs.cancel_like {
                     continue;
                 }
-                match set_like_with_captcha(
-                    &client,
-                    captcha.as_ref(),
-                    &mut signer,
-                    &post.post_id,
-                    true,
-                    max_attempts,
-                )
-                .await
-                {
-                    Ok(solved) => report.push(post_record(
-                        &account.name,
-                        "取消点赞",
-                        post,
-                        TaskOutcome::Success,
-                        if solved {
-                            "验证码通过后已恢复点赞状态"
-                        } else {
-                            "已恢复点赞状态"
-                        },
-                    )),
-                    Err(ActionError::Captcha(message)) => {
-                        push_captcha_error(report, &account.name, &post.subject, &message);
-                        high_risk_blocked = true;
+            }
+
+            if !cancel_like {
+                continue;
+            }
+            match set_like_with_captcha(
+                context.client,
+                context.captcha,
+                context.signer,
+                &post.post_id,
+                true,
+                context.max_attempts,
+            )
+            .await
+            {
+                Ok(solved) => context.report.push(post_record(
+                    context.account,
+                    "取消点赞",
+                    post,
+                    TaskOutcome::Success,
+                    if solved {
+                        "验证码通过后已恢复点赞状态"
+                    } else {
+                        "已恢复点赞状态"
+                    },
+                )),
+                Err(ActionError::Captcha(message)) => {
+                    push_captcha_error(context.report, context.account, &post.subject, &message);
+                    signal = FlowSignal::BlockHighRisk;
+                    break;
+                }
+                Err(ActionError::Bbs(error)) => {
+                    let terminal = is_terminal(&error);
+                    push_error(context.report, context.account, &post.subject, error);
+                    if terminal {
+                        signal = FlowSignal::Stop;
                         break;
                     }
-                    Err(ActionError::Bbs(error)) => {
-                        let terminal = is_terminal(&error);
-                        push_error(report, &account.name, &post.subject, error);
-                        if terminal {
-                            stop_after_confirmation = true;
-                            break;
-                        }
-                    }
                 }
             }
         }
 
-        if !high_risk_blocked && !stop_after_confirmation && plan.share {
-            attempted.share = true;
-            let selected = select_unseen_posts(&client, &post_pool, 1, &mut used_shares);
-            if let Some(post) = selected.first() {
-                let ds = signer.sign_app().to_string();
-                match client.share_post(&post.post_id, &ds).await {
-                    Ok(()) => completed_requests.shares.push(post.clone()),
-                    Err(error) => {
-                        let terminal = is_terminal(&error);
-                        push_error(report, &account.name, &post.subject, error);
-                        if terminal {
-                            stop_after_confirmation = true;
-                        }
-                    }
-                }
-            }
+        if completed.len() == completed_before {
+            return flow_stop_result(signal);
         }
-
-        attempts.record(attempted);
-        tokio::time::sleep(BBS_CONFIRM_DELAY).await;
-        summary = match client.missions().await {
-            Ok(summary) => summary,
-            Err(error) => {
-                push_error(report, &account.name, "任务完成复查", error);
-                return;
-            }
+        let after = match recheck_task(context, "点赞", attempt).await {
+            Ok(after) => after,
+            Err(result) => return result,
         };
-        log_unknown_missions(&account.name, &summary, &mut logged_unknown_missions);
-        timed_out |= reconcile_task_results(
-            report,
-            &account.name,
-            attempted,
-            &mut completed_requests,
-            &summary,
-            attempts,
-            max_attempts,
-            &mut stopped,
-        );
-
-        if high_risk_blocked {
-            let pending = BbsPlan::from_summary(&summary).filtered(&account.tasks.bbs);
-            push_blocked_actions(report, &account.name, &pending);
-            break;
+        log_task_recheck(context.account, "点赞", attempt, before.as_ref(), &after);
+        let confirmed = task_confirmed(before.as_ref(), &after, MissionKind::Like, false);
+        let credited_points = credited_points(before.as_ref(), &after);
+        store_rechecked_summary(context, after);
+        if confirmed {
+            push_confirmed_likes(
+                context.report,
+                context.account,
+                &mut completed,
+                attempt,
+                credited_points,
+            );
+            return if signal == FlowSignal::Continue {
+                TaskRunResult::Confirmed
+            } else {
+                TaskRunResult::StopAccount
+            };
         }
-        if stop_after_confirmation {
-            break;
+        if signal != FlowSignal::Continue {
+            return TaskRunResult::StopAccount;
         }
+        if attempt == context.max_attempts {
+            push_state_sync_timeout(context.report, context.account, "点赞", attempt);
+            return TaskRunResult::TimedOut;
+        }
+        log_task_retry(context.account, "点赞", attempt, context.max_attempts);
     }
+    TaskRunResult::TimedOut
+}
 
-    let remaining = BbsPlan::from_summary(&summary).filtered(&account.tasks.bbs);
-    let all_confirmed = remaining.is_complete() && !timed_out && !high_risk_blocked;
-    if all_confirmed {
-        report.push(record(
-            &account.name,
-            "米游币",
-            "完成确认",
-            TaskOutcome::Success,
-            &format!(
-                "复查后已领取 {}，还可领取 {}，当前共 {} 米游币",
-                summary.already_received_points, summary.can_get_points, summary.total_points
-            ),
+async fn run_share_task(
+    context: &mut BbsTaskContext<'_>,
+    forum: &ForumSpec,
+) -> TaskRunResult {
+    let mut completed = Vec::new();
+    let mut used = HashSet::new();
+    for attempt in 1..=context.max_attempts {
+        let selected = match select_task_posts(context, forum, 1, &mut used).await {
+            Ok(selected) => selected,
+            Err(result) => return result,
+        };
+        let Some(post) = selected.first() else {
+            return TaskRunResult::StopTask;
+        };
+        let before = current_task_baseline(context);
+        let ds = context.signer.sign_app().to_string();
+        match context.client.share_post(&post.post_id, &ds).await {
+            Ok(()) => completed.push(post.clone()),
+            Err(error) => {
+                let blocking = is_account_blocking(&error);
+                push_error(context.report, context.account, &post.subject, error);
+                return if blocking {
+                    TaskRunResult::StopAccount
+                } else {
+                    TaskRunResult::StopTask
+                };
+            }
+        }
+        let after = match recheck_task(context, "分享", attempt).await {
+            Ok(after) => after,
+            Err(result) => return result,
+        };
+        log_task_recheck(context.account, "分享", attempt, before.as_ref(), &after);
+        let confirmed = task_confirmed(before.as_ref(), &after, MissionKind::Share, false);
+        let credited_points = credited_points(before.as_ref(), &after);
+        store_rechecked_summary(context, after);
+        if confirmed {
+            push_confirmed_posts(
+                context.report,
+                context.account,
+                "分享",
+                &mut completed,
+                attempt,
+                credited_points,
+            );
+            return TaskRunResult::Confirmed;
+        }
+        if attempt == context.max_attempts {
+            push_state_sync_timeout(context.report, context.account, "分享", attempt);
+            return TaskRunResult::TimedOut;
+        }
+        log_task_retry(context.account, "分享", attempt, context.max_attempts);
+    }
+    TaskRunResult::TimedOut
+}
+
+async fn select_task_posts(
+    context: &mut BbsTaskContext<'_>,
+    forum: &ForumSpec,
+    count: u32,
+    used: &mut HashSet<String>,
+) -> Result<Vec<PostRef>, TaskRunResult> {
+    let ds = context.signer.sign_app().to_string();
+    let posts = match context.client.posts(forum.forum_id, 20, &ds).await {
+        Ok(posts) => posts,
+        Err(error) => {
+            let blocking = is_account_blocking(&error);
+            push_error(context.report, context.account, "帖子列表", error);
+            return Err(if blocking {
+                TaskRunResult::StopAccount
+            } else {
+                TaskRunResult::StopTask
+            });
+        }
+    };
+    let selected = select_unseen_posts(context.client, &posts, count as usize, used);
+    if selected.is_empty() {
+        context.report.push(record(
+            context.account,
+            "米游社任务",
+            "帖子列表",
+            TaskOutcome::Failed,
+            "没有可用于当前任务的新帖子，已停止该任务",
         ));
+        return Err(TaskRunResult::StopTask);
     }
+    Ok(selected)
+}
+
+async fn recheck_task(
+    context: &mut BbsTaskContext<'_>,
+    task: &str,
+    attempt: u32,
+) -> Result<CoinSummary, TaskRunResult> {
+    tracing::info!(
+        account = context.account,
+        task,
+        attempt,
+        max_attempts = context.max_attempts,
+        delay_seconds = BBS_CONFIRM_DELAY.as_secs(),
+        "社区任务提交完成，等待后复查对应米游币任务"
+    );
+    tokio::time::sleep(BBS_CONFIRM_DELAY).await;
+    match context.client.missions().await {
+        Ok(summary) => {
+            log_unknown_missions(
+                context.account,
+                &summary,
+                context.logged_unknown_missions,
+            );
+            Ok(summary)
+        }
+        Err(error) => {
+            let blocking = is_terminal(&error);
+            push_error(
+                context.report,
+                context.account,
+                &format!("{task}完成复查"),
+                error,
+            );
+            Err(if blocking {
+                TaskRunResult::StopAccount
+            } else {
+                TaskRunResult::StopTask
+            })
+        }
+    }
+}
+
+fn current_task_baseline(context: &BbsTaskContext<'_>) -> Option<CoinSummary> {
+    if context.coin_delta_allowed {
+        context.latest_summary.as_ref().cloned()
+    } else {
+        None
+    }
+}
+
+fn store_rechecked_summary(context: &mut BbsTaskContext<'_>, summary: CoinSummary) {
+    *context.latest_summary = Some(summary);
+    context.latest_is_post_action = true;
+    context.coin_delta_allowed = !context.coin_delta_tainted;
+}
+
+const fn flow_stop_result(signal: FlowSignal) -> TaskRunResult {
+    match signal {
+        FlowSignal::Continue => TaskRunResult::StopTask,
+        FlowSignal::BlockHighRisk | FlowSignal::Stop => TaskRunResult::StopAccount,
+    }
+}
+
+fn task_confirmed(
+    before: Option<&CoinSummary>,
+    after: &CoinSummary,
+    kind: MissionKind,
+    idempotent: bool,
+) -> bool {
+    idempotent
+        || after
+            .mission(kind)
+            .is_some_and(|mission| mission.award_received)
+        || before.is_some_and(|before| {
+            after.already_received_points > before.already_received_points
+                || after.can_get_points < before.can_get_points
+        })
+}
+
+fn credited_points(before: Option<&CoinSummary>, after: &CoinSummary) -> u32 {
+    before.map_or(0, |before| {
+        after
+            .already_received_points
+            .saturating_sub(before.already_received_points)
+            .max(
+                before
+                    .can_get_points
+                    .saturating_sub(after.can_get_points),
+            )
+    })
+}
+
+fn retry_action_count(summary: Option<&CoinSummary>, kind: MissionKind, target: u32) -> u32 {
+    summary
+        .and_then(|summary| summary.mission(kind))
+        .map(|mission| {
+            if mission.award_received {
+                0
+            } else {
+                target.saturating_sub(mission.happened_times).max(1)
+            }
+        })
+        .unwrap_or(target)
+}
+
+fn log_task_recheck(
+    account: &str,
+    task: &str,
+    attempt: u32,
+    before: Option<&CoinSummary>,
+    after: &CoinSummary,
+) {
+    let (received_delta, available_delta) = before.map_or((0, 0), |before| {
+        (
+            after
+                .already_received_points
+                .saturating_sub(before.already_received_points),
+            before
+                .can_get_points
+                .saturating_sub(after.can_get_points),
+        )
+    });
+    tracing::info!(
+        account,
+        task,
+        attempt,
+        baseline_available = before.is_some(),
+        received_delta,
+        available_delta,
+        already_received_points = after.already_received_points,
+        can_get_points = after.can_get_points,
+        total_points = after.total_points,
+        "社区任务完成复查返回实时米游币状态"
+    );
+}
+
+fn log_task_retry(account: &str, task: &str, attempt: u32, max_attempts: u32) {
+    tracing::warn!(
+        account,
+        task,
+        attempt,
+        max_attempts,
+        "对应米游币任务尚未确认完成，将重新执行该任务"
+    );
 }
 
 async fn run_reads(
@@ -526,120 +955,15 @@ fn select_unseen_posts(
     selected
 }
 
-#[allow(clippy::too_many_arguments)]
-fn reconcile_task_results(
-    report: &mut RunReport,
-    account: &str,
-    requested: BbsPlan,
-    completed: &mut CompletedRequests,
-    summary: &CoinSummary,
-    attempts: TaskAttempts,
-    max_attempts: u32,
-    stopped: &mut StoppedTasks,
-) -> bool {
-    let mut timed_out = false;
-
-    if requested.sign {
-        match mission_status(summary, MissionKind::Sign) {
-            MissionStatus::Completed => {
-                push_confirmed_signs(report, account, completed, attempts.sign);
-                stopped.sign = true;
-            }
-            MissionStatus::Pending if attempts.sign >= max_attempts => {
-                completed.forum_signs.clear();
-                push_state_sync_timeout(report, account, "社区签到", attempts.sign);
-                stopped.sign = true;
-                timed_out = true;
-            }
-            MissionStatus::Missing => {
-                completed.forum_signs.clear();
-                push_missing_mission(report, account, "社区签到");
-                stopped.sign = true;
-            }
-            MissionStatus::Pending => {}
-        }
-    }
-
-    if requested.read > 0 {
-        match mission_status(summary, MissionKind::Read) {
-            MissionStatus::Completed => {
-                push_confirmed_posts(report, account, "阅读", &mut completed.reads, attempts.read);
-                stopped.read = true;
-            }
-            MissionStatus::Pending if attempts.read >= max_attempts => {
-                completed.reads.clear();
-                push_state_sync_timeout(report, account, "阅读", attempts.read);
-                stopped.read = true;
-                timed_out = true;
-            }
-            MissionStatus::Missing => {
-                completed.reads.clear();
-                push_missing_mission(report, account, "阅读");
-                stopped.read = true;
-            }
-            MissionStatus::Pending => {}
-        }
-    }
-
-    if requested.like > 0 {
-        match mission_status(summary, MissionKind::Like) {
-            MissionStatus::Completed => {
-                push_confirmed_likes(report, account, completed, attempts.like);
-                stopped.like = true;
-            }
-            MissionStatus::Pending if attempts.like >= max_attempts => {
-                completed.likes.clear();
-                push_state_sync_timeout(report, account, "点赞", attempts.like);
-                stopped.like = true;
-                timed_out = true;
-            }
-            MissionStatus::Missing => {
-                completed.likes.clear();
-                push_missing_mission(report, account, "点赞");
-                stopped.like = true;
-            }
-            MissionStatus::Pending => {}
-        }
-    }
-
-    if requested.share {
-        match mission_status(summary, MissionKind::Share) {
-            MissionStatus::Completed => {
-                push_confirmed_posts(
-                    report,
-                    account,
-                    "分享",
-                    &mut completed.shares,
-                    attempts.share,
-                );
-                stopped.share = true;
-            }
-            MissionStatus::Pending if attempts.share >= max_attempts => {
-                completed.shares.clear();
-                push_state_sync_timeout(report, account, "分享", attempts.share);
-                stopped.share = true;
-                timed_out = true;
-            }
-            MissionStatus::Missing => {
-                completed.shares.clear();
-                push_missing_mission(report, account, "分享");
-                stopped.share = true;
-            }
-            MissionStatus::Pending => {}
-        }
-    }
-
-    timed_out
-}
-
 fn push_confirmed_signs(
     report: &mut RunReport,
     account: &str,
-    completed: &mut CompletedRequests,
+    completed: &mut Vec<(String, bool, bool)>,
     attempts: u32,
+    mut credited_points: u32,
 ) {
     let mut seen = HashSet::new();
-    let signs = std::mem::take(&mut completed.forum_signs);
+    let signs = std::mem::take(completed);
     if signs.is_empty() {
         report.push(record(
             account,
@@ -650,23 +974,32 @@ fn push_confirmed_signs(
         ));
         return;
     }
-    for (forum, captcha_solved) in signs {
-        if !seen.insert(forum.clone()) {
-            continue;
+    let mut latest_signs = Vec::new();
+    for sign in signs.into_iter().rev() {
+        if seen.insert(sign.0.clone()) {
+            latest_signs.push(sign);
         }
+    }
+    latest_signs.reverse();
+    for (forum, captcha_solved, already_signed) in latest_signs {
+        let confirmation = if already_signed {
+            format!("签到接口确认今日已签到，第 {attempts} 轮复查完成")
+        } else {
+            format!("第 {attempts} 轮复查确认社区签到米游币领取")
+        };
+        let captcha_prefix = if captcha_solved {
+            "验证码通过后提交签到，"
+        } else {
+            ""
+        };
+        let coin_change = credited_points_message(credited_points);
+        credited_points = 0;
         report.push(record(
             account,
             "社区签到",
             &forum,
             TaskOutcome::Success,
-            &format!(
-                "{}第 {attempts} 轮复查确认社区签到米游币领取",
-                if captcha_solved {
-                    "验证码通过后提交签到，"
-                } else {
-                    ""
-                }
-            ),
+            &format!("{captcha_prefix}{confirmation}{coin_change}"),
         ));
     }
 }
@@ -677,6 +1010,7 @@ fn push_confirmed_posts(
     task: &str,
     completed: &mut Vec<PostRef>,
     attempts: u32,
+    mut credited_points: u32,
 ) {
     let mut seen = HashSet::new();
     let posts = std::mem::take(completed);
@@ -694,12 +1028,14 @@ fn push_confirmed_posts(
         if !seen.insert(post.post_id.clone()) {
             continue;
         }
+        let coin_change = credited_points_message(credited_points);
+        credited_points = 0;
         report.push(post_record(
             account,
             task,
             &post,
             TaskOutcome::Success,
-            &format!("第 {attempts} 轮复查确认{task}米游币领取"),
+            &format!("第 {attempts} 轮复查确认{task}米游币领取{coin_change}"),
         ));
     }
 }
@@ -707,11 +1043,12 @@ fn push_confirmed_posts(
 fn push_confirmed_likes(
     report: &mut RunReport,
     account: &str,
-    completed: &mut CompletedRequests,
+    completed: &mut Vec<(PostRef, bool)>,
     attempts: u32,
+    mut credited_points: u32,
 ) {
     let mut seen = HashSet::new();
-    let likes = std::mem::take(&mut completed.likes);
+    let likes = std::mem::take(completed);
     if likes.is_empty() {
         report.push(record(
             account,
@@ -726,13 +1063,15 @@ fn push_confirmed_likes(
         if !seen.insert(post.post_id.clone()) {
             continue;
         }
+        let coin_change = credited_points_message(credited_points);
+        credited_points = 0;
         report.push(post_record(
             account,
             "点赞",
             &post,
             TaskOutcome::Success,
             &format!(
-                "{}第 {attempts} 轮复查确认点赞米游币领取",
+                "{}第 {attempts} 轮复查确认点赞米游币领取{coin_change}",
                 if captcha_solved {
                     "验证码通过后提交点赞，"
                 } else {
@@ -755,31 +1094,26 @@ fn push_state_sync_timeout(report: &mut RunReport, account: &str, task: &str, at
     ));
 }
 
-fn push_missing_mission(report: &mut RunReport, account: &str, task: &str) {
-    report.push(record(
-        account,
-        task,
-        "米游币任务",
-        TaskOutcome::Failed,
-        "任务状态响应缺少对应任务，状态未知，已停止重试",
-    ));
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MissionStatus {
-    Completed,
-    Pending,
-    Missing,
+enum UnmappedMissionClass {
+    AuxiliaryCompleted,
+    AuxiliaryPending,
+    Unknown,
 }
 
-fn mission_status(summary: &CoinSummary, kind: MissionKind) -> MissionStatus {
-    if summary.can_get_points == 0 {
-        return MissionStatus::Completed;
+fn classify_unmapped_mission(mission_id: i64, award_received: bool) -> UnmappedMissionClass {
+    match (mission_id, award_received) {
+        (62 | 64, true) => UnmappedMissionClass::AuxiliaryCompleted,
+        (62 | 64, false) => UnmappedMissionClass::AuxiliaryPending,
+        _ => UnmappedMissionClass::Unknown,
     }
-    match summary.mission(kind) {
-        Some(mission) if mission.award_received => MissionStatus::Completed,
-        Some(_) => MissionStatus::Pending,
-        None => MissionStatus::Missing,
+}
+
+fn credited_points_message(points: u32) -> String {
+    if points == 0 {
+        String::new()
+    } else {
+        format!("；本轮米游币 +{points}")
     }
 }
 
@@ -788,14 +1122,29 @@ fn log_unknown_missions(account: &str, summary: &CoinSummary, logged: &mut HashS
         let MissionKind::Other(mission_id) = mission.kind else {
             continue;
         };
-        if logged.insert(mission_id) {
-            tracing::warn!(
+        if !logged.insert(mission_id) {
+            continue;
+        }
+        match classify_unmapped_mission(mission_id, mission.award_received) {
+            UnmappedMissionClass::AuxiliaryCompleted => tracing::debug!(
+                account,
+                mission_id,
+                happened_times = mission.happened_times,
+                "固定辅助任务已完成；任务属于绑定角色或修改个性签名，不会自动执行"
+            ),
+            UnmappedMissionClass::AuxiliaryPending => tracing::warn!(
+                account,
+                mission_id,
+                happened_times = mission.happened_times,
+                "固定辅助任务尚未完成；具体对应绑定角色或修改个性签名待确认，禁止自动执行"
+            ),
+            UnmappedMissionClass::Unknown => tracing::warn!(
                 account,
                 mission_id,
                 award_received = mission.award_received,
                 happened_times = mission.happened_times,
-                "发现未映射的米游币任务，已保留状态但不会自动执行"
-            );
+                "发现未映射的固定米游币任务，已保留状态但不会自动执行"
+            ),
         }
     }
 }
@@ -819,23 +1168,35 @@ enum ActionError {
     Captcha(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ForumSignResult {
+    captcha_solved: bool,
+    already_signed: bool,
+}
+
 async fn sign_forum_with_captcha(
     client: &BbsClient,
     captcha: Option<&CaptchaClient>,
     signer: &mut DsSigner<SystemClock, ThreadRandom>,
     request: &ForumSignRequest<'_>,
     captcha_max_attempts: u32,
-) -> Result<bool, ActionError> {
+) -> Result<ForumSignResult, ActionError> {
     let body = serde_json::to_vec(request).expect("固定社区签到结构应当可序列化");
     let ds = signer.sign_body("", &body).to_string();
     match client.sign_forum_once(request, &ds, None).await {
-        Ok(()) => Ok(false),
+        Ok(state) => Ok(ForumSignResult {
+            captcha_solved: false,
+            already_signed: state == ForumSignState::AlreadySigned,
+        }),
         Err(BbsError::CaptchaRequired) => {
             let challenge =
                 solve_bbs_captcha(client, captcha, signer, captcha_max_attempts).await?;
             let ds = signer.sign_body("", &body).to_string();
             match client.sign_forum_once(request, &ds, Some(&challenge)).await {
-                Ok(()) => Ok(true),
+                Ok(state) => Ok(ForumSignResult {
+                    captcha_solved: true,
+                    already_signed: state == ForumSignState::AlreadySigned,
+                }),
                 Err(BbsError::CaptchaRequired) => Err(ActionError::Captcha(
                     "验证码校验通过，但原签到动作重试后仍要求验证码".to_owned(),
                 )),
@@ -909,13 +1270,14 @@ async fn solve_bbs_captcha(
                     });
             }
             Err(error) => {
-                last_error = Some(error.to_string());
+                let reason = error.safe_reason();
+                last_error = Some(reason);
                 if attempt < max_attempts {
                     tracing::warn!(
                         attempt,
                         max_attempts,
                         delay_seconds = CAPTCHA_RETRY_DELAY.as_secs(),
-                        error = %error,
+                        reason,
                         "验证码平台返回异常，等待后重新生成验证码"
                     );
                     tokio::time::sleep(CAPTCHA_RETRY_DELAY).await;
@@ -925,7 +1287,7 @@ async fn solve_bbs_captcha(
     }
     Err(ActionError::Captcha(format!(
         "验证码平台连续 {max_attempts} 次求解失败：{}",
-        last_error.unwrap_or_else(|| "未知错误".to_owned())
+        last_error.unwrap_or("未知错误")
     )))
 }
 
@@ -938,81 +1300,36 @@ struct BbsPlan {
 }
 
 impl BbsPlan {
-    fn from_summary(summary: &CoinSummary) -> Self {
-        if summary.can_get_points == 0 {
+    fn from_config(tasks: &BbsTaskConfig) -> Self {
+        if !tasks.enabled {
             return Self::default();
         }
         Self {
-            sign: pending_once(summary, MissionKind::Sign),
-            read: remaining(summary, MissionKind::Read, READ_TARGET),
-            like: remaining(summary, MissionKind::Like, LIKE_TARGET),
-            share: pending_once(summary, MissionKind::Share),
+            sign: tasks.sign,
+            read: if tasks.read { READ_TARGET } else { 0 },
+            like: if tasks.like { LIKE_TARGET } else { 0 },
+            share: tasks.share,
         }
     }
-
-    fn filtered(mut self, switches: &crate::config::BbsTaskConfig) -> Self {
-        if !switches.sign {
-            self.sign = false;
-        }
-        if !switches.read {
-            self.read = 0;
-        }
-        if !switches.like {
-            self.like = 0;
-        }
-        if !switches.share {
-            self.share = false;
-        }
-        self
-    }
-
-    fn without_stopped(mut self, stopped: StoppedTasks) -> Self {
-        if stopped.sign {
-            self.sign = false;
-        }
-        if stopped.read {
-            self.read = 0;
-        }
-        if stopped.like {
-            self.like = 0;
-        }
-        if stopped.share {
-            self.share = false;
-        }
-        self
-    }
-
-    fn is_complete(self) -> bool {
-        !self.sign && self.read == 0 && self.like == 0 && !self.share
-    }
-
-    fn required_posts(self) -> usize {
-        (self.read.max(self.like).max(u32::from(self.share))) as usize
-    }
-}
-
-fn pending_once(summary: &CoinSummary, kind: MissionKind) -> bool {
-    summary
-        .mission(kind)
-        .map(|mission| !mission.award_received)
-        .unwrap_or(false)
-}
-
-fn remaining(summary: &CoinSummary, kind: MissionKind, target: u32) -> u32 {
-    summary
-        .mission(kind)
-        .map(|mission| {
-            if mission.award_received {
-                0
-            } else {
-                target.saturating_sub(mission.happened_times)
-            }
-        })
-        .unwrap_or(0)
 }
 
 fn is_terminal(error: &BbsError) -> bool {
     matches!(error, BbsError::AuthExpired)
+}
+
+fn is_account_blocking(error: &BbsError) -> bool {
+    matches!(error, BbsError::AuthExpired | BbsError::CaptchaRequired)
+}
+
+const fn bbs_error_kind(error: &BbsError) -> &'static str {
+    match error {
+        BbsError::Http(_) => "http",
+        BbsError::InvalidHeader(_) => "invalid_header",
+        BbsError::InvalidResponse(_) => "invalid_response",
+        BbsError::AuthExpired => "auth_expired",
+        BbsError::CaptchaRequired => "captcha_required",
+        BbsError::Api { .. } => "api",
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1020,27 +1337,6 @@ enum FlowSignal {
     Continue,
     BlockHighRisk,
     Stop,
-}
-
-fn push_blocked_actions(report: &mut RunReport, account: &str, plan: &BbsPlan) {
-    if plan.like > 0 {
-        report.push(record(
-            account,
-            "点赞",
-            "后续动作",
-            TaskOutcome::Skipped,
-            "此前触发验证码，已停止高风险动作",
-        ));
-    }
-    if plan.share {
-        report.push(record(
-            account,
-            "分享",
-            "后续动作",
-            TaskOutcome::Skipped,
-            "此前触发验证码，已停止高风险动作",
-        ));
-    }
 }
 
 fn push_error(report: &mut RunReport, account: &str, subject: &str, error: BbsError) {
@@ -1105,6 +1401,8 @@ mod tests {
     use super::*;
     use crate::{
         bbs::{BbsEndpoints, MissionProgress},
+        captcha::CaptchaError,
+        http::HttpError,
         signing::{BODY_SALT, sign_ds2_with},
     };
     use reqwest::Url;
@@ -1115,10 +1413,19 @@ mod tests {
     };
 
     fn summary(can_get: u32, missions: Vec<MissionProgress>) -> CoinSummary {
+        summary_with_points(can_get, 0, 100, missions)
+    }
+
+    fn summary_with_points(
+        can_get: u32,
+        already_received: u32,
+        total: u32,
+        missions: Vec<MissionProgress>,
+    ) -> CoinSummary {
         CoinSummary {
             can_get_points: can_get,
-            already_received_points: 0,
-            total_points: 100,
+            already_received_points: already_received,
+            total_points: total,
             missions,
         }
     }
@@ -1131,169 +1438,422 @@ mod tests {
         }
     }
 
-    #[test]
-    fn completed_coin_day_produces_no_actions() {
-        assert!(BbsPlan::from_summary(&summary(0, Vec::new())).is_complete());
+    fn bbs_tasks(sign: bool, read: bool, like: bool, share: bool) -> BbsTaskConfig {
+        BbsTaskConfig {
+            enabled: true,
+            sign,
+            forums: vec![2],
+            read,
+            like,
+            cancel_like: false,
+            share,
+        }
     }
 
     #[test]
-    fn plan_uses_only_mapped_missions_returned_by_server() {
-        let plan = BbsPlan::from_summary(&summary(
-            20,
-            vec![
-                mission(MissionKind::Sign, true, 1),
-                mission(MissionKind::Read, false, 2),
-                mission(MissionKind::Like, false, 99),
-            ],
-        ));
+    fn first_plan_is_created_only_from_each_accounts_configuration() {
         assert_eq!(
-            plan,
+            BbsPlan::from_config(&bbs_tasks(true, false, true, false)),
             BbsPlan {
-                sign: false,
-                read: 1,
-                like: 0,
+                sign: true,
+                read: 0,
+                like: LIKE_TARGET,
                 share: false,
             }
         );
-        assert_eq!(plan.required_posts(), 1);
-
-        assert!(BbsPlan::from_summary(&summary(100, Vec::new())).is_complete());
-    }
-
-    #[test]
-    fn unknown_missions_are_recorded_once_without_entering_the_plan() {
-        let summary = summary(20, vec![mission(MissionKind::Other(999), false, 2)]);
-        let mut logged = HashSet::new();
-
-        log_unknown_missions("测试账号", &summary, &mut logged);
-        log_unknown_missions("测试账号", &summary, &mut logged);
-
-        assert_eq!(logged, HashSet::from([999]));
-        assert!(BbsPlan::from_summary(&summary).is_complete());
-    }
-
-    #[test]
-    fn attempt_counter_ignores_tasks_not_entered_after_an_earlier_block() {
-        let mut attempts = TaskAttempts::default();
-        attempts.record(BbsPlan {
-            sign: true,
-            ..BbsPlan::default()
-        });
-
-        assert_eq!(attempts.sign, 1);
-        assert_eq!(attempts.read, 0);
-        assert_eq!(attempts.like, 0);
-        assert_eq!(attempts.share, 0);
-    }
-
-    #[test]
-    fn rechecked_task_is_confirmed_or_times_out_independently() {
-        let mut requests = CompletedRequests {
-            reads: vec![PostRef {
-                post_id: "42".to_owned(),
-                subject: "测试帖子".to_owned(),
-            }],
-            ..CompletedRequests::default()
-        };
-        let mut confirmed_report = RunReport::default();
-        let mut confirmed_stopped = StoppedTasks::default();
-        assert!(!reconcile_task_results(
-            &mut confirmed_report,
-            "测试账号",
-            BbsPlan {
-                read: 1,
-                ..BbsPlan::default()
-            },
-            &mut requests,
-            &summary(20, vec![mission(MissionKind::Read, true, 3)]),
-            TaskAttempts {
-                read: 2,
-                ..TaskAttempts::default()
-            },
-            3,
-            &mut confirmed_stopped,
-        ));
-        assert_eq!(confirmed_report.records.len(), 1);
-        assert!(
-            confirmed_report
-                .records
-                .iter()
-                .all(|record| record.outcome == TaskOutcome::Success)
-        );
-        assert!(
-            confirmed_report
-                .records
-                .iter()
-                .any(|record| record.message.contains("复查"))
-        );
-        assert!(confirmed_stopped.read);
-        assert!(requests.reads.is_empty());
-
-        let mut stale_requests = CompletedRequests::default();
-        let mut stale_report = RunReport::default();
-        let mut stale_stopped = StoppedTasks::default();
-        assert!(reconcile_task_results(
-            &mut stale_report,
-            "测试账号",
-            BbsPlan {
-                read: 1,
-                ..BbsPlan::default()
-            },
-            &mut stale_requests,
-            &summary(30, vec![mission(MissionKind::Read, false, 3)]),
-            TaskAttempts {
-                read: 3,
-                ..TaskAttempts::default()
-            },
-            3,
-            &mut stale_stopped,
-        ));
-        assert_eq!(stale_report.exit_code(), 1);
-        assert_eq!(stale_report.records.len(), 1);
         assert_eq!(
-            stale_report.records[0].outcome,
-            TaskOutcome::StateSyncTimeout
-        );
-        assert!(
-            stale_report
-                .records
-                .iter()
-                .any(|record| record.message.contains("状态同步超时"))
-        );
-        assert!(stale_stopped.read);
-    }
-
-    #[test]
-    fn no_remaining_points_confirms_an_omitted_mission() {
-        assert_eq!(
-            mission_status(&summary(0, Vec::new()), MissionKind::Share),
-            MissionStatus::Completed
-        );
-    }
-
-    #[test]
-    fn captcha_report_has_priority_and_marks_high_risk_actions_skipped() {
-        let mut report = RunReport::default();
-        push_error(&mut report, "account", "原神", BbsError::CaptchaRequired);
-        push_blocked_actions(
-            &mut report,
-            "account",
-            &BbsPlan {
-                sign: true,
-                read: 3,
-                like: 5,
+            BbsPlan::from_config(&bbs_tasks(false, true, false, true)),
+            BbsPlan {
+                sign: false,
+                read: READ_TARGET,
+                like: 0,
                 share: true,
-            },
+            }
+        );
+        let mut disabled = bbs_tasks(true, true, true, true);
+        disabled.enabled = false;
+        assert_eq!(BbsPlan::from_config(&disabled), BbsPlan::default());
+    }
+
+    #[test]
+    fn fixed_auxiliary_missions_are_classified_without_entering_any_plan() {
+        assert_eq!(
+            classify_unmapped_mission(62, true),
+            UnmappedMissionClass::AuxiliaryCompleted
+        );
+        assert_eq!(
+            classify_unmapped_mission(64, false),
+            UnmappedMissionClass::AuxiliaryPending
+        );
+        assert_eq!(
+            classify_unmapped_mission(999, true),
+            UnmappedMissionClass::Unknown
         );
 
-        assert_eq!(report.exit_code(), 4);
-        assert_eq!(report.records[0].outcome, TaskOutcome::CaptchaRequired);
+        let summary = summary(
+            30,
+            vec![
+                mission(MissionKind::Other(62), true, 1),
+                mission(MissionKind::Other(64), true, 1),
+            ],
+        );
+        let mut logged = HashSet::new();
+        log_unknown_missions("测试账号", &summary, &mut logged);
+        log_unknown_missions("测试账号", &summary, &mut logged);
+        assert_eq!(logged, HashSet::from([62, 64]));
+    }
+
+    #[test]
+    fn confirmation_uses_only_the_current_task_and_positive_coin_delta() {
+        let before = summary_with_points(
+            30,
+            0,
+            4219,
+            vec![mission(MissionKind::Other(62), true, 1)],
+        );
+        let unchanged = summary_with_points(
+            30,
+            0,
+            4219,
+            vec![mission(MissionKind::Other(64), true, 1)],
+        );
+        assert!(!task_confirmed(
+            Some(&before),
+            &unchanged,
+            MissionKind::Sign,
+            false
+        ));
+
+        let received = summary_with_points(0, 30, 4249, Vec::new());
+        assert!(task_confirmed(
+            Some(&before),
+            &received,
+            MissionKind::Sign,
+            false
+        ));
+        assert!(task_confirmed(
+            None,
+            &summary(30, vec![mission(MissionKind::Sign, true, 1)]),
+            MissionKind::Sign,
+            false
+        ));
+        assert!(task_confirmed(
+            None,
+            &summary(30, Vec::new()),
+            MissionKind::Sign,
+            true
+        ));
+    }
+
+    #[test]
+    fn later_rounds_use_rechecked_progress_without_becoming_zero_action_rounds() {
+        assert_eq!(
+            retry_action_count(
+                Some(&summary(
+                    30,
+                    vec![mission(MissionKind::Read, false, 2)]
+                )),
+                MissionKind::Read,
+                READ_TARGET
+            ),
+            1
+        );
+        assert_eq!(
+            retry_action_count(
+                Some(&summary(
+                    30,
+                    vec![mission(MissionKind::Like, false, LIKE_TARGET)]
+                )),
+                MissionKind::Like,
+                LIKE_TARGET
+            ),
+            1
+        );
+        assert_eq!(
+            retry_action_count(None, MissionKind::Like, LIKE_TARGET),
+            LIKE_TARGET
+        );
+    }
+
+    fn test_bbs_client(server: &MockServer) -> BbsClient {
+        let http = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 1,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+        let base = Url::parse(&format!("{}/", server.uri())).unwrap();
+        BbsClient::new(
+            http,
+            SecretString::new("stuid=123;stoken=secret"),
+            SecretString::new("cookie_token=secret"),
+            "device-id",
+        )
+        .endpoints(BbsEndpoints::from_base_url(&base).unwrap())
+    }
+
+    #[tokio::test]
+    async fn missing_sign_mission_and_completed_auxiliary_tasks_still_run_first_sign() {
+        let server = MockServer::start().await;
+        let mission_calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&mission_calls);
+        Mock::given(method("GET"))
+            .and(path("/apihub/wapi/getUserMissionsState"))
+            .respond_with(move |_request: &Request| {
+                let call = responder_calls.fetch_add(1, Ordering::SeqCst);
+                let (can_get, received, total, states) = if call == 0 {
+                    (
+                        30,
+                        0,
+                        4219,
+                        json!([
+                            {"mission_id": 62, "is_get_award": true, "happened_times": 1},
+                            {"mission_id": 64, "is_get_award": true, "happened_times": 1}
+                        ]),
+                    )
+                } else {
+                    (
+                        0,
+                        30,
+                        4249,
+                        json!([
+                            {"mission_id": 58, "is_get_award": true, "happened_times": 1},
+                            {"mission_id": 62, "is_get_award": true, "happened_times": 1},
+                            {"mission_id": 64, "is_get_award": true, "happened_times": 1}
+                        ]),
+                    )
+                };
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": {
+                        "can_get_points": can_get,
+                        "already_received_points": received,
+                        "total_points": total,
+                        "states": states
+                    }
+                }))
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/apihub/app/api/signIn"))
+            .and(body_json(json!({"gids": "2"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0, "message": "OK", "data": {}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_bbs_client(&server);
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut report = RunReport::default();
+        run_account_tasks(
+            &mut report,
+            "测试账号",
+            &bbs_tasks(true, false, false, false),
+            &client,
+            None,
+            &mut signer,
+            3,
+        )
+        .await;
+
+        assert_eq!(mission_calls.load(Ordering::SeqCst), 2);
+        let final_summary = report
+            .records
+            .iter()
+            .find(|record| record.task == "米游币" && record.subject == "完成确认")
+            .unwrap();
+        assert_eq!(
+            final_summary.message,
+            "已领取 30，还可领取 0，当前共 4249 米游币"
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[tokio::test]
+    async fn unchanged_missing_sign_mission_retries_only_after_successful_recheck() {
+        let server = MockServer::start().await;
+        let mission_calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&mission_calls);
+        Mock::given(method("GET"))
+            .and(path("/apihub/wapi/getUserMissionsState"))
+            .respond_with(move |_request: &Request| {
+                let call = responder_calls.fetch_add(1, Ordering::SeqCst);
+                let states = if call < 2 {
+                    json!([{"mission_id": 62, "is_get_award": true, "happened_times": 1}])
+                } else {
+                    json!([{"mission_id": 58, "is_get_award": true, "happened_times": 1}])
+                };
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": {
+                        "can_get_points": 30,
+                        "already_received_points": 0,
+                        "total_points": 4219,
+                        "states": states
+                    }
+                }))
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/apihub/app/api/signIn"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0, "message": "OK", "data": {}
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = test_bbs_client(&server);
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut report = RunReport::default();
+        run_account_tasks(
+            &mut report,
+            "测试账号",
+            &bbs_tasks(true, false, false, false),
+            &client,
+            None,
+            &mut signer,
+            3,
+        )
+        .await;
+
+        assert_eq!(mission_calls.load(Ordering::SeqCst), 3);
         assert!(
             report
                 .records
                 .iter()
-                .skip(1)
-                .all(|record| record.outcome == TaskOutcome::Skipped)
+                .any(|record| record.task == "社区签到" && record.message.contains("第 2 轮"))
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[tokio::test]
+    async fn unchanged_sign_state_reaches_limit_and_keeps_latest_realtime_summary() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/apihub/wapi/getUserMissionsState"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0,
+                "message": "OK",
+                "data": {
+                    "can_get_points": 30,
+                    "already_received_points": 0,
+                    "total_points": 4219,
+                    "states": [
+                        {"mission_id": 62, "is_get_award": true, "happened_times": 1}
+                    ]
+                }
+            })))
+            .expect(3)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/apihub/app/api/signIn"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0, "message": "OK", "data": {}
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = test_bbs_client(&server);
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut report = RunReport::default();
+        run_account_tasks(
+            &mut report,
+            "测试账号",
+            &bbs_tasks(true, false, false, false),
+            &client,
+            None,
+            &mut signer,
+            2,
+        )
+        .await;
+
+        assert!(report.records.iter().any(|record| {
+            record.task == "社区签到" && record.outcome == TaskOutcome::StateSyncTimeout
+        }));
+        let realtime = report
+            .records
+            .iter()
+            .find(|record| record.task == "米游币" && record.subject == "实时汇总")
+            .unwrap();
+        assert_eq!(
+            realtime.message,
+            "已领取 0，还可领取 30，当前共 4219 米游币"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_confirmation_query_stops_sign_without_blind_retry() {
+        let server = MockServer::start().await;
+        let mission_calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&mission_calls);
+        Mock::given(method("GET"))
+            .and(path("/apihub/wapi/getUserMissionsState"))
+            .respond_with(move |_request: &Request| {
+                if responder_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "retcode": 0,
+                        "message": "OK",
+                        "data": {
+                            "can_get_points": 30,
+                            "already_received_points": 0,
+                            "total_points": 4219,
+                            "states": []
+                        }
+                    }))
+                } else {
+                    ResponseTemplate::new(500)
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/apihub/app/api/signIn"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 0, "message": "OK", "data": {}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_bbs_client(&server);
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut report = RunReport::default();
+        run_account_tasks(
+            &mut report,
+            "测试账号",
+            &bbs_tasks(true, false, false, false),
+            &client,
+            None,
+            &mut signer,
+            3,
+        )
+        .await;
+
+        assert_eq!(mission_calls.load(Ordering::SeqCst), 2);
+        assert!(
+            report
+                .records
+                .iter()
+                .any(|record| record.outcome == TaskOutcome::NetworkFailed)
+        );
+        assert!(
+            report
+                .records
+                .iter()
+                .all(|record| record.outcome != TaskOutcome::StateSyncTimeout)
         );
     }
 
@@ -1494,5 +2054,15 @@ mod tests {
             solve_bbs_captcha(&client, None, &mut signer, 3).await,
             Err(ActionError::Captcha(message)) if message.contains("未配置 captcha.endpoint")
         ));
+    }
+
+    #[test]
+    fn captcha_error_reason_never_contains_solver_query_details() {
+        let error = CaptchaError::Http(HttpError::Connect(
+            "https://solver.example/pass?gt=secret&challenge=secret".to_owned(),
+        ));
+
+        assert_eq!(error.safe_reason(), "无法连接验证码平台");
+        assert!(!error.safe_reason().contains("secret"));
     }
 }

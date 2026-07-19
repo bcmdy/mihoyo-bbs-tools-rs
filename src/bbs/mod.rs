@@ -1,7 +1,9 @@
 mod client;
 mod model;
 
-pub use client::{BbsClient, BbsEndpoints, BbsError, ForumSignRequest, Verification};
+pub use client::{
+    BbsClient, BbsEndpoints, BbsError, ForumSignRequest, ForumSignState, Verification,
+};
 pub use model::{CoinSummary, MissionKind, MissionProgress, PostRef};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
