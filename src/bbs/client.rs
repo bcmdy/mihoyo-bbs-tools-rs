@@ -19,7 +19,7 @@ use crate::{
 use super::model::{CoinSummary, MissionData, PostListData, PostRef};
 
 const BBS_BASE: &str = "https://bbs-api.miyoushe.com";
-const APP_VERSION: &str = "2.109.0";
+const APP_VERSION: &str = "2.117.0";
 
 #[derive(Debug, Error)]
 pub enum BbsError {

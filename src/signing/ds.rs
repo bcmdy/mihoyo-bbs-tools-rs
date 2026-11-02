@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use md5::{Digest, Md5};
 use rand::{Rng, seq::SliceRandom};
 
-pub const APP_SALT: &str = "47f15f1b66bee46b816115d8e8e6ebb6";
-pub const WEB_SALT: &str = "d9200c846b10886e8c874fc33c8f308b";
+pub const APP_SALT: &str = "9c7b896d7483e9070b27c55f1959c4d5";
+pub const WEB_SALT: &str = "4751cb5557bfad5e249e58462c39fb0a";
 pub const BODY_SALT: &str = "t0qEgfub6cvueAPgR5m9aQWWVciEer7v";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -185,19 +185,19 @@ mod tests {
             DsHeader {
                 timestamp: 1_700_000_000,
                 random: "abc123".to_owned(),
-                checksum: "0469c15c8dda31d69eb62a61935c2c26".to_owned(),
+                checksum: "decda05a5cf71f8ea88008148fa99a73".to_owned(),
             }
         );
         assert_eq!(
             header.to_string(),
-            "1700000000,abc123,0469c15c8dda31d69eb62a61935c2c26"
+            "1700000000,abc123,decda05a5cf71f8ea88008148fa99a73"
         );
     }
 
     #[test]
     fn creates_app_ds_from_fixed_vector() {
         let header = sign_ds_with(APP_SALT, 1_700_000_000, "z9x8c7");
-        assert_eq!(header.checksum, "f0d53f5ee5be00fafcd94d4d1d6448a0");
+        assert_eq!(header.checksum, "6f1c29aec51a0b67f1a27b7615a481cf");
     }
 
     #[test]
@@ -224,7 +224,7 @@ mod tests {
 
         assert_eq!(
             signer.sign_web().checksum,
-            "0469c15c8dda31d69eb62a61935c2c26"
+            "decda05a5cf71f8ea88008148fa99a73"
         );
         assert_eq!(
             signer.sign_body("", b"").checksum,

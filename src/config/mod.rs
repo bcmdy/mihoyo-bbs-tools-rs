@@ -1964,7 +1964,7 @@ fn default_device_model() -> String {
     "Mi 6".to_owned()
 }
 fn default_china_user_agent() -> String {
-    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.109.0"
+    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.117.0"
         .to_owned()
 }
 fn default_hoyolab_user_agent() -> String {
