@@ -14,12 +14,12 @@ use thiserror::Error;
 use crate::{
     auth::SecretString,
     http::{HttpClient, HttpError},
+    mihoyo::{APP_VERSION, CLIENT_TYPE_APP, VERIFY_KEY},
 };
 
 use super::model::{CoinSummary, MissionData, PostListData, PostRef};
 
 const BBS_BASE: &str = "https://bbs-api.miyoushe.com";
-const APP_VERSION: &str = "2.117.0";
 
 #[derive(Debug, Error)]
 pub enum BbsError {
@@ -371,7 +371,7 @@ impl BbsClient {
         insert_typed_header(&mut headers, CONNECTION, "Keep-Alive", "Connection")?;
         insert_typed_header(&mut headers, ACCEPT_ENCODING, "gzip", "Accept-Encoding")?;
         insert_header(&mut headers, "ds", ds)?;
-        insert_header(&mut headers, "x-rpc-client_type", "2")?;
+        insert_header(&mut headers, "x-rpc-client_type", CLIENT_TYPE_APP)?;
         insert_header(&mut headers, "x-rpc-app_version", APP_VERSION)?;
         insert_header(&mut headers, "x-rpc-sys_version", "12")?;
         insert_header(&mut headers, "x-rpc-channel", "miyousheluodi")?;
@@ -382,7 +382,7 @@ impl BbsClient {
             insert_header(&mut headers, "x-rpc-device_fp", device_fp)?;
         }
         insert_header(&mut headers, "x-rpc-h265_supported", "1")?;
-        insert_header(&mut headers, "x-rpc-verify_key", "bll8iq97cem8")?;
+        insert_header(&mut headers, "x-rpc-verify_key", VERIFY_KEY)?;
         insert_header(&mut headers, "x-rpc-csm_source", "discussion")?;
         if let Some(challenge) = captcha_challenge {
             insert_header(&mut headers, "x-rpc-challenge", challenge)?;

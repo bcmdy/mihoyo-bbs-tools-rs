@@ -4,9 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use md5::{Digest, Md5};
 use rand::{Rng, seq::SliceRandom};
 
-pub const APP_SALT: &str = "9c7b896d7483e9070b27c55f1959c4d5";
-pub const WEB_SALT: &str = "4751cb5557bfad5e249e58462c39fb0a";
-pub const BODY_SALT: &str = "t0qEgfub6cvueAPgR5m9aQWWVciEer7v";
+use crate::mihoyo::{APP_SALT, BODY_SALT, WEB_SALT};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DsHeader {

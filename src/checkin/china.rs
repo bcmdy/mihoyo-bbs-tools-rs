@@ -11,6 +11,7 @@ use thiserror::Error;
 use crate::{
     auth::SecretString,
     http::{HttpClient, HttpError},
+    mihoyo,
 };
 
 use super::{
@@ -23,8 +24,6 @@ use super::{
 
 const ROLE_BASE: &str = "https://api-takumi.mihoyo.com";
 const ROLE_PATH: &str = "/binding/api/getUserGameRolesByCookie";
-const DEFAULT_USER_AGENT: &str =
-    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36 miHoYoBBS/2.117.0";
 
 #[derive(Debug, Error)]
 pub enum CheckinError {
@@ -55,7 +54,7 @@ impl ChinaCheckinClient {
             http,
             cookie,
             device_id: device_id.into(),
-            user_agent: DEFAULT_USER_AGENT.to_owned(),
+            user_agent: mihoyo::user_agent(),
             endpoint_override: None,
         }
     }
@@ -206,8 +205,8 @@ impl ChinaCheckinClient {
         insert_typed_header(&mut headers, REFERER, spec.referer, "Referer")?;
         insert_header(&mut headers, "ds", ds)?;
         insert_header(&mut headers, "x-rpc-channel", "miyousheluodi")?;
-        insert_header(&mut headers, "x-rpc-app_version", "2.117.0")?;
-        insert_header(&mut headers, "x-rpc-client_type", "5")?;
+        insert_header(&mut headers, "x-rpc-app_version", mihoyo::APP_VERSION)?;
+        insert_header(&mut headers, "x-rpc-client_type", mihoyo::CLIENT_TYPE_WEB)?;
         insert_header(&mut headers, "x-rpc-device_id", &self.device_id)?;
         insert_header(&mut headers, "x-requested-with", "com.mihoyo.hyperion")?;
         if let Some(sign_game) = spec.sign_game {

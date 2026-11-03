@@ -325,7 +325,8 @@ async fn fetch_nickname(cookie: &str, uid: &str) -> Result<String, ConfigError> 
     );
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_static("Mozilla/5.0 miHoYoBBS/2.84.1"),
+        HeaderValue::from_str(&crate::mihoyo::user_agent())
+            .map_err(|_| ConfigError::Edit("User-Agent 包含无效请求头字符".to_owned()))?,
     );
     let client = HttpClient::builder()
         .build()

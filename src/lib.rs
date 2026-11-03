@@ -10,6 +10,7 @@ pub mod doctor;
 pub mod error;
 pub mod http;
 pub mod launcher;
+pub mod mihoyo;
 pub mod push;
 pub mod service;
 pub mod signing;

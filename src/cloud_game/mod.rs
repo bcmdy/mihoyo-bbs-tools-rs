@@ -137,7 +137,10 @@ fn headers(
         }
         CloudGame::OverseasGenshin => {
             headers.insert(USER_AGENT, HeaderValue::from_static("okhttp/4.10.0"));
-            headers.insert("x-rpc-client_type", HeaderValue::from_static("3"));
+            headers.insert(
+                "x-rpc-client_type",
+                HeaderValue::from_static(crate::mihoyo::CLIENT_TYPE_CLOUD_GAME),
+            );
             headers.insert("x-rpc-cg_game_biz", HeaderValue::from_static("hk4e_global"));
             headers.insert("x-rpc-channel_id", HeaderValue::from_static("1"));
             insert(&mut headers, "x-rpc-language", language)?;
