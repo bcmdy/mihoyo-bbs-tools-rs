@@ -145,7 +145,9 @@ DaCapo 是可选的第三方 JSON 配置适配入口，不是签到任务或必�
 
 ## 开发与项目状态
 
-本项目使用 GitHub Actions 完成 Rust 格式检查、Clippy、测试、Linux/Windows 构建、Nix 构建、TLS 握手和多架构容器验证。已完成方案和历史优化记录由 Git 提交历史保存，不再作为用户文档分发。
+本项目使用 GitHub Actions 完成 Rust 格式检查、Clippy、测试、Linux/Windows 构建、Nix 检查、TLS 握手和多架构容器验证。已完成方案和历史优化记录由 Git 提交历史保存，不再作为用户文档分发。
+
+开发维护参考：[项目优化建议](docs/项目优化建议.md)，包含代码依据、优先级、实施顺序与验收标准。
 
 项目标识：
 
