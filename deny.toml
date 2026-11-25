@@ -1,0 +1,83 @@
+# cargo-deny 配置（v2 语法）
+#
+# 检查项：advisories（RustSec 漏洞/unsound/未维护）、licenses、bans、sources。
+# 运行方式：cargo deny check（CI 中由 taiki-e/install-action 安装后执行）。
+# 配置语法参考：https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+#
+# 例外规则要求：每条 ignore 必须写 reason，并带 expiry 复查期限；到期后
+# 例外自动失效并重新报告，避免长期静默忽略安全公告。
+
+# `version = 2` 是 v2 语法的显式标记：cargo-deny 当前仅接受 [advisories] 与
+# [licenses] 内的 version 字段（bans/sources 顶层写入会报 unexpected-keys），
+# 因此两处显式声明、两处依赖 v2 默认语义。
+[advisories]
+version = 2
+# 被 yanked 的版本只告警：本项目锁定提交，yank 不改变已构建产物，阻断构建收益低。
+yanked = "warn"
+# 未使用配置项只告警，避免依赖升级后遗留过期条目直接失败。
+unused-ignored-advisory = "warn"
+ignore = [
+    # 2026-11-26 本地对锁定依赖执行 cargo deny check advisories 的实测结果。
+    # 下列公告均来自间接依赖，修复需要独立升级 PR（会同步更新 Cargo.lock），
+    # 此处仅作为可追踪例外登记，到期（2027-06-30）后必须重新评估。
+    { id = "RUSTSEC-2026-0009", reason = "time 0.3.45 拒绝服务；需升级 time，未在本工作流范围内改动依赖", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0258", reason = "h2 空 DATA 帧无界缓冲；需升级 h2/hyper 链路", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0285", reason = "rustls TLS1.3 握手边界校验；需升级 rustls", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0346", reason = "rustls Debug 泄漏会话密钥；需升级 rustls", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0348", reason = "rustls Brotli 证书解压分配；需升级 rustls", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0349", reason = "rustls ServerHello 降级；需升级 rustls", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 含不受信中间证书；需升级 webpki-roots", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0382", reason = "rustls-webpki 证书校验；需升级 rustls-webpki", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0383", reason = "webpki-root-certs 含不受信中间证书；需升级 webpki-root-certs", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0386", reason = "tokio AsyncFd I/O 安全性（unsound）；需升级 tokio，当前仅用于 Unix 侧 API", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0560", reason = "lettre STARTTLS 响应注入；需升级 lettre（Cargo.toml 固定 =0.11.22）", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0561", reason = "lettre SMTP 命令注入（CRLF 点填充）；需升级 lettre", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0562", reason = "lettre EHLO 空行 panic；需升级 lettre", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0563", reason = "lettre 引号本地部分投递错误；需升级 lettre", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0564", reason = "lettre 显示名含 CR/LF panic；需升级 lettre", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0565", reason = "lettre SMTP 应答无界缓冲；需升级 lettre", expiry = "2027-06-30" },
+    { id = "RUSTSEC-2026-0592", reason = "url Url::origin 嵌套 blob 栈溢出；需升级 url", expiry = "2027-06-30" },
+]
+
+[licenses]
+version = 2
+# 允许的许可证：本项目为 MIT，同时接受常见宽松许可证及其 SPDX 组合。
+confidence-threshold = 0.9
+# 允许列表预先覆盖常见宽松许可证，依赖升级引入新 crate 时不因许可证种类失败；
+# 未实际出现的条目只告警，这里显式静音以免噪声掩盖真实问题。
+unused-allowed-license = "allow"
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "Zlib",
+]
+
+[bans]
+# 重复版本只告警：windows-sys、getrandom、r-efi 的重复来自上游兼容窗口。
+multiple-versions = "warn"
+# 禁止通配符版本依赖，保证锁文件可复现。
+wildcards = "deny"
+# 基础 TLS 实现固定为 ring，禁止引入 AWS-LC（与 ci.yml 的依赖检查一致）。
+deny = [
+    { crate = "openssl", use-instead = "rustls" },
+    { crate = "openssl-sys", use-instead = "rustls" },
+    { crate = "aws-lc-rs", reason = "项目固定使用 ring 作为 rustls provider" },
+    { crate = "aws-lc-sys", reason = "项目固定使用 ring 作为 rustls provider" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
