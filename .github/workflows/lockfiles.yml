@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: dependency-lockfiles-main
@@ -17,8 +18,9 @@ concurrency:
 
 jobs:
   generate:
-    name: 生成 Cargo 与 Nix 锁文件
+    name: 生成并验证 Cargo 与 Nix 锁文件
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: 检出代码
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -37,6 +39,35 @@ jobs:
       - name: 生成 Nix 锁文件
         run: nix flake lock
 
+      - name: 暂存新锁文件
+        # 本地 flake 构建只包含 git 已跟踪/已暂存的文件，必须先把新锁文件加入索引，
+        # 否则后续 nix build 仍会使用旧锁文件。
+        shell: bash
+        run: git add Cargo.lock flake.lock
+
+      - name: 验证锁文件一致性
+        # 先验证再用：锁文件必须能通过 --locked 元数据解析，避免把不一致的
+        # 锁文件直接送到 main。
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: 编译锁定依赖（不运行测试）
+        # cargo test --no-run --locked 会完整编译测试目标，能在提交前发现
+        # 依赖升级导致的编译失败；执行测试成本高，交给 PR 上的常规 CI。
+        run: cargo test --no-run --locked
+
+      - name: 验证 Nix 构建
+        # 用新锁文件真实构建 Nix 包，覆盖 Cargo 侧的依赖解析与安装脚本。
+        run: nix build .#packages.x86_64-linux.default --print-build-logs --no-write-lock-file
+
+      - name: 校验 Nix 产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./result/bin/MihoyoBBSToolsRS version
+          test -f result/share/doc/mihoyo-bbs-tools/使用说明.md
+          test -f result/share/mihoyo-bbs-tools/config/config.example.yaml
+          test -f result/share/mihoyo-bbs-tools/dacapo/template.yml
+
       - name: 上传锁文件
         uses: actions/upload-artifact@v4
         with:
@@ -46,18 +77,29 @@ jobs:
             flake.lock
           if-no-files-found: error
 
-      - name: 提交更新后的锁文件
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add Cargo.lock flake.lock
-          if git diff --cached --quiet; then
-            echo "依赖锁文件无需更新"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit \
-            -m "构建：更新依赖锁文件" \
-            -m "由远程 Actions 生成 Cargo 与 Nix 锁文件，保持锁定依赖构建可复现。"
-          git push origin HEAD:main
+      - name: 通过 Pull Request 提交锁文件
+        # 不直接推送 main：锁文件变更需要经过常规 CI 与人工复核。
+        # 注意默认 GITHUB_TOKEN 产生的推送/PR 不会再次触发 push 类工作流，
+        # 因此上面的编译与 Nix 构建校验必须在同一次运行内完成。
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: main
+          branch: chore/dependency-lockfiles
+          delete-branch: true
+          commit-message: |
+            构建：更新依赖锁文件
+
+            由远程 Actions 生成 Cargo 与 Nix 锁文件，并已通过 cargo metadata --locked、
+            cargo test --no-run --locked 与 Nix 包构建校验。
+          title: 构建：更新依赖锁文件
+          body: |
+            本 PR 由“生成依赖锁文件”工作流自动创建。
+
+            - 已在同一次运行内执行 `cargo metadata --locked`、`cargo test --no-run --locked`
+              与 `nix build .#packages.x86_64-linux.default`，全部通过后才提交。
+            - 默认 GITHUB_TOKEN 创建的推送不会触发后续 push 工作流，请在合并前确认
+              PR 上的检查结果，或手动重新运行 CI。
+          add-paths: |
+            Cargo.lock
+            flake.lock

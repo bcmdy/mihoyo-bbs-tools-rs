@@ -29,6 +29,13 @@
             nativeBuildInputs = [ pkgs.makeWrapper ];
             MIHOYO_BBS_TOOLS_VERSION = manifest.package.version;
 
+            # buildRustPackage 的 doCheck 默认为 true，会在 Nix 构建阶段执行
+            # cargo test。本仓库的单元测试用 wiremock 起本地 HTTP 服务并写临时
+            # 目录，Nix sandbox 内没有网络能力（含受限的 loopback），测试必然
+            # 失败；而 nix 包只需验证“能编译 + 安装文件齐全”，单元测试由 Rust
+            # CI 的 quality 任务覆盖，因此这里关闭 check。
+            doCheck = false;
+
             postInstall = ''
               install -Dm644 docs/使用说明.md \
                 "$out/share/doc/mihoyo-bbs-tools/使用说明.md"

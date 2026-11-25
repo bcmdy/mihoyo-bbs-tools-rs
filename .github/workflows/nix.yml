@@ -54,5 +54,43 @@ jobs:
       - name: 安装 Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
-      - name: 检查锁文件与构建包
+      - name: 检查 flake 与锁文件
+        # flake 目前没有 checks 输出，nix flake check 只校验 flake 结构与锁文件一致性，
+        # 不能证明包可编译，因此下面仍需显式构建 packages。
         run: nix flake check --print-build-logs --no-write-lock-file
+
+      - name: 构建默认软件包
+        # 显式构建 packages.<system>.default，真正编译并安装程序与随包文件。
+        # 失败时把完整构建日志写入 nix-build.log 并由下一步上传为 artifact：
+        # 单靠 ::error 注解无法定位 compile/check/install 阶段的具体原因。
+        shell: bash
+        run: |
+          set -o pipefail
+          nix build ".#packages.${{ matrix.system }}.default" \
+            --print-build-logs \
+            --no-write-lock-file 2>&1 | tee nix-build.log
+
+      - name: 上传构建日志
+        # 成功与失败都上传，便于事后追踪 Nix 构建耗时与告警。
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-build-log-${{ matrix.system }}
+          path: nix-build.log
+          if-no-files-found: warn
+
+      - name: 验证程序与安装文件
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./result/bin/MihoyoBBSToolsRS version
+          for installed in \
+            result/share/doc/mihoyo-bbs-tools/使用说明.md \
+            result/share/mihoyo-bbs-tools/config/config.example.yaml \
+            result/share/mihoyo-bbs-tools/dacapo/template.yml; do
+            if [[ ! -f "$installed" ]]; then
+              echo "缺少安装文件：$installed" >&2
+              exit 1
+            fi
+            echo "已安装：$installed"
+          done

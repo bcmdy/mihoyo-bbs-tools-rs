@@ -902,6 +902,7 @@ fn init_tracing(
             Some(config::LogLevel::Error) => LevelFilter::ERROR,
             Some(config::LogLevel::Info) | None => LevelFilter::INFO,
         });
+
     if let Some(logging) = runtime.map(|r| &r.logging).filter(|v| v.enabled) {
         match file_logging::DailyFileAppender::new(&logging.directory, &logging.file_prefix) {
             Ok(appender) => {

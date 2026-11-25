@@ -240,13 +240,12 @@ fn warn_about_lossy_fields(root: &Mapping, warnings: &mut Vec<String>) {
     if scalar_string(root, "push").is_some_and(|value| !value.trim().is_empty()) {
         warnings.push("旧版 push.ini 文件引用无法转换为内联通知配置，未迁移".to_owned());
     }
-    if let Some(games) = mapping(root, "games") {
-        if mapping(games, "os").is_some_and(has_blacklists) {
-            warnings.push(
-                "旧版国际服角色黑名单未迁移：原 Python 国际服签到接口未按 UID 执行黑名单"
-                    .to_owned(),
-            );
-        }
+    if let Some(games) = mapping(root, "games")
+        && mapping(games, "os").is_some_and(has_blacklists)
+    {
+        warnings.push(
+            "旧版国际服角色黑名单未迁移：原 Python 国际服签到接口未按 UID 执行黑名单".to_owned(),
+        );
     }
 }
 

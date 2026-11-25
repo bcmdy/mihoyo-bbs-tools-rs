@@ -11,10 +11,13 @@ on:
     branches:
       - main
       - "codex/**"
+    # 纯文档/README 变更不再触发完整 Rust CI，改由 docs.yml 做轻量校验；
+    # 发布包必需的 docs、示例配置与模板仍由该工作流验证存在性。
     paths:
       - "**/*.rs"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "deny.toml"
       - "build.rs"
       - "rust-toolchain.toml"
       - ".cargo/**"
@@ -25,15 +28,15 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "deploy/**"
-      - "README.md"
-      - "docs/**"
       - "flake.nix"
       - "flake.lock"
   pull_request:
+    # 同上：文档变更由 docs.yml 负责，避免纯文字修改跑完整质量检查。
     paths:
       - "**/*.rs"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "deny.toml"
       - "build.rs"
       - "rust-toolchain.toml"
       - ".cargo/**"
@@ -44,8 +47,6 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "deploy/**"
-      - "README.md"
-      - "docs/**"
       - "flake.nix"
       - "flake.lock"
 
@@ -64,6 +65,12 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Rust 构建缓存
+        # 缓存 cargo registry 与 target，减少重复编译耗时。
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-linux-stable
 
       - name: 确定构建版本
         shell: bash
@@ -86,8 +93,27 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: 检查格式
-        run: cargo fmt --all -- --check
+      - name: 检查格式、Clippy 与测试
+        # 与发布工作流共用同一份 composite 质量检查，避免两处逻辑漂移。
+        uses: ./.github/actions/quality
+
+      - name: 校验最低 Rust 版本
+        # Cargo.toml 声明 rust-version = "1.88"；用 1.88.0 工具链独立校验锁定依赖，
+        # 防止引入更高版本语法或依赖后回退最低版本兼容性。
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          cargo +1.88.0 check --locked --all-targets --all-features
+
+      - name: 安装 cargo-deny
+        # 安装依赖审计工具（官方预编译二进制，避免本地长时间编译）。
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.22.0
+
+      - name: 依赖健康检查（广告、许可证、重复与来源）
+        # 配置见仓库根目录 deny.toml；例外条目均带 reason 与 expiry 复查期限。
+        # 注意：--color 等全局参数必须写在 check 之前，否则 cargo-deny 会报 unexpected argument。
+        run: cargo deny --color never check advisories bans licenses sources
 
       - name: 检查 TLS 依赖
         shell: bash
@@ -99,25 +125,34 @@ jobs:
           fi
           grep -q 'ring v' <<< "$tree"
 
-      - name: Clippy 静态检查
-        run: |
-          set +e
-          cargo clippy --all-targets --all-features --locked -- -D warnings 2>&1 | tee clippy.log
-          code=${PIPESTATUS[0]}
-          if [ "$code" -ne 0 ]; then
-            details=$(tail -n 80 clippy.log)
-            details="${details//'%'/'%25'}"
-            details="${details//$'\r'/'%0D'}"
-            details="${details//$'\n'/'%0A'}"
-            echo "::error title=Clippy 失败::$details"
-            echo '```text' >> "$GITHUB_STEP_SUMMARY"
-            tail -n 120 clippy.log >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          fi
-          exit "$code"
+  windows-tests:
+    name: Windows 离线测试与静态检查
+    runs-on: windows-latest
+    timeout-minutes: 60
 
-      - name: 执行测试
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Rust 构建缓存
+        # 按 Windows + stable 单独分组缓存，覆盖 cfg(windows) 编译。
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-tests
+
+      - name: 安装 Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+
+      - name: 执行测试（含离线 CLI 回归）
+        # 源码内 208 个单元测试与 tests/cli_smoke.rs 均不联网、不写用户目录、
+        # 不依赖桌面通知或计划任务安装；用 Windows 运行以覆盖 cfg(windows) 分支。
         run: cargo test --all-features --locked
+
+      - name: Clippy 静态检查
+        # 只保留 -D warnings，Windows 上的 cfg(windows) 代码才会被真正检查。
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
   build:
     name: 编译 ${{ matrix.os }}
@@ -135,6 +170,12 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Rust 构建缓存
+        # 矩阵按 ${{ matrix.os }} 分 key，避免不同 OS 互相覆盖。
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "build-${{ matrix.os }}"
 
       - name: 确定 Linux 构建版本
         id: version_linux
@@ -290,6 +331,12 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Rust 构建缓存
+        # 交叉编译按 ${{ matrix.target }} 分 key。
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "arm-${{ matrix.target }}"
 
       - name: 安装 Rust 与目标平台
         run: |

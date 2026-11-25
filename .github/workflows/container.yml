@@ -54,6 +54,8 @@ jobs:
 
       - name: 确定镜像版本与标签
         id: image
+        # 提交标识语义：tag 触发与 workflow_dispatch 都会在后续步骤解析实际 HEAD；
+        # PR/分支触发使用 checkout 检出的提交（即 github.sha）。
         shell: bash
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -96,6 +98,16 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: 记录实际构建提交
+        # 用检出的 HEAD 而不是 github.sha：手动触发镜像时 github.sha 是触发分支的提交，
+        # 产物标签与 OCI revision 应记录真正参与构建的提交。
+        id: revision
+        shell: bash
+        run: |
+          commit=$(git rev-parse HEAD)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "本次镜像构建提交：$commit"
+
       - name: 安装 QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
@@ -120,11 +132,11 @@ jobs:
           tags: ${{ steps.image.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.revision.outputs.commit }}
             org.opencontainers.image.version=${{ steps.image.outputs.version }}
           build-args: |
             MIHOYO_BBS_TOOLS_VERSION=${{ steps.image.outputs.version }}
-            GIT_COMMIT=${{ github.sha }}
+            GIT_COMMIT=${{ steps.revision.outputs.commit }}
           cache-from: type=gha,scope=multiarch-container
           cache-to: type=gha,mode=max,scope=multiarch-container
           provenance: true

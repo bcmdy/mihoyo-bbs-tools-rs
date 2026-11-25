@@ -1004,10 +1004,10 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     if config.runtime.schedule.poll_seconds == Some(0) {
         errors.push("runtime.schedule.poll_seconds 必须大于 0；使用默认值请删除该字段".to_owned());
     }
-    if let Some(endpoint) = &config.captcha.endpoint {
-        if !matches!(endpoint.scheme(), "http" | "https") {
-            errors.push("captcha.endpoint 仅支持 http 或 https".to_owned());
-        }
+    if let Some(endpoint) = &config.captcha.endpoint
+        && !matches!(endpoint.scheme(), "http" | "https")
+    {
+        errors.push("captcha.endpoint 仅支持 http 或 https".to_owned());
     }
     if config.accounts.is_empty() {
         errors.push("accounts 至少需要一个账号".to_owned());
@@ -1904,10 +1904,10 @@ fn hydrate_stokens_from_cookies(config: &mut Config) {
         if !account.credentials.stoken.is_empty() {
             continue;
         }
-        if let Ok(jar) = CookieJar::parse(account.credentials.cookie.expose_secret()) {
-            if let Some(stoken) = jar.get("stoken").filter(|value| !value.is_empty()) {
-                account.credentials.stoken = SecretString::new(stoken);
-            }
+        if let Ok(jar) = CookieJar::parse(account.credentials.cookie.expose_secret())
+            && let Some(stoken) = jar.get("stoken").filter(|value| !value.is_empty())
+        {
+            account.credentials.stoken = SecretString::new(stoken);
         }
     }
 }

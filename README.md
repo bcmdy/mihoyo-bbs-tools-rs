@@ -155,6 +155,7 @@ DaCapo 是可选的第三方 JSON 配置适配入口，不是签到任务或必�
 - Cargo 包：`mihoyo-bbs-tools`
 - 可执行文件：`MihoyoBBSToolsRS`
 - Rust Edition：2024
+- 最低 Rust 版本：1.88（源码使用 1.88 稳定的 let 链；CI 用 1.88.0 工具链单独校验）
 
 ## 许可证
 

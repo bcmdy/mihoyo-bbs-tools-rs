@@ -698,16 +698,19 @@ async fn run_china_role(
             }
             Confirmation::Failed(error) => {
                 let outcome = classify_checkin_error(&error);
-                report.push(record(
-                    account,
-                    "国内游戏签到",
-                    subject,
-                    outcome,
-                    &format!(
-                        "第 {submissions} 次签到提交后确认查询失败；已提交，结果未知，未再次提交：{}",
-                        checkin_error_message(&error)
-                    ),
-                ));
+                report.push(
+                    record(
+                        account,
+                        "国内游戏签到",
+                        subject,
+                        outcome,
+                        &format!(
+                            "第 {submissions} 次签到提交后确认查询失败；已提交，结果未知，未再次提交：{}",
+                            checkin_error_message(&error)
+                        ),
+                    )
+                    .with_error_code(checkin_error_code(&error)),
+                );
                 return;
             }
             Confirmation::StillPending => {
@@ -912,16 +915,19 @@ async fn run_hoyolab_game(
             }
             Confirmation::Failed(error) => {
                 let outcome = classify_hoyolab_checkin_error(&error);
-                report.push(record(
-                    account,
-                    "HoYoLAB 签到",
-                    subject,
-                    outcome,
-                    &format!(
-                        "第 {submissions} 次签到提交后确认查询失败；已提交，结果未知，未再次提交：{}",
-                        hoyolab_checkin_error_message(&error)
-                    ),
-                ));
+                report.push(
+                    record(
+                        account,
+                        "HoYoLAB 签到",
+                        subject,
+                        outcome,
+                        &format!(
+                            "第 {submissions} 次签到提交后确认查询失败；已提交，结果未知，未再次提交：{}",
+                            hoyolab_checkin_error_message(&error)
+                        ),
+                    )
+                    .with_error_code(hoyolab_error_code(&error)),
+                );
                 return;
             }
             Confirmation::StillPending => {
