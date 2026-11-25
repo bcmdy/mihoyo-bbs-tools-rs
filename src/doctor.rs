@@ -462,10 +462,8 @@ async fn connectivity(client: &HttpClient, url: Url) -> Result<(), HttpError> {
 fn client(config: &Config, proxy: Option<&str>) -> Result<HttpClient, HttpError> {
     HttpClient::builder()
         .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy {
-            attempts: 1,
-            base_delay: Duration::ZERO,
-        })
+        // 诊断探测只发送一次，避免与业务重试叠加。
+        .retry(RetryPolicy::with_attempts(1))
         .proxy(proxy)?
         .build()
 }

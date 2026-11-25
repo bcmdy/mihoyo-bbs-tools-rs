@@ -199,10 +199,9 @@ fn wallet_record(
 fn build_http(config: &Config, account: &AccountConfig) -> Result<HttpClient, String> {
     HttpClient::builder()
         .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy {
-            attempts: usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
-            base_delay: Duration::from_millis(500),
-        })
+        .retry(RetryPolicy::for_extra_retries(
+            usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
+        ))
         .proxy(account.proxy.url.as_ref().map(SecretString::expose_secret))
         .map_err(|error| error.to_string())?
         .build()

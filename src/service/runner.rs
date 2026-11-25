@@ -152,10 +152,9 @@ async fn run_china_account(config: &Config, account: &AccountConfig) -> RunRepor
 fn build_account_http(config: &Config, account: &AccountConfig) -> Result<HttpClient, String> {
     let builder = HttpClient::builder()
         .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy {
-            attempts: usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
-            base_delay: Duration::from_millis(500),
-        })
+        .retry(RetryPolicy::for_extra_retries(
+            usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
+        ))
         .proxy(account.proxy.url.as_ref().map(|url| url.expose_secret()))
         .map_err(|error| error.to_string())?;
     builder.build().map_err(|error| error.to_string())
@@ -169,10 +168,9 @@ pub async fn run_hoyolab_checkin(config: &Config) -> RunReport {
         }
         let builder = HttpClient::builder()
             .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-            .retry(RetryPolicy {
-                attempts: usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
-                base_delay: Duration::from_millis(500),
-            });
+            .retry(RetryPolicy::for_extra_retries(
+                usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
+            ));
         let builder = match builder.proxy(account.proxy.url.as_ref().map(|url| url.expose_secret()))
         {
             Ok(builder) => builder,

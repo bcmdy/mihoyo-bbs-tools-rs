@@ -359,10 +359,9 @@ fn configured_http(
 ) -> Result<HttpClient, HttpError> {
     let builder = HttpClient::builder()
         .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy {
-            attempts: config.runtime.retry_count as usize + 1,
-            base_delay: Duration::from_millis(500),
-        });
+        .retry(RetryPolicy::for_extra_retries(
+            config.runtime.retry_count as usize,
+        ));
     let proxy = match provider {
         NotificationProvider::Telegram { proxy, .. } => {
             proxy.as_ref().map(|value| value.expose_secret())
@@ -978,6 +977,26 @@ mod tests {
             http: http(),
             config: configured,
         }
+    }
+
+    #[test]
+    fn configured_http_uses_documented_extra_retry_semantics() {
+        let source = "version: 1\naccounts: []\nruntime:\n  retry_count: 0\n";
+        let config: Config = serde_yaml_ng::from_str(source).unwrap();
+        let provider = NotificationProvider::Webhook {
+            url: SecretString::new("https://example.com/hook"),
+        };
+        let http = configured_http(&config, &provider).unwrap();
+        // retry_count 是额外重试次数：0 表示推送鉴权只尝试一次。
+        assert_eq!(http.retry_policy().attempts, 1);
+
+        let source = "version: 1\naccounts: []\nruntime:\n  retry_count: 3\n";
+        let config: Config = serde_yaml_ng::from_str(source).unwrap();
+        let http = configured_http(&config, &provider).unwrap();
+        assert_eq!(http.retry_policy().attempts, 4);
+        assert_eq!(http.retry_policy().base_delay, Duration::from_millis(500));
+        // 退避预算在没有显式覆盖时沿用安全默认值。
+        assert_eq!(http.backoff().max_total_delay, Duration::from_secs(30));
     }
 
     #[tokio::test]

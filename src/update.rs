@@ -1,7 +1,7 @@
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-use crate::http::{HttpClient, HttpError};
+use crate::http::{HttpClient, HttpError, RetryPolicy};
 
 const LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/bcmdy/mihoyo-bbs-tools-rs/releases/latest";
@@ -17,6 +17,9 @@ pub struct UpdateInfo {
 
 pub async fn check() -> Result<UpdateInfo, HttpError> {
     let response: LatestRelease = HttpClient::builder()
+        .retry(RetryPolicy::for_extra_retries(
+            RetryPolicy::FIXED_EXTRA_RETRIES,
+        ))
         .build()?
         .get_json(Url::parse(LATEST_RELEASE_API).expect("valid GitHub release API URL"))
         .await?;

@@ -1146,10 +1146,9 @@ fn log_unknown_missions(account: &str, summary: &CoinSummary, logged: &mut HashS
 fn build_http(config: &Config, account: &AccountConfig) -> Result<HttpClient, &'static str> {
     let builder = HttpClient::builder()
         .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy {
-            attempts: usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
-            base_delay: Duration::from_millis(500),
-        });
+        .retry(RetryPolicy::for_extra_retries(
+            usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
+        ));
     let builder = builder
         .proxy(account.proxy.url.as_ref().map(|url| url.expose_secret()))
         .map_err(|_| "代理配置无效")?;
