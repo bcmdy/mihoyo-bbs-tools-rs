@@ -169,6 +169,9 @@ pub struct LoggingConfig {
     pub directory: PathBuf,
     #[serde(default = "default_log_prefix")]
     pub file_prefix: String,
+    /// 日志保留天数；`None` 表示保留全部日志（旧配置的默认行为）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<u64>,
 }
 impl Default for LoggingConfig {
     fn default() -> Self {
@@ -176,6 +179,7 @@ impl Default for LoggingConfig {
             enabled: true,
             directory: PathBuf::from("logs"),
             file_prefix: default_log_prefix(),
+            retention_days: None,
         }
     }
 }
@@ -980,6 +984,10 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     if config.runtime.logging.directory.as_os_str().is_empty() {
         errors.push("runtime.logging.directory 不能为空".to_owned());
     }
+    if config.runtime.logging.retention_days == Some(0) {
+        errors
+            .push("runtime.logging.retention_days 必须大于 0；保留全部日志请删除该字段".to_owned());
+    }
     if let Some(endpoint) = &config.captcha.endpoint {
         if !matches!(endpoint.scheme(), "http" | "https") {
             errors.push("captcha.endpoint 仅支持 http 或 https".to_owned());
@@ -1504,7 +1512,7 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                 runtime,
                 "logging",
                 "runtime.logging",
-                &["enabled", "directory", "file_prefix"],
+                &["enabled", "directory", "file_prefix", "retention_days"],
                 &mut warnings,
             );
             inspect_named_child(
@@ -2497,6 +2505,62 @@ accounts:
                 matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("runtime.schedule.interval_minutes")))
             );
         }
+    }
+
+    #[test]
+    fn logging_retention_days_defaults_to_keep_all_and_accepts_explicit_value() {
+        let loaded = parse(MINIMAL).unwrap();
+        assert_eq!(loaded.config.runtime.logging.retention_days, None);
+        assert!(loaded.warnings.is_empty());
+
+        let source = MINIMAL.replace(
+            "accounts:",
+            "runtime:\n  logging:\n    retention_days: 14\naccounts:",
+        );
+        let loaded = parse(&source).unwrap();
+        assert_eq!(loaded.config.runtime.logging.retention_days, Some(14));
+        assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn logging_retention_days_rejects_zero() {
+        let source = MINIMAL.replace(
+            "accounts:",
+            "runtime:\n  logging:\n    retention_days: 0\naccounts:",
+        );
+        assert!(
+            matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("runtime.logging.retention_days")))
+        );
+    }
+
+    #[test]
+    fn logging_retention_days_is_a_known_field_and_typos_are_reported() {
+        let source = MINIMAL.replace(
+            "accounts:",
+            "runtime:\n  logging:\n    retention_day: 7\naccounts:",
+        );
+        let loaded = parse(&source).unwrap();
+        assert_eq!(
+            loaded.warnings,
+            vec!["未知配置字段 runtime.logging.retention_day"]
+        );
+        assert_eq!(loaded.config.runtime.logging.retention_days, None);
+    }
+
+    #[test]
+    fn logging_retention_days_round_trips_through_yaml() {
+        let source = MINIMAL.replace(
+            "accounts:",
+            "runtime:\n  logging:\n    retention_days: 7\naccounts:",
+        );
+        let loaded = parse(&source).unwrap();
+        let yaml = to_yaml(&loaded.config).unwrap();
+        assert!(yaml.contains("retention_days: 7"));
+        let round_tripped: Config = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(round_tripped.runtime.logging.retention_days, Some(7));
+
+        let default_yaml = to_yaml(&parse(MINIMAL).unwrap().config).unwrap();
+        assert!(!default_yaml.contains("retention_days"));
     }
 
     #[test]

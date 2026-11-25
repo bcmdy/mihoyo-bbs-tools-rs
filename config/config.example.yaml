@@ -11,6 +11,8 @@ runtime:
     enabled: true
     directory: logs
     file_prefix: mihoyo-bbs-tools
+    # 日志保留天数；省略或 null 表示保留全部日志。
+    retention_days: 30
   schedule:
     enabled: false
     interval_minutes: 720

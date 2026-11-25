@@ -626,6 +626,7 @@ pub fn set_logging(
     enabled: bool,
     directory: &str,
     file_prefix: &str,
+    retention_days: Option<u64>,
 ) -> Result<(), ConfigError> {
     mutate_raw(path, |root| {
         let runtime = root
@@ -643,6 +644,14 @@ pub fn set_logging(
         logging.insert(key("enabled"), Value::Bool(enabled));
         logging.insert(key("directory"), Value::String(directory.to_owned()));
         logging.insert(key("file_prefix"), Value::String(file_prefix.to_owned()));
+        match retention_days {
+            Some(days) => {
+                logging.insert(key("retention_days"), Value::Number(days.into()));
+            }
+            None => {
+                logging.remove(key("retention_days"));
+            }
+        }
         Ok(())
     })
 }

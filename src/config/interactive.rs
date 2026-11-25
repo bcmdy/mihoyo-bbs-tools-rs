@@ -208,7 +208,31 @@ fn runtime_logging(path: &Path) -> Result<(), ConfigError> {
     let enabled = prompt_bool("启用文件日志", c.enabled)?;
     let directory = prompt_keep("日志目录", &c.directory.to_string_lossy())?;
     let prefix = prompt_keep("日志文件名前缀", &c.file_prefix)?;
-    set_logging(path, enabled, &directory, &prefix)
+    let current_retention = c
+        .retention_days
+        .map(|days| days.to_string())
+        .unwrap_or_default();
+    let retention = prompt(&format!(
+        "日志保留天数[{current_retention}]（留空保留全部，- 清空）"
+    ))?;
+    let retention_days = if retention.is_empty() {
+        c.retention_days
+    } else if retention == "-" {
+        None
+    } else {
+        match retention.parse::<u64>() {
+            Ok(0) => {
+                println!("保留天数必须大于 0；保持不变");
+                c.retention_days
+            }
+            Ok(days) => Some(days),
+            Err(_) => {
+                println!("请输入正整数；保持不变");
+                c.retention_days
+            }
+        }
+    };
+    set_logging(path, enabled, &directory, &prefix, retention_days)
 }
 
 fn runtime_schedule(path: &Path) -> Result<(), ConfigError> {
