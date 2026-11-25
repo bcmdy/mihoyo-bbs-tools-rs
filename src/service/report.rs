@@ -379,7 +379,7 @@ impl RunReport {
                     .iter()
                     .filter(|record| {
                         record.account == account
-                            && record.task_id == Some(*task_id)
+                            && record.task_id == Some(task_id)
                             && record.is_repeated_community_detail()
                     })
                     .count();
@@ -598,6 +598,7 @@ mod tests {
                 reward: Some("原石 ×20".to_owned()),
                 coins: None,
                 attempts: Some(2),
+                task_rollup: false,
             }),
         );
         report.push(
