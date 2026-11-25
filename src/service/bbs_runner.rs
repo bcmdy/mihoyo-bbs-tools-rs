@@ -13,7 +13,8 @@ use crate::{
 };
 
 use super::{
-    CredentialPersistence, RunReport, TaskOutcome, TaskRecord,
+    CoinDetails, CredentialPersistence, RecordDetails, RecordKind, RunReport, TaskId, TaskOutcome,
+    TaskRecord,
     credential_refresh::{has_authentication_failure, refresh_account_cookie},
     resolve_device_id,
 };
@@ -386,6 +387,14 @@ fn coin_summary_record(account: &str, subject: &str, summary: &CoinSummary) -> T
             summary.already_received_points, summary.can_get_points, summary.total_points
         ),
     )
+    .with_details(RecordDetails {
+        coins: Some(CoinDetails {
+            received: summary.already_received_points,
+            remaining: summary.can_get_points,
+            total: summary.total_points,
+        }),
+        ..RecordDetails::default()
+    })
 }
 
 async fn run_sign_task(context: &mut BbsTaskContext<'_>, forums: &[&ForumSpec]) -> TaskRunResult {
@@ -1335,6 +1344,7 @@ enum FlowSignal {
 }
 
 fn push_error(report: &mut RunReport, account: &str, subject: &str, error: BbsError) {
+    let error_code = bbs_error_code(&error);
     let (outcome, message) = match error {
         BbsError::AuthExpired => (
             TaskOutcome::AuthenticationFailed,
@@ -1347,17 +1357,34 @@ fn push_error(report: &mut RunReport, account: &str, subject: &str, error: BbsEr
         BbsError::Http(_) => (TaskOutcome::NetworkFailed, "网络请求失败".to_owned()),
         other => (TaskOutcome::Failed, other.to_string()),
     };
-    report.push(record(account, "米游社任务", subject, outcome, &message));
+    report.push(
+        record(account, "米游社任务", subject, outcome, &message).with_error_code(error_code),
+    );
+}
+
+/// BBS 错误的稳定错误码；`Api` 保留 retcode 便于外部聚合。
+fn bbs_error_code(error: &BbsError) -> String {
+    match error {
+        BbsError::AuthExpired => "cookie_invalid".to_owned(),
+        BbsError::CaptchaRequired => "captcha_required".to_owned(),
+        BbsError::Http(_) => "http_error".to_owned(),
+        BbsError::InvalidHeader(_) => "invalid_header".to_owned(),
+        BbsError::InvalidResponse(_) => "invalid_response".to_owned(),
+        BbsError::Api { retcode, .. } => format!("retcode:{retcode}"),
+    }
 }
 
 fn push_captcha_error(report: &mut RunReport, account: &str, subject: &str, message: &str) {
-    report.push(record(
-        account,
-        "米游社任务",
-        subject,
-        TaskOutcome::CaptchaRequired,
-        message,
-    ));
+    report.push(
+        record(
+            account,
+            "米游社任务",
+            subject,
+            TaskOutcome::CaptchaRequired,
+            message,
+        )
+        .with_error_code("captcha_required"),
+    );
 }
 
 fn post_record(
@@ -1377,12 +1404,46 @@ fn record(
     outcome: TaskOutcome,
     message: &str,
 ) -> TaskRecord {
-    TaskRecord {
-        account: account.to_owned(),
-        task: task.to_owned(),
-        subject: subject.to_owned(),
-        outcome,
-        message: message.to_owned(),
+    let task_id = bbs_task_id(task, subject);
+    let mut record = TaskRecord::new(account, task, subject, outcome, message)
+        .with_task_id(task_id)
+        .with_kind(bbs_record_kind(task_id));
+    // 「米游币任务」是社区任务的横向汇总行，文本报告需要据此折叠。
+    if subject == "米游币任务" {
+        record = record.with_details(RecordDetails {
+            task_rollup: true,
+            ..RecordDetails::default()
+        });
+    }
+    record
+}
+
+/// 按社区任务名与 subject 映射稳定标识。
+///
+/// 映射只发生在这里，报告层不再依赖中文字符串等值判断；「米游币 / 任务状态」
+/// 单独映射为 [`TaskId::BbsCoinStatus`]，以便成功时从成功列表折叠。
+fn bbs_task_id(task: &str, subject: &str) -> TaskId {
+    match task {
+        "社区签到" => TaskId::BbsCheckin,
+        "阅读" => TaskId::BbsRead,
+        "点赞" => TaskId::BbsLike,
+        "取消点赞" => TaskId::BbsUnlike,
+        "分享" => TaskId::BbsShare,
+        "米游币" if subject == "任务状态" => TaskId::BbsCoinStatus,
+        "米游币" => TaskId::BbsCoins,
+        "凭据刷新" => TaskId::CredentialRefresh,
+        "配置" => TaskId::Config,
+        "通知" => TaskId::Notification,
+        _ => TaskId::BbsOther,
+    }
+}
+
+/// 米游币汇总记录标记为 `Summary`，凭据/配置提示为 `Diagnostic`，其余为任务结果。
+fn bbs_record_kind(task_id: TaskId) -> RecordKind {
+    match task_id {
+        TaskId::BbsCoins | TaskId::BbsCoinStatus => RecordKind::Summary,
+        TaskId::CredentialRefresh | TaskId::Config | TaskId::Notification => RecordKind::Diagnostic,
+        _ => RecordKind::Task,
     }
 }
 

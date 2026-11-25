@@ -16,13 +16,19 @@ pub use batch::{BatchEntry, BatchReport, ConfigDirectoryError, discover_config_f
 pub use bbs_runner::{run_bbs, run_bbs_with_persistence, run_bbs_with_refresh};
 pub use cloud_runner::run_cloud_games;
 pub use qinglong::{QinglongError, QinglongSettings, qinglong_settings};
-pub use report::{RunReport, TaskOutcome, TaskRecord};
+pub use report::{
+    CoinDetails, RecordDetails, RecordKind, RunReport, TaskCounts, TaskId, TaskOutcome, TaskRecord,
+};
 pub use runner::{
     run_china_checkin, run_china_checkin_with_persistence, run_china_checkin_with_refresh,
     run_hoyolab_checkin,
 };
 pub use runtime_delay::apply_runtime_delay;
-pub use scheduler::wait_schedule_interval;
+pub use scheduler::{
+    DEFAULT_SCHEDULE_POLL_SECONDS, SCHEDULE_RELOAD_BACKOFF_SECONDS, ScheduleWait, ShutdownSignal,
+    WaitSignal, schedule_interval, schedule_poll_interval, shutdown_channel, shutdown_signal,
+    spawn_shutdown_listener, wait_for_next_round, wait_with_cancel,
+};
 pub use web_activity_runner::run_web_activities;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

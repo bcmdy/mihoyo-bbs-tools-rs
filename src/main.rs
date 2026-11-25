@@ -1,6 +1,7 @@
 use std::{
     io::{IsTerminal, Read},
     process::ExitCode,
+    time::Duration,
 };
 
 use clap::Parser;
@@ -107,35 +108,57 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             config: path,
             tasks,
         } => {
-            let mut first = true;
+            // 首次配置错误明确失败退出；运行中失败由可取消等待按退避间隔重读恢复。
+            let mut current = config::load(&path)?;
+            let (shutdown_sender, mut shutdown) = service::shutdown_channel();
+            service::spawn_shutdown_listener(shutdown_sender);
+            let reload_backoff = schedule_reload_backoff();
+            let mut first_round = true;
             let mut last_exit = 0;
             loop {
-                let loaded = config::load(&path)?;
-                for warning in &loaded.warnings {
+                for warning in &current.warnings {
                     tracing::warn!("{warning}");
                 }
-                let schedule = loaded.config.runtime.schedule.clone();
+                let schedule = current.config.runtime.schedule.clone();
                 if !schedule.enabled {
-                    if first {
+                    if first_round {
                         return Err(AppError::Task(
                             "runtime.schedule.enabled=false，拒绝启动定时运行".to_owned(),
                         ));
                     }
-                    tracing::info!("检测到定时运行已关闭，退出 schedule");
-                    return Ok(last_exit);
+                    return Ok(finish_schedule(last_exit, "配置已关闭定时运行"));
                 }
-                if first && !schedule.run_on_start {
-                    first = false;
-                    service::wait_schedule_interval(&schedule).await;
-                    continue;
+                let skip_run = first_round && !schedule.run_on_start;
+                first_round = false;
+                if skip_run {
+                    tracing::info!(
+                        minutes = schedule.interval_minutes,
+                        "定时运行配置为先等待一个完整间隔"
+                    );
+                } else {
+                    let persistence = credential_persistence(current.source, &path);
+                    let (config, report) = execute_run(current.config, persistence, &tasks).await;
+                    last_exit =
+                        finish_report(&config, &report, ReportFormat::Text, false, false).await?;
+                    tracing::info!(exit_code = last_exit, "定时任务本轮结束");
+                    // 退出信号只在轮次边界生效，不会中断已经开始的任务提交。
                 }
-                let persistence = credential_persistence(loaded.source, &path);
-                let (config, report) = execute_run(loaded.config, persistence, &tasks).await;
-                last_exit =
-                    finish_report(&config, &report, ReportFormat::Text, false, false).await?;
-                tracing::info!(exit_code = last_exit, "定时任务本轮结束");
-                first = false;
-                service::wait_schedule_interval(&schedule).await;
+                match service::wait_for_next_round(
+                    &schedule,
+                    &reload_backoff,
+                    &mut shutdown,
+                    || config::load(&path),
+                )
+                .await
+                {
+                    service::ScheduleWait::Ready(next) => current = *next,
+                    service::ScheduleWait::Disabled => {
+                        return Ok(finish_schedule(last_exit, "等待期间检测到定时运行已关闭"));
+                    }
+                    service::ScheduleWait::Cancelled => {
+                        return Ok(finish_schedule(last_exit, "收到退出信号"));
+                    }
+                }
             }
         }
         Command::MigrateConfig(args) => {
@@ -506,10 +529,15 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
     Ok(0)
 }
 
+/// JSON 报告结构版本；A15 起为 2，新增字段均为可选，旧消费者可继续读取。
+const STRUCTURED_OUTPUT_SCHEMA_VERSION: u8 = 2;
+
 #[derive(Serialize)]
 struct StructuredRunOutput<'a> {
     schema_version: u8,
     exit_code: u8,
+    /// 仅统计真正的任务结果，不含诊断与汇总记录。
+    task_counts: service::TaskCounts,
     records: &'a [service::TaskRecord],
     notifications: &'a [push::DeliveryResult],
 }
@@ -551,8 +579,9 @@ async fn finish_report(
         ReportFormat::Text => print!("{rendered}"),
         ReportFormat::Json => {
             let output = StructuredRunOutput {
-                schema_version: 1,
+                schema_version: STRUCTURED_OUTPUT_SCHEMA_VERSION,
                 exit_code,
+                task_counts: report.task_counts(),
                 records: &report.records,
                 notifications: &push_report.deliveries,
             };
@@ -604,34 +633,75 @@ fn initial_runtime(cli: &Cli) -> Option<config::RuntimeConfig> {
             return initial_directory_runtime(&args.directory, args.prefix.as_deref());
         }
         Command::Qinglong(_) => {
-            let settings = service::qinglong_settings().ok()?;
+            let settings = match service::qinglong_settings() {
+                Ok(settings) => settings,
+                Err(error) => {
+                    eprintln!("警告：读取青龙环境配置失败，暂不启用文件日志：{error}");
+                    return None;
+                }
+            };
             return if settings.multi {
                 initial_directory_runtime(&settings.directory, settings.prefix.as_deref())
             } else {
-                config::load(&settings.single_config)
-                    .ok()
-                    .map(|loaded| loaded.config.runtime)
+                load_initial_runtime(&settings.single_config)
             };
         }
         Command::Dacapo { config: path, .. } => {
-            return config::load_dacapo(path)
-                .ok()
-                .map(|loaded| loaded.config.runtime);
+            return match config::load_dacapo(path) {
+                Ok(loaded) => Some(loaded.config.runtime),
+                Err(error) => {
+                    eprintln!(
+                        "警告：读取 DaCapo 配置 {} 失败，本次不启用文件日志（命令执行时会再次报告完整错误）：{error}",
+                        path.display()
+                    );
+                    None
+                }
+            };
         }
         _ => {}
     }
-    cli_config_path(cli)
-        .and_then(|path| config::load(path).ok().map(|loaded| loaded.config.runtime))
+    cli_config_path(cli).and_then(load_initial_runtime)
+}
+
+fn load_initial_runtime(path: &std::path::Path) -> Option<config::RuntimeConfig> {
+    match config::load(path) {
+        Ok(loaded) => Some(loaded.config.runtime),
+        Err(error) => {
+            eprintln!(
+                "警告：无法为日志初始化读取配置 {}，本次不启用文件日志（命令执行时会再次报告完整错误）：{error}",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 fn initial_directory_runtime(
     directory: &std::path::Path,
     prefix: Option<&str>,
 ) -> Option<config::RuntimeConfig> {
-    service::discover_config_files(directory, prefix)
-        .ok()?
+    let paths = match service::discover_config_files(directory, prefix) {
+        Ok(paths) => paths,
+        Err(error) => {
+            eprintln!(
+                "警告：无法枚举配置目录 {}，本次不启用文件日志：{error}",
+                directory.display()
+            );
+            return None;
+        }
+    };
+    paths
         .into_iter()
-        .find_map(|path| config::load(&path).ok().map(|loaded| loaded.config.runtime))
+        .find_map(|path| match config::load(&path) {
+            Ok(loaded) => Some(loaded.config.runtime),
+            Err(error) => {
+                eprintln!(
+                    "警告：无法为日志初始化读取配置 {}，跳过该文件：{error}",
+                    path.display()
+                );
+                None
+            }
+        })
 }
 
 async fn execute_config_path(path: &std::path::Path, tasks: &[RunTask]) -> Result<u8, AppError> {
@@ -806,6 +876,19 @@ fn credential_persistence<'a>(
         service::CredentialPersistence::ReadOnly
     }
 }
+fn schedule_reload_backoff() -> Vec<Duration> {
+    service::SCHEDULE_RELOAD_BACKOFF_SECONDS
+        .iter()
+        .map(|seconds| Duration::from_secs(*seconds))
+        .collect()
+}
+
+/// 常驻调度退出时记录停止原因，并返回最后一次完整轮次的退出码。
+fn finish_schedule(exit_code: u8, reason: &str) -> u8 {
+    tracing::info!(exit_code, reason = %reason, "定时运行已停止");
+    exit_code
+}
+
 fn init_tracing(
     runtime: Option<&config::RuntimeConfig>,
 ) -> Option<tracing_appender::non_blocking::WorkerGuard> {
@@ -820,17 +903,26 @@ fn init_tracing(
             Some(config::LogLevel::Info) | None => LevelFilter::INFO,
         });
     if let Some(logging) = runtime.map(|r| &r.logging).filter(|v| v.enabled) {
-        if let Ok(appender) =
-            file_logging::DailyFileAppender::new(&logging.directory, &logging.file_prefix)
-        {
-            let (writer, guard) = tracing_appender::non_blocking(appender);
-            tracing_subscriber::fmt()
-                .with_max_level(level)
-                .with_target(false)
-                .with_ansi(false)
-                .with_writer(writer)
-                .init();
-            return Some(guard);
+        match file_logging::DailyFileAppender::new(&logging.directory, &logging.file_prefix) {
+            Ok(appender) => {
+                let (writer, guard) = tracing_appender::non_blocking(appender);
+                tracing_subscriber::fmt()
+                    .with_max_level(level)
+                    .with_target(false)
+                    .with_ansi(false)
+                    .with_writer(writer)
+                    .init();
+                prune_logs(logging);
+                return Some(guard);
+            }
+            Err(error) => {
+                // 这里尚未初始化 subscriber，直接写标准错误，只输出路径与错误类别。
+                eprintln!(
+                    "警告：无法创建文件日志（目录 {}，原因类别：{:?}）；本次运行只写入标准错误输出。",
+                    logging.directory.display(),
+                    error.kind()
+                );
+            }
         }
     }
     tracing_subscriber::fmt()
@@ -840,4 +932,23 @@ fn init_tracing(
         .with_writer(std::io::stderr)
         .init();
     None
+}
+
+fn prune_logs(logging: &config::LoggingConfig) {
+    let Some(retention_days) = logging.retention_days else {
+        return;
+    };
+    let stem = file_logging::prefix_stem(&logging.file_prefix);
+    let report = file_logging::prune(&logging.directory, &stem, retention_days);
+    if !report.removed.is_empty() {
+        tracing::info!(
+            removed = report.removed.len(),
+            retention_days,
+            directory = %logging.directory.display(),
+            "已清理过期日志文件"
+        );
+    }
+    for error in &report.errors {
+        tracing::warn!("{error}");
+    }
 }

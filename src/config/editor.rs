@@ -632,6 +632,7 @@ pub fn set_logging(
     enabled: bool,
     directory: &str,
     file_prefix: &str,
+    retention_days: Option<u64>,
 ) -> Result<(), ConfigError> {
     mutate_raw(path, |root| {
         let runtime = root
@@ -649,6 +650,14 @@ pub fn set_logging(
         logging.insert(key("enabled"), Value::Bool(enabled));
         logging.insert(key("directory"), Value::String(directory.to_owned()));
         logging.insert(key("file_prefix"), Value::String(file_prefix.to_owned()));
+        match retention_days {
+            Some(days) => {
+                logging.insert(key("retention_days"), Value::Number(days.into()));
+            }
+            None => {
+                logging.remove(key("retention_days"));
+            }
+        }
         Ok(())
     })
 }
@@ -658,6 +667,7 @@ pub fn set_schedule(
     enabled: bool,
     interval_minutes: u64,
     run_on_start: bool,
+    poll_seconds: Option<u64>,
 ) -> Result<(), ConfigError> {
     mutate_raw(path, |root| {
         let runtime = root
@@ -678,6 +688,14 @@ pub fn set_schedule(
             Value::Number(interval_minutes.into()),
         );
         schedule.insert(key("run_on_start"), Value::Bool(run_on_start));
+        match poll_seconds {
+            Some(seconds) => {
+                schedule.insert(key("poll_seconds"), Value::Number(seconds.into()));
+            }
+            None => {
+                schedule.remove(key("poll_seconds"));
+            }
+        }
         Ok(())
     })
 }
@@ -1739,11 +1757,12 @@ mod tests {
         )
         .await
         .unwrap();
-        set_schedule(&path, true, 60, false).unwrap();
+        set_schedule(&path, true, 60, false, Some(5)).unwrap();
         let schedule = load(&path).unwrap().config.runtime.schedule;
         assert!(schedule.enabled);
         assert_eq!(schedule.interval_minutes, 60);
         assert!(!schedule.run_on_start);
+        assert_eq!(schedule.poll_seconds, Some(5));
     }
 
     #[tokio::test]

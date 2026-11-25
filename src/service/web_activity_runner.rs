@@ -1,6 +1,6 @@
 use crate::config::{Config, WebActivity};
 
-use super::{RunReport, TaskOutcome, TaskRecord};
+use super::{RecordKind, RunReport, TaskId, TaskOutcome, TaskRecord};
 
 pub fn run_web_activities(config: &Config) -> RunReport {
     let mut report = RunReport::default();
@@ -30,12 +30,15 @@ pub fn run_web_activities(config: &Config) -> RunReport {
 }
 
 fn record(account: &str, subject: &str, message: &str) -> TaskRecord {
-    TaskRecord {
-        account: account.to_owned(),
-        task: "Web 活动".to_owned(),
-        subject: subject.to_owned(),
-        outcome: TaskOutcome::Skipped,
-        message: message.to_owned(),
+    let record = TaskRecord::new(account, "Web 活动", subject, TaskOutcome::Skipped, message)
+        .with_task_id(TaskId::WebActivity);
+    // activities 为空属于配置提示，不是真正的任务结果。
+    if subject == "配置" {
+        record
+            .with_task_id(TaskId::Config)
+            .with_kind(RecordKind::Diagnostic)
+    } else {
+        record.with_kind(RecordKind::Task)
     }
 }
 

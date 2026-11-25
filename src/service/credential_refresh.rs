@@ -55,13 +55,13 @@ mod tests {
     #[test]
     fn only_authentication_failures_trigger_refresh() {
         let mut report = RunReport::default();
-        report.push(TaskRecord {
-            account: "账号".to_owned(),
-            task: "签到".to_owned(),
-            subject: "原神".to_owned(),
-            outcome: TaskOutcome::NetworkFailed,
-            message: "网络请求失败".to_owned(),
-        });
+        report.push(TaskRecord::new(
+            "账号",
+            "签到",
+            "原神",
+            TaskOutcome::NetworkFailed,
+            "网络请求失败",
+        ));
         assert!(!has_authentication_failure(&report));
         report.records[0].outcome = TaskOutcome::AuthenticationFailed;
         assert!(has_authentication_failure(&report));
