@@ -61,10 +61,23 @@ jobs:
 
       - name: 构建默认软件包
         # 显式构建 packages.<system>.default，真正编译并安装程序与随包文件。
+        # 失败时把完整构建日志写入 nix-build.log 并由下一步上传为 artifact：
+        # 单靠 ::error 注解无法定位 compile/check/install 阶段的具体原因。
+        shell: bash
         run: |
+          set -o pipefail
           nix build ".#packages.${{ matrix.system }}.default" \
             --print-build-logs \
-            --no-write-lock-file
+            --no-write-lock-file 2>&1 | tee nix-build.log
+
+      - name: 上传构建日志
+        # 成功与失败都上传，便于事后追踪 Nix 构建耗时与告警。
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-build-log-${{ matrix.system }}
+          path: nix-build.log
+          if-no-files-found: warn
 
       - name: 验证程序与安装文件
         shell: bash
