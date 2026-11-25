@@ -239,16 +239,18 @@ impl HttpClient {
         }
     }
 
-    /// 发送一次 JSON POST，并只校验 HTTP 状态码。
+    /// 发送一次 JSON POST，并在成功时读取响应体用于业务码校验。
     ///
     /// 适用于 Webhook 等成功响应可能为空或并非 JSON 的接口。与
     /// [`Self::post_json_once`] 一样，本方法不会自动重试可能产生外部副作用的请求。
-    pub async fn post_json_once_without_response<B>(
+    /// 空响应体返回 `Ok(None)`，以便调用方兼容 `204 No Content`；返回
+    /// `Ok(Some(text))` 时由调用方按各服务协议校验成功码。
+    pub async fn post_json_once_body<B>(
         &self,
         url: Url,
         headers: HeaderMap,
         body: &B,
-    ) -> Result<(), HttpError>
+    ) -> Result<Option<String>, HttpError>
     where
         B: Serialize + ?Sized,
     {
@@ -260,11 +262,45 @@ impl HttpClient {
             .send()
             .await
         {
-            Ok(response) if response.status().is_success() => Ok(()),
+            Ok(response) if response.status().is_success() => read_once_body(response).await,
             Ok(response) => Err(HttpError::Status(response.status())),
             Err(error) if error.is_timeout() => Err(HttpError::Timeout),
             Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
         }
+    }
+
+    /// 发送一次表单 POST，并在成功时读取响应体用于业务码校验。
+    ///
+    /// 语义与 [`Self::post_json_once_body`] 一致：只发送一次，成功时返回响应体。
+    pub async fn post_form_once_body<B: Serialize + ?Sized>(
+        &self,
+        url: Url,
+        body: &B,
+    ) -> Result<Option<String>, HttpError> {
+        match self.inner.post(url).form(body).send().await {
+            Ok(response) if response.status().is_success() => read_once_body(response).await,
+            Ok(response) => Err(HttpError::Status(response.status())),
+            Err(error) if error.is_timeout() => Err(HttpError::Timeout),
+            Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
+        }
+    }
+
+    /// 发送一次 JSON POST，并只校验 HTTP 状态码。
+    ///
+    /// 适用于响应体为空、非 JSON 或无需业务码校验的接口（如通用 Webhook）。
+    /// 与 [`Self::post_json_once`] 一样，本方法不会自动重试可能产生外部副作用的请求。
+    pub async fn post_json_once_without_response<B>(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+        body: &B,
+    ) -> Result<(), HttpError>
+    where
+        B: Serialize + ?Sized,
+    {
+        self.post_json_once_body(url, headers, body)
+            .await
+            .map(|_| ())
     }
 
     pub async fn post_form_once_without_response<B: Serialize + ?Sized>(
@@ -272,12 +308,7 @@ impl HttpClient {
         url: Url,
         body: &B,
     ) -> Result<(), HttpError> {
-        match self.inner.post(url).form(body).send().await {
-            Ok(response) if response.status().is_success() => Ok(()),
-            Ok(response) => Err(HttpError::Status(response.status())),
-            Err(error) if error.is_timeout() => Err(HttpError::Timeout),
-            Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
-        }
+        self.post_form_once_body(url, body).await.map(|_| ())
     }
 
     pub async fn get_once_without_response(
@@ -292,6 +323,19 @@ impl HttpClient {
             Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
         }
     }
+}
+
+/// 读取一次成功响应的响应体；空响应体返回 `Ok(None)`，兼容 `204 No Content`。
+async fn read_once_body(response: reqwest::Response) -> Result<Option<String>, HttpError> {
+    let text = response
+        .text()
+        .await
+        .map_err(|error| HttpError::Decode(sanitize_reqwest_error(error)))?;
+    Ok(if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    })
 }
 
 fn normalize_proxy_url(raw: &str) -> Result<Url, HttpError> {
