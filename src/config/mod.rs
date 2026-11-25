@@ -1446,13 +1446,17 @@ fn expand_string(
 ) -> Result<String, ConfigError> {
     let mut output = String::with_capacity(text.len());
     let mut remaining = text;
+    let mut consumed = 0usize;
     while let Some(start) = remaining.find("${") {
         output.push_str(&remaining[..start]);
         let after = &remaining[start + 2..];
+        let placeholder_start = consumed + start;
         let Some(end) = after.find('}') else {
-            return Err(ConfigError::InvalidEnvironmentPlaceholder(
-                remaining[start..].to_owned(),
-            ));
+            // 未闭合占位符会一直延伸到文本末尾，可能吞掉整段凭据原文，只报告位置与类别。
+            return Err(ConfigError::InvalidEnvironmentPlaceholder(format!(
+                "第 {} 个字符处的占位符未闭合",
+                char_position(text, placeholder_start)
+            )));
         };
         let name = &after[..end];
         let valid_first = name
@@ -1460,18 +1464,28 @@ fn expand_string(
             .next()
             .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_');
         if !valid_first || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            // 名称内容同样可能混入凭据，只报告位置与允许的字符类别。
             return Err(ConfigError::InvalidEnvironmentPlaceholder(format!(
-                "${{{name}}}"
+                "第 {} 个字符处的环境变量名称非法（只允许字母、数字与下划线，且不能以数字开头）",
+                char_position(text, placeholder_start)
             )));
         }
         output.push_str(
             &resolver(name)
                 .ok_or_else(|| ConfigError::MissingEnvironmentVariable(name.to_owned()))?,
         );
+        consumed = placeholder_start + 2 + end + 1;
         remaining = &after[end + 1..];
     }
     output.push_str(remaining);
     Ok(output)
+}
+
+/// 把字节偏移换算为 1 起始的字符位置，避免在多字节文本中得到误导性数字。
+fn char_position(text: &str, byte_offset: usize) -> usize {
+    text.get(..byte_offset)
+        .map(|prefix| prefix.chars().count() + 1)
+        .unwrap_or(1)
 }
 
 fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
@@ -2432,6 +2446,40 @@ accounts:
             matches!(error, ConfigError::MissingEnvironmentVariable(ref name) if name == "MISSING_SECRET")
         );
         assert!(!error.to_string().contains("cookie_token"));
+    }
+
+    #[test]
+    fn unclosed_placeholder_reports_position_without_echoing_text() {
+        let secret = "super-secret-cookie-token";
+        let error = expand_string(&format!("${{{secret}-and-more"), &|_| None).unwrap_err();
+        let message = error.to_string();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidEnvironmentPlaceholder(_)
+        ));
+        assert!(message.contains("第 1 个字符处"));
+        assert!(message.contains("未闭合"));
+        assert!(!message.contains(secret));
+        assert!(!message.contains("and-more"));
+    }
+
+    #[test]
+    fn invalid_placeholder_name_reports_position_without_echoing_text() {
+        let error = expand_string("配置${bad-name-secret}尾部", &|_| None).unwrap_err();
+        let message = error.to_string();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidEnvironmentPlaceholder(_)
+        ));
+        assert!(message.contains("第 3 个字符处"));
+        assert!(message.contains("名称非法"));
+        assert!(!message.contains("bad-name-secret"));
+    }
+
+    #[test]
+    fn placeholder_position_counts_characters_not_bytes() {
+        let error = expand_string("中文前缀${UNCLOSED", &|_| None).unwrap_err();
+        assert!(error.to_string().contains("第 5 个字符处"));
     }
 
     #[test]

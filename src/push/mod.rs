@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     auth::SecretString,
     config::{Config, NotificationProvider},
-    http::{HttpClient, HttpError, RetryPolicy},
+    http::{HttpClient, HttpError, HttpErrorCategory, RetryPolicy, classify_http_error},
     service::RunReport,
 };
 
@@ -828,13 +828,17 @@ impl Provider for PushplusProvider {
     }
 }
 
+/// 把 HTTP 错误收敛为不含 URL、代理凭据或响应原文的推送错误类别。
+///
+/// 分类表由 [`crate::http::classify_http_error`] 统一维护，避免推送与诊断两处口径漂移；
+/// 认证层依赖的 `HttpError` 变体语义保持不变。
 fn redact_http_error(error: HttpError) -> PushError {
-    match error {
-        HttpError::InvalidUrl(_) => PushError::InvalidEndpoint,
-        HttpError::Timeout => PushError::Timeout,
-        HttpError::Status(status) => PushError::HttpStatus(status.as_u16()),
-        HttpError::Decode(_) => PushError::InvalidResponse,
-        HttpError::InvalidProxy(_) | HttpError::Connect(_) | HttpError::Build(_) => {
+    match classify_http_error(&error) {
+        HttpErrorCategory::InvalidUrl => PushError::InvalidEndpoint,
+        HttpErrorCategory::Timeout => PushError::Timeout,
+        HttpErrorCategory::Status(code) => PushError::HttpStatus(code),
+        HttpErrorCategory::Decode => PushError::InvalidResponse,
+        HttpErrorCategory::InvalidProxy | HttpErrorCategory::Connect | HttpErrorCategory::Build => {
             PushError::Network
         }
     }

@@ -4,6 +4,8 @@ use reqwest::{Method, Proxy, StatusCode, Url, header::HeaderMap};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
+use super::error::{describe_proxy, sanitize_reqwest_error};
+
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
     pub attempts: usize,
@@ -37,18 +39,41 @@ pub enum HttpError {
     Build(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpClient {
     inner: reqwest::Client,
     retry: RetryPolicy,
 }
 
-#[derive(Debug, Clone)]
+/// 手写 Debug：不打印 reqwest 客户端内部配置（其 Debug 会输出代理规则），只暴露重试策略。
+impl std::fmt::Debug for HttpClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HttpClient")
+            .field("retry", &self.retry)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
 pub struct HttpClientBuilder {
     timeout: Duration,
     retry: RetryPolicy,
     proxy: Option<Url>,
     user_agent: String,
+}
+
+/// 手写 Debug：代理地址可能包含用户名与密码，只输出协议、主机与端口。
+impl std::fmt::Debug for HttpClientBuilder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HttpClientBuilder")
+            .field("timeout", &self.timeout)
+            .field("retry", &self.retry)
+            .field("proxy", &self.proxy.as_ref().map(describe_proxy))
+            .field("user_agent", &self.user_agent)
+            .finish()
+    }
 }
 
 impl Default for HttpClientBuilder {
@@ -87,12 +112,12 @@ impl HttpClientBuilder {
         if let Some(proxy) = self.proxy {
             builder = builder.proxy(
                 Proxy::all(proxy.as_str())
-                    .map_err(|error| HttpError::InvalidProxy(error.to_string()))?,
+                    .map_err(|error| HttpError::InvalidProxy(sanitize_reqwest_error(error)))?,
             );
         }
         let inner = builder
             .build()
-            .map_err(|error| HttpError::Build(error.to_string()))?;
+            .map_err(|error| HttpError::Build(sanitize_reqwest_error(error)))?;
         Ok(HttpClient {
             inner,
             retry: self.retry,
@@ -140,14 +165,14 @@ impl HttpClient {
                     return response
                         .json()
                         .await
-                        .map_err(|error| HttpError::Decode(error.to_string()));
+                        .map_err(|error| HttpError::Decode(sanitize_reqwest_error(error)));
                 }
                 Ok(response)
                     if should_retry_status(response.status()) && attempt + 1 < attempts => {}
                 Ok(response) => return Err(HttpError::Status(response.status())),
                 Err(error) if is_retryable(&error) && attempt + 1 < attempts => {}
                 Err(error) if error.is_timeout() => return Err(HttpError::Timeout),
-                Err(error) => return Err(HttpError::Connect(error.to_string())),
+                Err(error) => return Err(HttpError::Connect(sanitize_reqwest_error(error))),
             }
             tokio::time::sleep(self.retry.base_delay * (attempt as u32 + 1)).await;
         }
@@ -178,10 +203,10 @@ impl HttpClient {
             Ok(response) if response.status().is_success() => response
                 .json()
                 .await
-                .map_err(|error| HttpError::Decode(error.to_string())),
+                .map_err(|error| HttpError::Decode(sanitize_reqwest_error(error))),
             Ok(response) => Err(HttpError::Status(response.status())),
             Err(error) if error.is_timeout() => Err(HttpError::Timeout),
-            Err(error) => Err(HttpError::Connect(error.to_string())),
+            Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
         }
     }
 
@@ -207,10 +232,10 @@ impl HttpClient {
             Ok(response) if response.status().is_success() => response
                 .json()
                 .await
-                .map_err(|error| HttpError::Decode(error.to_string())),
+                .map_err(|error| HttpError::Decode(sanitize_reqwest_error(error))),
             Ok(response) => Err(HttpError::Status(response.status())),
             Err(error) if error.is_timeout() => Err(HttpError::Timeout),
-            Err(error) => Err(HttpError::Connect(error.to_string())),
+            Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
         }
     }
 
@@ -238,7 +263,7 @@ impl HttpClient {
             Ok(response) if response.status().is_success() => Ok(()),
             Ok(response) => Err(HttpError::Status(response.status())),
             Err(error) if error.is_timeout() => Err(HttpError::Timeout),
-            Err(error) => Err(HttpError::Connect(error.to_string())),
+            Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
         }
     }
 
@@ -251,7 +276,7 @@ impl HttpClient {
             Ok(response) if response.status().is_success() => Ok(()),
             Ok(response) => Err(HttpError::Status(response.status())),
             Err(error) if error.is_timeout() => Err(HttpError::Timeout),
-            Err(error) => Err(HttpError::Connect(error.to_string())),
+            Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
         }
     }
 
@@ -264,7 +289,7 @@ impl HttpClient {
             Ok(response) if response.status().is_success() => Ok(()),
             Ok(response) => Err(HttpError::Status(response.status())),
             Err(error) if error.is_timeout() => Err(HttpError::Timeout),
-            Err(error) => Err(HttpError::Connect(error.to_string())),
+            Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
         }
     }
 }
@@ -348,5 +373,70 @@ mod tests {
             result,
             Err(HttpError::Status(StatusCode::INTERNAL_SERVER_ERROR))
         ));
+    }
+
+    #[test]
+    fn builder_debug_does_not_expose_proxy_credentials() {
+        let proxy =
+            "socks5h://proxy-user:proxy-password@127.0.0.1:1080/private?token=proxy-query-token";
+        let builder = HttpClient::builder()
+            .timeout(Duration::from_secs(5))
+            .proxy(Some(proxy))
+            .unwrap();
+        let debug = format!("{builder:?}");
+
+        assert!(!debug.contains("proxy-user"));
+        assert!(!debug.contains("proxy-password"));
+        assert!(!debug.contains("proxy-query-token"));
+        assert!(!debug.contains("/private"));
+        assert!(debug.contains("socks5h://127.0.0.1:1080"));
+        assert!(debug.contains("HttpClientBuilder"));
+        assert!(debug.contains("timeout"));
+    }
+
+    #[test]
+    fn builder_debug_without_proxy_is_plain() {
+        let debug = format!("{:?}", HttpClient::builder());
+        assert!(debug.contains("proxy: None"));
+        assert!(debug.contains("retry"));
+    }
+
+    #[tokio::test]
+    async fn decode_error_does_not_expose_request_url_secrets() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/webhook/secret-token-value"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 1,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+        let url = Url::parse(&format!(
+            "{}/webhook/secret-token-value?access_token=query-secret-token",
+            server.uri()
+        ))
+        .unwrap();
+
+        let error = client
+            .get_json_with::<serde_json::Value>(url, HeaderMap::new(), &[])
+            .await
+            .unwrap_err();
+
+        // reqwest 的解码错误在 Display 中恒追加请求 URL，构造侧必须已脱敏。
+        let HttpError::Decode(text) = &error else {
+            panic!("预期解码失败，实际为 {error:?}");
+        };
+        assert!(!text.contains("secret-token-value"));
+        assert!(!text.contains("query-secret-token"));
+        let display = error.to_string();
+        assert!(display.contains("响应 JSON 无效"));
+        assert!(!display.contains("secret-token-value"));
+        assert!(!display.contains("query-secret-token"));
     }
 }
