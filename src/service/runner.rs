@@ -606,22 +606,24 @@ async fn run_china_role(
     }
 
     let mut submissions = 0;
-    let mut last_submission = None;
     loop {
         submissions += 1;
-        match submit_china_sign_once(client, captcha, signer, game, region, uid).await {
-            ChinaSubmitResult::CaptchaBlocked(message) => {
-                report.push(record(
-                    account,
-                    "国内游戏签到",
-                    subject,
-                    TaskOutcome::CaptchaRequired,
-                    &message,
-                ));
-                return;
-            }
-            result => last_submission = Some(result),
-        }
+        // 每轮提交结果只在本次迭代内使用，直接由 match 产生 Option，
+        // 避免循环外初始化后又被覆盖的死赋值。
+        let last_submission =
+            match submit_china_sign_once(client, captcha, signer, game, region, uid).await {
+                ChinaSubmitResult::CaptchaBlocked(message) => {
+                    report.push(record(
+                        account,
+                        "国内游戏签到",
+                        subject,
+                        TaskOutcome::CaptchaRequired,
+                        &message,
+                    ));
+                    return;
+                }
+                result => Some(result),
+            };
         log_confirmation_window(account, subject, submissions, max_attempts);
 
         // 提交后只做只读确认：确认窗口内的查询不属于“提交”，不消耗提交次数。
@@ -825,18 +827,14 @@ async fn run_hoyolab_game(
     }
 
     let mut submissions = 0;
-    let mut last_submission = None;
     loop {
         submissions += 1;
-        match client.sign_once(game).await {
-            Ok(SignState::Success) => {
-                last_submission = Some(HoyolabSubmitResult::Submitted(TaskOutcome::Success));
-            }
-            Ok(SignState::AlreadySigned) => {
-                last_submission = Some(HoyolabSubmitResult::Submitted(
-                    TaskOutcome::AlreadyCompleted,
-                ));
-            }
+        // 同国内流程：提交结果只在本次迭代内使用，由 match 直接产生 Option。
+        let last_submission = match client.sign_once(game).await {
+            Ok(SignState::Success) => Some(HoyolabSubmitResult::Submitted(TaskOutcome::Success)),
+            Ok(SignState::AlreadySigned) => Some(HoyolabSubmitResult::Submitted(
+                TaskOutcome::AlreadyCompleted,
+            )),
             Ok(SignState::CaptchaRequired { .. }) => {
                 report.push(record(
                     account,
@@ -847,8 +845,8 @@ async fn run_hoyolab_game(
                 ));
                 return;
             }
-            Err(error) => last_submission = Some(HoyolabSubmitResult::Failed(error)),
-        }
+            Err(error) => Some(HoyolabSubmitResult::Failed(error)),
+        };
         log_confirmation_window(account, subject, submissions, max_attempts);
 
         // 提交后只做只读确认：确认窗口内的查询不消耗提交次数。
