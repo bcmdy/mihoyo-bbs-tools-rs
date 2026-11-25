@@ -24,6 +24,20 @@ use super::{
     resolve_device_id,
 };
 
+/// 提交后的只读确认查询次数上限：提交次数由 `task_max_attempts` 控制，
+/// 确认查询不消耗提交次数，但同样有明确上限。
+const CHECKIN_CONFIRM_MAX_QUERIES: u32 = 3;
+/// 每次确认查询前的等待；`CHECKIN_CONFIRM_MAX_QUERIES` 次等待即整个确认窗口。
+#[cfg(not(test))]
+const CHECKIN_CONFIRM_DELAY: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const CHECKIN_CONFIRM_DELAY: Duration = Duration::ZERO;
+/// 确认窗口总时长：生产 3 秒（3 次 × 1 秒），测试为 0 秒以免拖慢用例。
+#[cfg(not(test))]
+const CHECKIN_CONFIRM_WINDOW: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const CHECKIN_CONFIRM_WINDOW: Duration = Duration::ZERO;
+
 pub async fn run_china_checkin(config: &Config) -> RunReport {
     let mut runtime_config = config.clone();
     run_china_checkin_inner(&mut runtime_config, CredentialPersistence::ReadOnly).await
@@ -307,32 +321,59 @@ fn config_game_to_hoyolab(game: &Game) -> Option<HoyolabGame> {
     }
 }
 
+/// 把国内签到错误映射为报告结果；认证失败类别必须在提交后复查时保留，
+/// 否则账号级 SToken 刷新不会被触发。
+fn classify_checkin_error(error: &CheckinError) -> TaskOutcome {
+    match error {
+        CheckinError::CookieInvalid => TaskOutcome::AuthenticationFailed,
+        CheckinError::Http(_) => TaskOutcome::NetworkFailed,
+        CheckinError::InvalidHeader(_)
+        | CheckinError::InvalidResponse(_)
+        | CheckinError::Api { .. } => TaskOutcome::Failed,
+    }
+}
+
+fn checkin_error_message(error: &CheckinError) -> String {
+    match error {
+        CheckinError::CookieInvalid => "Cookie 无效或已过期".to_owned(),
+        CheckinError::Http(_) => "网络请求失败".to_owned(),
+        other => other.to_string(),
+    }
+}
+
+/// HoYoLAB 使用独立凭据逻辑，不做国内 SToken 刷新，但结果类别与国内保持同一口径。
+fn classify_hoyolab_checkin_error(error: &HoyolabCheckinError) -> TaskOutcome {
+    match error {
+        HoyolabCheckinError::CookieInvalid => TaskOutcome::AuthenticationFailed,
+        HoyolabCheckinError::Http(_) => TaskOutcome::NetworkFailed,
+        HoyolabCheckinError::InvalidHeader(_)
+        | HoyolabCheckinError::InvalidResponse(_)
+        | HoyolabCheckinError::Api { .. } => TaskOutcome::Failed,
+    }
+}
+
+fn hoyolab_checkin_error_message(error: &HoyolabCheckinError) -> String {
+    match error {
+        HoyolabCheckinError::CookieInvalid => "Cookie 无效或已过期".to_owned(),
+        HoyolabCheckinError::Http(_) => "网络请求失败".to_owned(),
+        other => other.to_string(),
+    }
+}
+
 fn push_hoyolab_error(
     report: &mut RunReport,
     account: &str,
     subject: &str,
     error: HoyolabCheckinError,
 ) {
-    let (outcome, message) = match error {
-        HoyolabCheckinError::CookieInvalid => (
-            TaskOutcome::AuthenticationFailed,
-            "Cookie 无效或已过期".to_owned(),
-        ),
-        HoyolabCheckinError::Http(_) => (TaskOutcome::NetworkFailed, "网络请求失败".to_owned()),
-        other => (TaskOutcome::Failed, other.to_string()),
-    };
+    let outcome = classify_hoyolab_checkin_error(&error);
+    let message = hoyolab_checkin_error_message(&error);
     report.push(record(account, "HoYoLAB 签到", subject, outcome, &message));
 }
 
 fn push_error(report: &mut RunReport, account: &str, subject: &str, error: CheckinError) {
-    let (outcome, message) = match error {
-        CheckinError::CookieInvalid => (
-            TaskOutcome::AuthenticationFailed,
-            "Cookie 无效或已过期".to_owned(),
-        ),
-        CheckinError::Http(_) => (TaskOutcome::NetworkFailed, "网络请求失败".to_owned()),
-        other => (TaskOutcome::Failed, other.to_string()),
-    };
+    let outcome = classify_checkin_error(&error);
+    let message = checkin_error_message(&error);
     report.push(record(account, "国内游戏签到", subject, outcome, &message));
 }
 
@@ -365,6 +406,60 @@ enum ChinaSubmitResult {
     },
     Failed(CheckinError),
     CaptchaBlocked(String),
+}
+
+fn submission_authentication_failed(submission: Option<&ChinaSubmitResult>) -> bool {
+    matches!(
+        submission,
+        Some(ChinaSubmitResult::Failed(error))
+            if classify_checkin_error(error) == TaskOutcome::AuthenticationFailed
+    )
+}
+
+/// 提交后只读确认的结果；`Failed` 携带对应平台的错误类型，供上层沿用统一分类。
+enum Confirmation<E> {
+    Signed { total_sign_day: u32 },
+    FirstBind,
+    StillPending,
+    Failed(E),
+}
+
+/// 在确认窗口内轮询国内签到状态。查询本身失败时立即返回，绝不因确认失败再次提交。
+async fn confirm_china_sign(
+    client: &ChinaCheckinClient,
+    signer: &mut DsSigner<SystemClock, ThreadRandom>,
+    game: ChinaGame,
+    region: &str,
+    uid: &str,
+) -> Confirmation<CheckinError> {
+    for _ in 0..CHECKIN_CONFIRM_MAX_QUERIES {
+        tokio::time::sleep(CHECKIN_CONFIRM_DELAY).await;
+        match client
+            .status(game, region, uid, &signer.sign_web().to_string())
+            .await
+        {
+            Ok(CheckinState::AlreadySigned { total_sign_day }) => {
+                return Confirmation::Signed { total_sign_day };
+            }
+            Ok(CheckinState::FirstBind) => return Confirmation::FirstBind,
+            Ok(CheckinState::Pending { .. }) => {}
+            Err(error) => return Confirmation::Failed(error),
+        }
+    }
+    Confirmation::StillPending
+}
+
+fn log_confirmation_window(account: &str, subject: &str, submissions: u32, max_attempts: u32) {
+    tracing::info!(
+        account,
+        subject,
+        submission = submissions,
+        max_submissions = max_attempts,
+        confirm_queries = CHECKIN_CONFIRM_MAX_QUERIES,
+        confirm_delay_seconds = CHECKIN_CONFIRM_DELAY.as_secs(),
+        window_seconds = CHECKIN_CONFIRM_WINDOW.as_secs(),
+        "签到已提交，进入只读状态确认窗口"
+    );
 }
 
 async fn submit_china_sign_once(
@@ -452,49 +547,67 @@ async fn run_china_role(
     max_attempts: u32,
 ) {
     let max_attempts = max_attempts.max(1);
-    let mut attempts = 0;
-    let mut last_submission = None;
 
+    // 首次只读查询：已签到、首次绑定与查询错误都在此终止，不产生任何提交。
+    match client
+        .status(game, region, uid, &signer.sign_web().to_string())
+        .await
+    {
+        Ok(CheckinState::FirstBind) => {
+            report.push(record(
+                account,
+                "国内游戏签到",
+                subject,
+                TaskOutcome::Skipped,
+                "首次绑定，请先手动签到一次",
+            ));
+            return;
+        }
+        Ok(CheckinState::AlreadySigned { total_sign_day }) => {
+            report.push(record(
+                account,
+                "国内游戏签到",
+                subject,
+                TaskOutcome::AlreadyCompleted,
+                &with_reward(
+                    &format!("今日已签到，累计 {total_sign_day} 天"),
+                    rewards,
+                    total_sign_day,
+                ),
+            ));
+            return;
+        }
+        Ok(CheckinState::Pending { .. }) => {}
+        Err(error) => {
+            push_error(report, account, subject, error);
+            return;
+        }
+    }
+
+    let mut submissions = 0;
     loop {
-        match client
-            .status(game, region, uid, &signer.sign_web().to_string())
-            .await
-        {
-            Ok(CheckinState::FirstBind) if attempts == 0 => {
-                report.push(record(
-                    account,
-                    "国内游戏签到",
-                    subject,
-                    TaskOutcome::Skipped,
-                    "首次绑定，请先手动签到一次",
-                ));
-                return;
-            }
-            Ok(CheckinState::FirstBind) => {
-                report.push(record(
-                    account,
-                    "国内游戏签到",
-                    subject,
-                    TaskOutcome::NetworkFailed,
-                    "签到提交后复查显示需要首次手动签到，已停止重试",
-                ));
-                return;
-            }
-            Ok(CheckinState::AlreadySigned { total_sign_day }) if attempts == 0 => {
-                report.push(record(
-                    account,
-                    "国内游戏签到",
-                    subject,
-                    TaskOutcome::AlreadyCompleted,
-                    &with_reward(
-                        &format!("今日已签到，累计 {total_sign_day} 天"),
-                        rewards,
-                        total_sign_day,
-                    ),
-                ));
-                return;
-            }
-            Ok(CheckinState::AlreadySigned { total_sign_day }) => {
+        submissions += 1;
+        // 每轮提交结果只在本次迭代内使用，直接由 match 产生 Option，
+        // 避免循环外初始化后又被覆盖的死赋值。
+        let last_submission =
+            match submit_china_sign_once(client, captcha, signer, game, region, uid).await {
+                ChinaSubmitResult::CaptchaBlocked(message) => {
+                    report.push(record(
+                        account,
+                        "国内游戏签到",
+                        subject,
+                        TaskOutcome::CaptchaRequired,
+                        &message,
+                    ));
+                    return;
+                }
+                result => Some(result),
+            };
+        log_confirmation_window(account, subject, submissions, max_attempts);
+
+        // 提交后只做只读确认：确认窗口内的查询不属于“提交”，不消耗提交次数。
+        match confirm_china_sign(client, signer, game, region, uid).await {
+            Confirmation::Signed { total_sign_day } => {
                 let (outcome, confirmation) = match last_submission.as_ref() {
                     Some(ChinaSubmitResult::Submitted {
                         outcome,
@@ -502,7 +615,7 @@ async fn run_china_role(
                     }) => (
                         *outcome,
                         format!(
-                            "{}签到成功，第 {attempts} 次尝试后复查确认今日已签到，累计 {total_sign_day} 天",
+                            "{}签到成功，第 {submissions} 次提交后复查确认今日已签到，累计 {total_sign_day} 天",
                             if *captcha_solved {
                                 "验证码通过后"
                             } else {
@@ -513,11 +626,11 @@ async fn run_china_role(
                     Some(ChinaSubmitResult::Failed(_)) => (
                         TaskOutcome::Success,
                         format!(
-                            "签到请求返回错误，但第 {attempts} 次尝试后复查确认今日已签到，累计 {total_sign_day} 天"
+                            "签到请求返回错误，但第 {submissions} 次提交后复查确认今日已签到，累计 {total_sign_day} 天"
                         ),
                     ),
                     Some(ChinaSubmitResult::CaptchaBlocked(_)) | None => {
-                        unreachable!("只有实际提交过签到请求后才会进入复查成功分支")
+                        unreachable!("只有实际提交过签到请求后才会进入确认成功分支")
                     }
                 };
                 report.push(record(
@@ -529,43 +642,56 @@ async fn run_china_role(
                 ));
                 return;
             }
-            Ok(CheckinState::Pending { .. }) if attempts >= max_attempts => {
-                push_china_attempts_exhausted(report, account, subject, attempts, last_submission);
-                return;
-            }
-            Ok(CheckinState::Pending { .. }) => {}
-            Err(error) if attempts == 0 => {
-                push_error(report, account, subject, error);
-                return;
-            }
-            Err(error) => {
+            Confirmation::FirstBind => {
                 report.push(record(
                     account,
                     "国内游戏签到",
                     subject,
                     TaskOutcome::NetworkFailed,
-                    &format!(
-                        "第 {attempts} 次签到提交后复查失败，未继续提交以避免重复签到：{error}"
-                    ),
+                    "签到提交后复查显示需要首次手动签到，已停止重试",
                 ));
                 return;
             }
-        }
-
-        attempts += 1;
-        match submit_china_sign_once(client, captcha, signer, game, region, uid).await {
-            result @ (ChinaSubmitResult::Submitted { .. } | ChinaSubmitResult::Failed(_)) => {
-                last_submission = Some(result);
-            }
-            ChinaSubmitResult::CaptchaBlocked(message) => {
+            Confirmation::Failed(error) => {
+                let outcome = classify_checkin_error(&error);
                 report.push(record(
                     account,
                     "国内游戏签到",
                     subject,
-                    TaskOutcome::CaptchaRequired,
-                    &message,
+                    outcome,
+                    &format!(
+                        "第 {submissions} 次签到提交后确认查询失败；已提交，结果未知，未再次提交：{}",
+                        checkin_error_message(&error)
+                    ),
                 ));
                 return;
+            }
+            Confirmation::StillPending => {
+                // 认证已失效时不能靠下一次提交“再试”：交给账号级 SToken 刷新，
+                // 刷新后的重跑会先做只读状态确认，明确未完成后才允许再次提交。
+                if submission_authentication_failed(last_submission.as_ref()) {
+                    report.push(record(
+                        account,
+                        "国内游戏签到",
+                        subject,
+                        TaskOutcome::AuthenticationFailed,
+                        &format!(
+                            "第 {submissions} 次签到提交显示认证失效；已提交，结果未知，未再次提交，等待凭据刷新后先做只读状态确认"
+                        ),
+                    ));
+                    return;
+                }
+                // 确认窗口内明确仍未完成，且还有提交次数时，才允许下一次提交。
+                if submissions >= max_attempts {
+                    push_china_attempts_exhausted(
+                        report,
+                        account,
+                        subject,
+                        submissions,
+                        last_submission,
+                    );
+                    return;
+                }
             }
         }
     }
@@ -579,21 +705,24 @@ fn push_china_attempts_exhausted(
     last_submission: Option<ChinaSubmitResult>,
 ) {
     let (outcome, detail) = match last_submission {
-        Some(ChinaSubmitResult::Failed(CheckinError::CookieInvalid)) => (
-            TaskOutcome::AuthenticationFailed,
-            "最后一次签到请求显示 Cookie 无效或已过期".to_owned(),
+        Some(ChinaSubmitResult::Failed(error)) => {
+            let outcome = classify_checkin_error(&error);
+            let detail = match outcome {
+                TaskOutcome::AuthenticationFailed => {
+                    "最后一次签到请求显示 Cookie 无效或已过期".to_owned()
+                }
+                TaskOutcome::NetworkFailed => "最后一次签到请求网络失败".to_owned(),
+                _ => format!("最后一次签到请求失败：{error}"),
+            };
+            (outcome, detail)
+        }
+        Some(ChinaSubmitResult::Submitted { .. }) => (
+            TaskOutcome::StateSyncTimeout,
+            "每次提交后的确认窗口都仍显示今日未签到".to_owned(),
         ),
-        Some(ChinaSubmitResult::Failed(CheckinError::Http(_))) => (
+        None => (
             TaskOutcome::NetworkFailed,
-            "最后一次签到请求网络失败".to_owned(),
-        ),
-        Some(ChinaSubmitResult::Failed(error)) => (
-            TaskOutcome::Failed,
-            format!("最后一次签到请求失败：{error}"),
-        ),
-        Some(ChinaSubmitResult::Submitted { .. }) | None => (
-            TaskOutcome::NetworkFailed,
-            "每次提交后复查都仍显示今日未签到".to_owned(),
+            "签到状态查询始终未确认今日已签到".to_owned(),
         ),
         Some(ChinaSubmitResult::CaptchaBlocked(_)) => {
             unreachable!("验证码阻断会立即生成报告")
@@ -604,13 +733,32 @@ fn push_china_attempts_exhausted(
         "国内游戏签到",
         subject,
         outcome,
-        &format!("已达到配置的 {attempts} 次签到尝试；{detail}"),
+        &format!("已达到配置的 {attempts} 次签到提交；{detail}"),
     ));
 }
 
 enum HoyolabSubmitResult {
     Submitted(TaskOutcome),
     Failed(HoyolabCheckinError),
+}
+
+/// 在确认窗口内轮询 HoYoLAB 签到状态；查询失败立即返回，不再提交。
+async fn confirm_hoyolab_sign(
+    client: &HoyolabCheckinClient,
+    game: HoyolabGame,
+) -> Confirmation<HoyolabCheckinError> {
+    for _ in 0..CHECKIN_CONFIRM_MAX_QUERIES {
+        tokio::time::sleep(CHECKIN_CONFIRM_DELAY).await;
+        match client.info(game).await {
+            Ok(CheckinState::AlreadySigned { total_sign_day }) => {
+                return Confirmation::Signed { total_sign_day };
+            }
+            Ok(CheckinState::FirstBind) => return Confirmation::FirstBind,
+            Ok(CheckinState::Pending { .. }) => {}
+            Err(error) => return Confirmation::Failed(error),
+        }
+    }
+    Confirmation::StillPending
 }
 
 async fn run_hoyolab_game(
@@ -622,111 +770,50 @@ async fn run_hoyolab_game(
 ) {
     let subject = game.spec().display_name;
     let max_attempts = max_attempts.max(1);
-    let mut attempts = 0;
-    let mut last_submission = None;
 
-    loop {
-        match client.info(game).await {
-            Ok(CheckinState::FirstBind) if attempts == 0 => {
-                report.push(record(
-                    account,
-                    "HoYoLAB 签到",
-                    subject,
-                    TaskOutcome::Skipped,
-                    "首次绑定，请先手动签到一次",
-                ));
-                return;
-            }
-            Ok(CheckinState::FirstBind) => {
-                report.push(record(
-                    account,
-                    "HoYoLAB 签到",
-                    subject,
-                    TaskOutcome::NetworkFailed,
-                    "签到提交后复查显示需要首次手动签到，已停止重试",
-                ));
-                return;
-            }
-            Ok(CheckinState::AlreadySigned { total_sign_day }) if attempts == 0 => {
-                let rewards = client.home(game).await.ok();
-                report.push(record(
-                    account,
-                    "HoYoLAB 签到",
-                    subject,
-                    TaskOutcome::AlreadyCompleted,
-                    &with_reward(
-                        &format!("今日已签到，累计 {total_sign_day} 天"),
-                        rewards.as_deref(),
-                        total_sign_day,
-                    ),
-                ));
-                return;
-            }
-            Ok(CheckinState::AlreadySigned { total_sign_day }) => {
-                let rewards = client.home(game).await.ok();
-                let (outcome, confirmation) = match last_submission.as_ref() {
-                    Some(HoyolabSubmitResult::Submitted(outcome)) => (
-                        *outcome,
-                        format!(
-                            "签到成功，第 {attempts} 次尝试后复查确认今日已签到，累计 {total_sign_day} 天"
-                        ),
-                    ),
-                    Some(HoyolabSubmitResult::Failed(_)) => (
-                        TaskOutcome::Success,
-                        format!(
-                            "签到请求返回错误，但第 {attempts} 次尝试后复查确认今日已签到，累计 {total_sign_day} 天"
-                        ),
-                    ),
-                    None => unreachable!("只有实际提交过签到请求后才会进入复查成功分支"),
-                };
-                report.push(record(
-                    account,
-                    "HoYoLAB 签到",
-                    subject,
-                    outcome,
-                    &with_reward(&confirmation, rewards.as_deref(), total_sign_day),
-                ));
-                return;
-            }
-            Ok(CheckinState::Pending { .. }) if attempts >= max_attempts => {
-                push_hoyolab_attempts_exhausted(
-                    report,
-                    account,
-                    subject,
-                    attempts,
-                    last_submission,
-                );
-                return;
-            }
-            Ok(CheckinState::Pending { .. }) => {}
-            Err(error) if attempts == 0 => {
-                push_hoyolab_error(report, account, subject, error);
-                return;
-            }
-            Err(error) => {
-                report.push(record(
-                    account,
-                    "HoYoLAB 签到",
-                    subject,
-                    TaskOutcome::NetworkFailed,
-                    &format!(
-                        "第 {attempts} 次签到提交后复查失败，未继续提交以避免重复签到：{error}"
-                    ),
-                ));
-                return;
-            }
+    // 首次只读查询：已签到、首次绑定与查询错误都在此终止，不产生任何提交。
+    match client.info(game).await {
+        Ok(CheckinState::FirstBind) => {
+            report.push(record(
+                account,
+                "HoYoLAB 签到",
+                subject,
+                TaskOutcome::Skipped,
+                "首次绑定，请先手动签到一次",
+            ));
+            return;
         }
+        Ok(CheckinState::AlreadySigned { total_sign_day }) => {
+            let rewards = client.home(game).await.ok();
+            report.push(record(
+                account,
+                "HoYoLAB 签到",
+                subject,
+                TaskOutcome::AlreadyCompleted,
+                &with_reward(
+                    &format!("今日已签到，累计 {total_sign_day} 天"),
+                    rewards.as_deref(),
+                    total_sign_day,
+                ),
+            ));
+            return;
+        }
+        Ok(CheckinState::Pending { .. }) => {}
+        Err(error) => {
+            push_hoyolab_error(report, account, subject, error);
+            return;
+        }
+    }
 
-        attempts += 1;
-        match client.sign_once(game).await {
-            Ok(SignState::Success) => {
-                last_submission = Some(HoyolabSubmitResult::Submitted(TaskOutcome::Success));
-            }
-            Ok(SignState::AlreadySigned) => {
-                last_submission = Some(HoyolabSubmitResult::Submitted(
-                    TaskOutcome::AlreadyCompleted,
-                ));
-            }
+    let mut submissions = 0;
+    loop {
+        submissions += 1;
+        // 同国内流程：提交结果只在本次迭代内使用，由 match 直接产生 Option。
+        let last_submission = match client.sign_once(game).await {
+            Ok(SignState::Success) => Some(HoyolabSubmitResult::Submitted(TaskOutcome::Success)),
+            Ok(SignState::AlreadySigned) => Some(HoyolabSubmitResult::Submitted(
+                TaskOutcome::AlreadyCompleted,
+            )),
             Ok(SignState::CaptchaRequired { .. }) => {
                 report.push(record(
                     account,
@@ -737,8 +824,74 @@ async fn run_hoyolab_game(
                 ));
                 return;
             }
-            Err(error) => {
-                last_submission = Some(HoyolabSubmitResult::Failed(error));
+            Err(error) => Some(HoyolabSubmitResult::Failed(error)),
+        };
+        log_confirmation_window(account, subject, submissions, max_attempts);
+
+        // 提交后只做只读确认：确认窗口内的查询不消耗提交次数。
+        match confirm_hoyolab_sign(client, game).await {
+            Confirmation::Signed { total_sign_day } => {
+                let rewards = client.home(game).await.ok();
+                let (outcome, confirmation) = match last_submission.as_ref() {
+                    Some(HoyolabSubmitResult::Submitted(outcome)) => (
+                        *outcome,
+                        format!(
+                            "签到成功，第 {submissions} 次提交后复查确认今日已签到，累计 {total_sign_day} 天"
+                        ),
+                    ),
+                    Some(HoyolabSubmitResult::Failed(_)) => (
+                        TaskOutcome::Success,
+                        format!(
+                            "签到请求返回错误，但第 {submissions} 次提交后复查确认今日已签到，累计 {total_sign_day} 天"
+                        ),
+                    ),
+                    None => unreachable!("只有实际提交过签到请求后才会进入确认成功分支"),
+                };
+                report.push(record(
+                    account,
+                    "HoYoLAB 签到",
+                    subject,
+                    outcome,
+                    &with_reward(&confirmation, rewards.as_deref(), total_sign_day),
+                ));
+                return;
+            }
+            Confirmation::FirstBind => {
+                report.push(record(
+                    account,
+                    "HoYoLAB 签到",
+                    subject,
+                    TaskOutcome::NetworkFailed,
+                    "签到提交后复查显示需要首次手动签到，已停止重试",
+                ));
+                return;
+            }
+            Confirmation::Failed(error) => {
+                let outcome = classify_hoyolab_checkin_error(&error);
+                report.push(record(
+                    account,
+                    "HoYoLAB 签到",
+                    subject,
+                    outcome,
+                    &format!(
+                        "第 {submissions} 次签到提交后确认查询失败；已提交，结果未知，未再次提交：{}",
+                        hoyolab_checkin_error_message(&error)
+                    ),
+                ));
+                return;
+            }
+            Confirmation::StillPending => {
+                // 确认窗口内明确仍未完成，且还有提交次数时，才允许下一次提交。
+                if submissions >= max_attempts {
+                    push_hoyolab_attempts_exhausted(
+                        report,
+                        account,
+                        subject,
+                        submissions,
+                        last_submission,
+                    );
+                    return;
+                }
             }
         }
     }
@@ -752,21 +905,24 @@ fn push_hoyolab_attempts_exhausted(
     last_submission: Option<HoyolabSubmitResult>,
 ) {
     let (outcome, detail) = match last_submission {
-        Some(HoyolabSubmitResult::Failed(HoyolabCheckinError::CookieInvalid)) => (
-            TaskOutcome::AuthenticationFailed,
-            "最后一次签到请求显示 Cookie 无效或已过期".to_owned(),
+        Some(HoyolabSubmitResult::Failed(error)) => {
+            let outcome = classify_hoyolab_checkin_error(&error);
+            let detail = match outcome {
+                TaskOutcome::AuthenticationFailed => {
+                    "最后一次签到请求显示 Cookie 无效或已过期".to_owned()
+                }
+                TaskOutcome::NetworkFailed => "最后一次签到请求网络失败".to_owned(),
+                _ => format!("最后一次签到请求失败：{error}"),
+            };
+            (outcome, detail)
+        }
+        Some(HoyolabSubmitResult::Submitted(_)) => (
+            TaskOutcome::StateSyncTimeout,
+            "每次提交后的确认窗口都仍显示今日未签到".to_owned(),
         ),
-        Some(HoyolabSubmitResult::Failed(HoyolabCheckinError::Http(_))) => (
+        None => (
             TaskOutcome::NetworkFailed,
-            "最后一次签到请求网络失败".to_owned(),
-        ),
-        Some(HoyolabSubmitResult::Failed(error)) => (
-            TaskOutcome::Failed,
-            format!("最后一次签到请求失败：{error}"),
-        ),
-        Some(HoyolabSubmitResult::Submitted(_)) | None => (
-            TaskOutcome::NetworkFailed,
-            "每次提交后复查都仍显示今日未签到".to_owned(),
+            "签到状态查询始终未确认今日已签到".to_owned(),
         ),
     };
     report.push(record(
@@ -774,7 +930,7 @@ fn push_hoyolab_attempts_exhausted(
         "HoYoLAB 签到",
         subject,
         outcome,
-        &format!("已达到配置的 {attempts} 次签到尝试；{detail}"),
+        &format!("已达到配置的 {attempts} 次签到提交；{detail}"),
     ));
 }
 
@@ -801,6 +957,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    use crate::http::HttpError;
     use reqwest::Url;
     use serde_json::json;
     use wiremock::{
@@ -850,8 +1007,10 @@ mod tests {
         ));
     }
 
+    /// 状态序列：Pending → 提交成功 → Pending → Pending → 已签到。
+    /// 断言：确认窗口内完成确认，`sign` 只被调用一次，提交次数不因 Pending 增加。
     #[tokio::test]
-    async fn retries_only_while_status_still_reports_pending() {
+    async fn pending_confirmation_window_confirms_without_resubmitting() {
         let server = MockServer::start().await;
         let status_count = Arc::new(AtomicUsize::new(0));
         let responder_count = Arc::clone(&status_count);
@@ -863,36 +1022,96 @@ mod tests {
                     "retcode": 0,
                     "message": "OK",
                     "data": {
-                        "total_sign_day": if request >= 3 { 15 } else { 14 },
-                        "is_sign": request >= 3,
+                        "total_sign_day": if request >= 4 { 15 } else { 14 },
+                        "is_sign": request >= 4,
                         "first_bind": false
                     }
+                }))
+            })
+            .expect(4)
+            .mount(&server)
+            .await;
+        let sign_count = Arc::new(AtomicUsize::new(0));
+        let sign_responder = Arc::clone(&sign_count);
+        Mock::given(method("POST"))
+            .and(path("/event/luna/sign"))
+            .respond_with(move |_request: &Request| {
+                sign_responder.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": {"success": 0, "gt": "", "challenge": ""}
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = china_client(&server);
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut report = RunReport::default();
+
+        run_china_role(
+            &mut report,
+            "account",
+            "原神 / ***0001",
+            &client,
+            None,
+            &mut signer,
+            ChinaGame::Genshin,
+            "cn_gf01",
+            "10001",
+            None,
+            3,
+        )
+        .await;
+
+        // 1 次首次查询 + 3 次确认查询；提交只发生 1 次。
+        assert_eq!(status_count.load(Ordering::SeqCst), 4);
+        assert_eq!(sign_count.load(Ordering::SeqCst), 1);
+        assert_eq!(report.records.len(), 1);
+        assert_eq!(report.records[0].outcome, TaskOutcome::Success);
+        assert!(
+            report.records[0]
+                .message
+                .contains("第 1 次提交后复查确认今日已签到，累计 15 天")
+        );
+    }
+
+    /// 状态序列：持续 Pending。`task_max_attempts` 是最多提交次数，
+    /// 每次都先跑完确认窗口；断言提交次数、确认查询次数与分类均有明确上限。
+    #[tokio::test]
+    async fn persistent_pending_hits_submission_limit_with_state_sync_timeout() {
+        let server = MockServer::start().await;
+        let status_count = Arc::new(AtomicUsize::new(0));
+        let status_responder = Arc::clone(&status_count);
+        Mock::given(method("GET"))
+            .and(path("/event/luna/info"))
+            .respond_with(move |_request: &Request| {
+                status_responder.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(pending_info())
+            })
+            // 1 次首次查询 + 3 次提交 × 3 次确认查询。
+            .expect(10)
+            .mount(&server)
+            .await;
+        let sign_count = Arc::new(AtomicUsize::new(0));
+        let sign_responder = Arc::clone(&sign_count);
+        Mock::given(method("POST"))
+            .and(path("/event/luna/sign"))
+            .respond_with(move |_request: &Request| {
+                sign_responder.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": {"success": 0, "gt": "", "challenge": ""}
                 }))
             })
             .expect(3)
             .mount(&server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/event/luna/sign"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "retcode": 0,
-                "message": "OK",
-                "data": {"success": 0, "gt": "", "challenge": ""}
-            })))
-            .expect(2)
-            .mount(&server)
-            .await;
 
-        let http = HttpClient::builder()
-            .retry(RetryPolicy {
-                attempts: 1,
-                base_delay: Duration::ZERO,
-            })
-            .build()
-            .unwrap();
-        let client =
-            ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id")
-                .endpoint_override(Url::parse(&server.uri()).unwrap());
+        let client = china_client(&server);
         let mut signer = DsSigner::new(SystemClock, ThreadRandom);
         let mut report = RunReport::default();
 
@@ -911,50 +1130,46 @@ mod tests {
         )
         .await;
 
-        assert_eq!(status_count.load(Ordering::SeqCst), 3);
+        assert_eq!(status_count.load(Ordering::SeqCst), 10);
+        assert_eq!(sign_count.load(Ordering::SeqCst), 3);
         assert_eq!(report.records.len(), 1);
-        assert_eq!(report.records[0].outcome, TaskOutcome::Success);
-        assert!(report.records[0].message.contains("第 2 次尝试后复查确认"));
+        assert_eq!(report.records[0].outcome, TaskOutcome::StateSyncTimeout);
+        assert!(report.records[0].message.contains("3 次签到提交"));
+        assert!(
+            report.records[0]
+                .message
+                .contains("每次提交后的确认窗口都仍显示今日未签到")
+        );
     }
 
+    /// 提交次数上限为 1 时，只允许一次提交，确认窗口后立即给出状态同步超时。
     #[tokio::test]
-    async fn stops_after_configured_attempts_when_status_remains_pending() {
+    async fn single_configured_submission_is_never_exceeded_by_confirmation() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/event/luna/info"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "retcode": 0,
-                "message": "OK",
-                "data": {
-                    "total_sign_day": 14,
-                    "is_sign": false,
-                    "first_bind": false
-                }
-            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(pending_info()))
+            // 1 次首次查询 + 1 次提交 × 3 次确认查询。
             .expect(4)
             .mount(&server)
             .await;
+        let sign_count = Arc::new(AtomicUsize::new(0));
+        let sign_responder = Arc::clone(&sign_count);
         Mock::given(method("POST"))
             .and(path("/event/luna/sign"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "retcode": 0,
-                "message": "OK",
-                "data": {"success": 0, "gt": "", "challenge": ""}
-            })))
-            .expect(3)
+            .respond_with(move |_request: &Request| {
+                sign_responder.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": {"success": 0, "gt": "", "challenge": ""}
+                }))
+            })
+            .expect(1)
             .mount(&server)
             .await;
 
-        let http = HttpClient::builder()
-            .retry(RetryPolicy {
-                attempts: 1,
-                base_delay: Duration::ZERO,
-            })
-            .build()
-            .unwrap();
-        let client =
-            ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id")
-                .endpoint_override(Url::parse(&server.uri()).unwrap());
+        let client = china_client(&server);
         let mut signer = DsSigner::new(SystemClock, ThreadRandom);
         let mut report = RunReport::default();
 
@@ -969,17 +1184,20 @@ mod tests {
             "cn_gf01",
             "10001",
             None,
-            3,
+            1,
         )
         .await;
 
+        assert_eq!(sign_count.load(Ordering::SeqCst), 1);
         assert_eq!(report.records.len(), 1);
-        assert_eq!(report.records[0].outcome, TaskOutcome::NetworkFailed);
-        assert!(report.records[0].message.contains("3 次签到尝试"));
+        assert_eq!(report.records[0].outcome, TaskOutcome::StateSyncTimeout);
+        assert!(report.records[0].message.contains("1 次签到提交"));
     }
 
+    /// 状态序列：Pending → 提交成功 → Pending → Pending → 已签到。
+    /// 断言：HoYoLAB 同样只提交一次，由确认窗口完成确认。
     #[tokio::test]
-    async fn hoyolab_retries_only_after_pending_confirmation() {
+    async fn hoyolab_pending_confirmation_window_confirms_without_resubmitting() {
         let server = MockServer::start().await;
         let status_count = Arc::new(AtomicUsize::new(0));
         let responder_count = Arc::clone(&status_count);
@@ -991,43 +1209,83 @@ mod tests {
                     "retcode": 0,
                     "message": "OK",
                     "data": {
-                        "total_sign_day": if request >= 3 { 15 } else { 14 },
-                        "is_sign": request >= 3,
+                        "total_sign_day": if request >= 4 { 15 } else { 14 },
+                        "is_sign": request >= 4,
                         "first_bind": false
                     }
+                }))
+            })
+            .expect(4)
+            .mount(&server)
+            .await;
+        let sign_count = Arc::new(AtomicUsize::new(0));
+        let sign_responder = Arc::clone(&sign_count);
+        Mock::given(method("POST"))
+            .and(path("/sign"))
+            .respond_with(move |_request: &Request| {
+                sign_responder.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": null
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = hoyolab_client(&server);
+        let mut report = RunReport::default();
+
+        run_hoyolab_game(&mut report, "account", &client, HoyolabGame::Genshin, 3).await;
+
+        assert_eq!(status_count.load(Ordering::SeqCst), 4);
+        assert_eq!(sign_count.load(Ordering::SeqCst), 1);
+        assert_eq!(report.records.len(), 1);
+        assert_eq!(report.records[0].outcome, TaskOutcome::Success);
+        assert!(
+            report.records[0]
+                .message
+                .contains("第 1 次提交后复查确认今日已签到，累计 15 天")
+        );
+    }
+
+    /// 状态序列：持续 Pending。断言 HoYoLAB 提交次数上限与分类同样准确。
+    #[tokio::test]
+    async fn hoyolab_persistent_pending_hits_submission_limit() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/info"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(pending_info()))
+            // 1 次首次查询 + 3 次提交 × 3 次确认查询。
+            .expect(10)
+            .mount(&server)
+            .await;
+        let sign_count = Arc::new(AtomicUsize::new(0));
+        let sign_responder = Arc::clone(&sign_count);
+        Mock::given(method("POST"))
+            .and(path("/sign"))
+            .respond_with(move |_request: &Request| {
+                sign_responder.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": null
                 }))
             })
             .expect(3)
             .mount(&server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/sign"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "retcode": 0,
-                "message": "OK",
-                "data": null
-            })))
-            .expect(2)
-            .mount(&server)
-            .await;
 
-        let http = HttpClient::builder()
-            .retry(RetryPolicy {
-                attempts: 1,
-                base_delay: Duration::ZERO,
-            })
-            .build()
-            .unwrap();
-        let client = HoyolabCheckinClient::new(http, SecretString::new("ltoken=secret"))
-            .endpoint_override(Url::parse(&server.uri()).unwrap());
+        let client = hoyolab_client(&server);
         let mut report = RunReport::default();
 
         run_hoyolab_game(&mut report, "account", &client, HoyolabGame::Genshin, 3).await;
 
-        assert_eq!(status_count.load(Ordering::SeqCst), 3);
+        assert_eq!(sign_count.load(Ordering::SeqCst), 3);
         assert_eq!(report.records.len(), 1);
-        assert_eq!(report.records[0].outcome, TaskOutcome::Success);
-        assert!(report.records[0].message.contains("第 2 次尝试后复查确认"));
+        assert_eq!(report.records[0].outcome, TaskOutcome::StateSyncTimeout);
+        assert!(report.records[0].message.contains("3 次签到提交"));
     }
 
     #[test]
@@ -1059,5 +1317,368 @@ mod tests {
         let blacklist = vec!["123456789".to_owned()];
         assert!(role_is_excluded(&blacklist, "123456789"));
         assert!(!role_is_excluded(&blacklist, "6789"));
+    }
+
+    #[test]
+    fn checkin_error_classification_keeps_authentication_and_transport_categories() {
+        assert_eq!(
+            classify_checkin_error(&CheckinError::CookieInvalid),
+            TaskOutcome::AuthenticationFailed
+        );
+        assert_eq!(
+            classify_checkin_error(&CheckinError::Http(HttpError::Timeout)),
+            TaskOutcome::NetworkFailed
+        );
+        assert_eq!(
+            classify_checkin_error(&CheckinError::InvalidResponse("无效数据".to_owned())),
+            TaskOutcome::Failed
+        );
+        assert_eq!(
+            classify_checkin_error(&CheckinError::Api {
+                retcode: -1,
+                message: "activity unavailable".to_owned()
+            }),
+            TaskOutcome::Failed
+        );
+        assert_eq!(
+            classify_hoyolab_checkin_error(&HoyolabCheckinError::CookieInvalid),
+            TaskOutcome::AuthenticationFailed
+        );
+        assert_eq!(
+            classify_hoyolab_checkin_error(&HoyolabCheckinError::Http(HttpError::Connect(
+                "连接失败".to_owned()
+            ))),
+            TaskOutcome::NetworkFailed
+        );
+        assert_eq!(
+            classify_hoyolab_checkin_error(&HoyolabCheckinError::InvalidHeader("Cookie")),
+            TaskOutcome::Failed
+        );
+    }
+
+    fn china_client(server: &MockServer) -> ChinaCheckinClient {
+        let http = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 1,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+        ChinaCheckinClient::new(http, SecretString::new("cookie_token=secret"), "device-id")
+            .endpoint_override(Url::parse(&server.uri()).unwrap())
+    }
+
+    fn hoyolab_client(server: &MockServer) -> HoyolabCheckinClient {
+        let http = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 1,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+        HoyolabCheckinClient::new(http, SecretString::new("ltoken=secret"))
+            .endpoint_override(Url::parse(&server.uri()).unwrap())
+    }
+
+    fn pending_info() -> serde_json::Value {
+        json!({
+            "retcode": 0,
+            "message": "OK",
+            "data": { "total_sign_day": 14, "is_sign": false, "first_bind": false }
+        })
+    }
+
+    fn signed_info(total_sign_day: u32) -> serde_json::Value {
+        json!({
+            "retcode": 0,
+            "message": "OK",
+            "data": {
+                "total_sign_day": total_sign_day,
+                "is_sign": true,
+                "first_bind": false
+            }
+        })
+    }
+
+    fn cookie_invalid_envelope() -> serde_json::Value {
+        json!({
+            "retcode": -100,
+            "message": "登录失效，请重新登录",
+            "data": null
+        })
+    }
+
+    /// 状态序列：Pending → 提交 → 复查 CookieInvalid。
+    /// 断言：结果分类为认证失败、触发刷新判定、提交只发生一次。
+    #[tokio::test]
+    async fn recheck_authentication_failure_after_submission_keeps_auth_category() {
+        let server = MockServer::start().await;
+        let status_count = Arc::new(AtomicUsize::new(0));
+        let status_responder = Arc::clone(&status_count);
+        Mock::given(method("GET"))
+            .and(path("/event/luna/info"))
+            .respond_with(move |_request: &Request| {
+                let call = status_responder.fetch_add(1, Ordering::SeqCst) + 1;
+                if call == 1 {
+                    ResponseTemplate::new(200).set_body_json(pending_info())
+                } else {
+                    ResponseTemplate::new(200).set_body_json(cookie_invalid_envelope())
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let sign_count = Arc::new(AtomicUsize::new(0));
+        let sign_responder = Arc::clone(&sign_count);
+        Mock::given(method("POST"))
+            .and(path("/event/luna/sign"))
+            .respond_with(move |_request: &Request| {
+                sign_responder.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": { "success": 0, "gt": "", "challenge": "" }
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = china_client(&server);
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut report = RunReport::default();
+
+        run_china_role(
+            &mut report,
+            "account",
+            "原神 / ***0001",
+            &client,
+            None,
+            &mut signer,
+            ChinaGame::Genshin,
+            "cn_gf01",
+            "10001",
+            None,
+            3,
+        )
+        .await;
+
+        assert_eq!(status_count.load(Ordering::SeqCst), 2);
+        assert_eq!(sign_count.load(Ordering::SeqCst), 1);
+        assert_eq!(report.records.len(), 1);
+        assert_eq!(report.records[0].outcome, TaskOutcome::AuthenticationFailed);
+        assert!(
+            report.records[0]
+                .message
+                .contains("已提交，结果未知，未再次提交")
+        );
+        assert!(report.records[0].message.contains("Cookie 无效或已过期"));
+        assert!(has_authentication_failure(&report));
+    }
+
+    /// 状态序列：Pending → 提交 → 复查传输失败。
+    /// 断言：仍为网络失败、提交只发生一次、保留提交结果未知上下文。
+    #[tokio::test]
+    async fn recheck_transport_failure_after_submission_stays_network_failed() {
+        let server = MockServer::start().await;
+        let status_count = Arc::new(AtomicUsize::new(0));
+        let status_responder = Arc::clone(&status_count);
+        Mock::given(method("GET"))
+            .and(path("/event/luna/info"))
+            .respond_with(move |_request: &Request| {
+                let call = status_responder.fetch_add(1, Ordering::SeqCst) + 1;
+                if call == 1 {
+                    ResponseTemplate::new(200).set_body_json(pending_info())
+                } else {
+                    ResponseTemplate::new(500)
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let sign_count = Arc::new(AtomicUsize::new(0));
+        let sign_responder = Arc::clone(&sign_count);
+        Mock::given(method("POST"))
+            .and(path("/event/luna/sign"))
+            .respond_with(move |_request: &Request| {
+                sign_responder.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": { "success": 0, "gt": "", "challenge": "" }
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = china_client(&server);
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut report = RunReport::default();
+
+        run_china_role(
+            &mut report,
+            "account",
+            "原神 / ***0001",
+            &client,
+            None,
+            &mut signer,
+            ChinaGame::Genshin,
+            "cn_gf01",
+            "10001",
+            None,
+            3,
+        )
+        .await;
+
+        assert_eq!(status_count.load(Ordering::SeqCst), 2);
+        assert_eq!(sign_count.load(Ordering::SeqCst), 1);
+        assert_eq!(report.records.len(), 1);
+        assert_eq!(report.records[0].outcome, TaskOutcome::NetworkFailed);
+        assert!(
+            report.records[0]
+                .message
+                .contains("已提交，结果未知，未再次提交")
+        );
+        assert!(report.records[0].message.contains("网络请求失败"));
+        assert!(!has_authentication_failure(&report));
+    }
+
+    /// 状态序列：Pending → 提交返回 CookieInvalid → 复查仍 Pending；
+    /// 随后模拟刷新后重跑，首次只读查询即已签到。
+    /// 断言：首次运行报告认证失败且不再提交；重跑不提交；sign 全局只调用一次。
+    #[tokio::test]
+    async fn authentication_failure_after_submission_waits_for_refresh_confirmation() {
+        let server = MockServer::start().await;
+        let status_count = Arc::new(AtomicUsize::new(0));
+        let status_responder = Arc::clone(&status_count);
+        Mock::given(method("GET"))
+            .and(path("/event/luna/info"))
+            .respond_with(move |_request: &Request| {
+                let call = status_responder.fetch_add(1, Ordering::SeqCst) + 1;
+                ResponseTemplate::new(200).set_body_json(match call {
+                    // 首次查询 + 确认窗口（3 次）均为 Pending；
+                    // 之后模拟凭据刷新重跑，首次只读查询即已签到。
+                    1..=4 => pending_info(),
+                    _ => signed_info(15),
+                })
+            })
+            .expect(5)
+            .mount(&server)
+            .await;
+        let sign_count = Arc::new(AtomicUsize::new(0));
+        let sign_responder = Arc::clone(&sign_count);
+        Mock::given(method("POST"))
+            .and(path("/event/luna/sign"))
+            .respond_with(move |_request: &Request| {
+                sign_responder.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(cookie_invalid_envelope())
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = china_client(&server);
+        let mut signer = DsSigner::new(SystemClock, ThreadRandom);
+        let mut first = RunReport::default();
+
+        run_china_role(
+            &mut first,
+            "account",
+            "原神 / ***0001",
+            &client,
+            None,
+            &mut signer,
+            ChinaGame::Genshin,
+            "cn_gf01",
+            "10001",
+            None,
+            3,
+        )
+        .await;
+
+        assert_eq!(sign_count.load(Ordering::SeqCst), 1);
+        assert_eq!(first.records.len(), 1);
+        assert_eq!(first.records[0].outcome, TaskOutcome::AuthenticationFailed);
+        assert!(first.records[0].message.contains("认证失效"));
+        assert!(has_authentication_failure(&first));
+
+        // 模拟账号级 SToken 刷新后重跑：只读查询已签到即返回，不产生第二次提交。
+        let mut second = RunReport::default();
+        run_china_role(
+            &mut second,
+            "account",
+            "原神 / ***0001",
+            &client,
+            None,
+            &mut signer,
+            ChinaGame::Genshin,
+            "cn_gf01",
+            "10001",
+            None,
+            3,
+        )
+        .await;
+
+        assert_eq!(status_count.load(Ordering::SeqCst), 5);
+        assert_eq!(sign_count.load(Ordering::SeqCst), 1);
+        assert_eq!(second.records.len(), 1);
+        assert_eq!(second.records[0].outcome, TaskOutcome::AlreadyCompleted);
+        assert!(second.records[0].message.contains("今日已签到，累计 15 天"));
+        assert!(!has_authentication_failure(&second));
+    }
+
+    /// 状态序列：Pending → 提交 → 复查 CookieInvalid。
+    /// 断言：HoYoLAB 仅修正错误分类，不触发国内 SToken 刷新路径。
+    #[tokio::test]
+    async fn hoyolab_recheck_authentication_failure_keeps_auth_category() {
+        let server = MockServer::start().await;
+        let status_count = Arc::new(AtomicUsize::new(0));
+        let status_responder = Arc::clone(&status_count);
+        Mock::given(method("GET"))
+            .and(path("/info"))
+            .respond_with(move |_request: &Request| {
+                let call = status_responder.fetch_add(1, Ordering::SeqCst) + 1;
+                if call == 1 {
+                    ResponseTemplate::new(200).set_body_json(pending_info())
+                } else {
+                    ResponseTemplate::new(200).set_body_json(cookie_invalid_envelope())
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let sign_count = Arc::new(AtomicUsize::new(0));
+        let sign_responder = Arc::clone(&sign_count);
+        Mock::given(method("POST"))
+            .and(path("/sign"))
+            .respond_with(move |_request: &Request| {
+                sign_responder.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "retcode": 0,
+                    "message": "OK",
+                    "data": null
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = hoyolab_client(&server);
+        let mut report = RunReport::default();
+
+        run_hoyolab_game(&mut report, "account", &client, HoyolabGame::Genshin, 3).await;
+
+        assert_eq!(status_count.load(Ordering::SeqCst), 2);
+        assert_eq!(sign_count.load(Ordering::SeqCst), 1);
+        assert_eq!(report.records.len(), 1);
+        assert_eq!(report.records[0].outcome, TaskOutcome::AuthenticationFailed);
+        assert!(
+            report.records[0]
+                .message
+                .contains("已提交，结果未知，未再次提交")
+        );
+        assert!(report.records[0].message.contains("Cookie 无效或已过期"));
+        assert!(has_authentication_failure(&report));
     }
 }
