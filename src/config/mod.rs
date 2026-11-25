@@ -149,6 +149,9 @@ pub struct ScheduleConfig {
     pub interval_minutes: u64,
     #[serde(default = "default_true")]
     pub run_on_start: bool,
+    /// 常驻调度在等待期间检查退出信号与配置变化的周期秒数；`None` 使用默认 30 秒。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_seconds: Option<u64>,
 }
 
 impl Default for ScheduleConfig {
@@ -157,6 +160,7 @@ impl Default for ScheduleConfig {
             enabled: false,
             interval_minutes: default_schedule_interval(),
             run_on_start: true,
+            poll_seconds: None,
         }
     }
 }
@@ -988,6 +992,9 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         errors
             .push("runtime.logging.retention_days 必须大于 0；保留全部日志请删除该字段".to_owned());
     }
+    if config.runtime.schedule.poll_seconds == Some(0) {
+        errors.push("runtime.schedule.poll_seconds 必须大于 0；使用默认值请删除该字段".to_owned());
+    }
     if let Some(endpoint) = &config.captcha.endpoint {
         if !matches!(endpoint.scheme(), "http" | "https") {
             errors.push("captcha.endpoint 仅支持 http 或 https".to_owned());
@@ -1519,7 +1526,12 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                 runtime,
                 "schedule",
                 "runtime.schedule",
-                &["enabled", "interval_minutes", "run_on_start"],
+                &[
+                    "enabled",
+                    "interval_minutes",
+                    "run_on_start",
+                    "poll_seconds",
+                ],
                 &mut warnings,
             );
         }
@@ -2505,6 +2517,38 @@ accounts:
                 matches!(parse(&source), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("runtime.schedule.interval_minutes")))
             );
         }
+    }
+
+    #[test]
+    fn schedule_poll_seconds_is_optional_and_rejects_zero() {
+        let loaded = parse(MINIMAL).unwrap();
+        assert_eq!(loaded.config.runtime.schedule.poll_seconds, None);
+
+        let source = MINIMAL.replace(
+            "accounts:",
+            "runtime:\n  schedule:\n    poll_seconds: 15\naccounts:",
+        );
+        let loaded = parse(&source).unwrap();
+        assert_eq!(loaded.config.runtime.schedule.poll_seconds, Some(15));
+        assert!(loaded.warnings.is_empty());
+
+        let zero = MINIMAL.replace(
+            "accounts:",
+            "runtime:\n  schedule:\n    poll_seconds: 0\naccounts:",
+        );
+        assert!(
+            matches!(parse(&zero), Err(ConfigError::Validation(errors)) if errors.iter().any(|error| error.contains("runtime.schedule.poll_seconds")))
+        );
+
+        let typo = MINIMAL.replace(
+            "accounts:",
+            "runtime:\n  schedule:\n    poll_second: 15\naccounts:",
+        );
+        let loaded = parse(&typo).unwrap();
+        assert_eq!(
+            loaded.warnings,
+            vec!["未知配置字段 runtime.schedule.poll_second"]
+        );
     }
 
     #[test]

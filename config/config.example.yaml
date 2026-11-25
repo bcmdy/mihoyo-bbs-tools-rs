@@ -17,6 +17,8 @@ runtime:
     enabled: false
     interval_minutes: 720
     run_on_start: true
+    # 等待期间检查退出信号与配置变化的周期秒数；省略或 null 使用默认 30 秒。
+    poll_seconds: 30
 
 captcha:
   endpoint: null

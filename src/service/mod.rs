@@ -22,7 +22,11 @@ pub use runner::{
     run_hoyolab_checkin,
 };
 pub use runtime_delay::apply_runtime_delay;
-pub use scheduler::wait_schedule_interval;
+pub use scheduler::{
+    DEFAULT_SCHEDULE_POLL_SECONDS, SCHEDULE_RELOAD_BACKOFF_SECONDS, ScheduleWait, ShutdownSignal,
+    WaitSignal, schedule_interval, schedule_poll_interval, shutdown_channel, shutdown_signal,
+    spawn_shutdown_listener, wait_for_next_round, wait_with_cancel,
+};
 pub use web_activity_runner::run_web_activities;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,6 +1,7 @@
 use std::{
     io::{IsTerminal, Read},
     process::ExitCode,
+    time::Duration,
 };
 
 use clap::Parser;
@@ -107,35 +108,57 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             config: path,
             tasks,
         } => {
-            let mut first = true;
+            // 首次配置错误明确失败退出；运行中失败由可取消等待按退避间隔重读恢复。
+            let mut current = config::load(&path)?;
+            let (shutdown_sender, mut shutdown) = service::shutdown_channel();
+            service::spawn_shutdown_listener(shutdown_sender);
+            let reload_backoff = schedule_reload_backoff();
+            let mut first_round = true;
             let mut last_exit = 0;
             loop {
-                let loaded = config::load(&path)?;
-                for warning in &loaded.warnings {
+                for warning in &current.warnings {
                     tracing::warn!("{warning}");
                 }
-                let schedule = loaded.config.runtime.schedule.clone();
+                let schedule = current.config.runtime.schedule.clone();
                 if !schedule.enabled {
-                    if first {
+                    if first_round {
                         return Err(AppError::Task(
                             "runtime.schedule.enabled=false，拒绝启动定时运行".to_owned(),
                         ));
                     }
-                    tracing::info!("检测到定时运行已关闭，退出 schedule");
-                    return Ok(last_exit);
+                    return Ok(finish_schedule(last_exit, "配置已关闭定时运行"));
                 }
-                if first && !schedule.run_on_start {
-                    first = false;
-                    service::wait_schedule_interval(&schedule).await;
-                    continue;
+                let skip_run = first_round && !schedule.run_on_start;
+                first_round = false;
+                if skip_run {
+                    tracing::info!(
+                        minutes = schedule.interval_minutes,
+                        "定时运行配置为先等待一个完整间隔"
+                    );
+                } else {
+                    let persistence = credential_persistence(current.source, &path);
+                    let (config, report) = execute_run(current.config, persistence, &tasks).await;
+                    last_exit =
+                        finish_report(&config, &report, ReportFormat::Text, false, false).await?;
+                    tracing::info!(exit_code = last_exit, "定时任务本轮结束");
+                    // 退出信号只在轮次边界生效，不会中断已经开始的任务提交。
                 }
-                let persistence = credential_persistence(loaded.source, &path);
-                let (config, report) = execute_run(loaded.config, persistence, &tasks).await;
-                last_exit =
-                    finish_report(&config, &report, ReportFormat::Text, false, false).await?;
-                tracing::info!(exit_code = last_exit, "定时任务本轮结束");
-                first = false;
-                service::wait_schedule_interval(&schedule).await;
+                match service::wait_for_next_round(
+                    &schedule,
+                    &reload_backoff,
+                    &mut shutdown,
+                    || config::load(&path),
+                )
+                .await
+                {
+                    service::ScheduleWait::Ready(next) => current = *next,
+                    service::ScheduleWait::Disabled => {
+                        return Ok(finish_schedule(last_exit, "等待期间检测到定时运行已关闭"));
+                    }
+                    service::ScheduleWait::Cancelled => {
+                        return Ok(finish_schedule(last_exit, "收到退出信号"));
+                    }
+                }
             }
         }
         Command::MigrateConfig(args) => {
@@ -847,6 +870,19 @@ fn credential_persistence<'a>(
         service::CredentialPersistence::ReadOnly
     }
 }
+fn schedule_reload_backoff() -> Vec<Duration> {
+    service::SCHEDULE_RELOAD_BACKOFF_SECONDS
+        .iter()
+        .map(|seconds| Duration::from_secs(*seconds))
+        .collect()
+}
+
+/// 常驻调度退出时记录停止原因，并返回最后一次完整轮次的退出码。
+fn finish_schedule(exit_code: u8, reason: &str) -> u8 {
+    tracing::info!(exit_code, reason = %reason, "定时运行已停止");
+    exit_code
+}
+
 fn init_tracing(
     runtime: Option<&config::RuntimeConfig>,
 ) -> Option<tracing_appender::non_blocking::WorkerGuard> {
