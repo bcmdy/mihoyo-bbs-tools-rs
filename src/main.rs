@@ -819,19 +819,18 @@ fn init_tracing(
             Some(config::LogLevel::Error) => LevelFilter::ERROR,
             Some(config::LogLevel::Info) | None => LevelFilter::INFO,
         });
-    if let Some(logging) = runtime.map(|r| &r.logging).filter(|v| v.enabled) {
-        if let Ok(appender) =
+    if let Some(logging) = runtime.map(|r| &r.logging).filter(|v| v.enabled)
+        && let Ok(appender) =
             file_logging::DailyFileAppender::new(&logging.directory, &logging.file_prefix)
-        {
-            let (writer, guard) = tracing_appender::non_blocking(appender);
-            tracing_subscriber::fmt()
-                .with_max_level(level)
-                .with_target(false)
-                .with_ansi(false)
-                .with_writer(writer)
-                .init();
-            return Some(guard);
-        }
+    {
+        let (writer, guard) = tracing_appender::non_blocking(appender);
+        tracing_subscriber::fmt()
+            .with_max_level(level)
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(writer)
+            .init();
+        return Some(guard);
     }
     tracing_subscriber::fmt()
         .with_max_level(level)
