@@ -1,0 +1,59 @@
+name: 文档校验
+
+# 仅文档变更时运行轻量校验：不安装 Rust、不编译，只检查文档相对链接、
+# 行号锚点与发布包依赖的文件路径，避免纯文字修改触发完整 Rust CI。
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "codex/**"
+    paths:
+      - "README.md"
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+      - ".github/scripts/**"
+  pull_request:
+    paths:
+      - "README.md"
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+      - ".github/scripts/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: 文档链接与打包路径校验
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: 校验文档相对链接与行号锚点
+        # 只用 Python 标准库：runner 镜像不保证安装 PyYAML，避免额外依赖。
+        run: python3 .github/scripts/check_docs.py
+
+      - name: 校验发布包必需文件
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 发布包（ci.yml、release.yml 打包步骤与 flake.nix 的 postInstall）
+          # 需要下列文件存在且非空；纯文档变更也必须保证这些打包路径有效。
+          for required in \
+            docs/使用说明.md \
+            config/config.example.yaml \
+            integrations/dacapo/template.yml; do
+            if [[ ! -s "$required" ]]; then
+              echo "发布包必需文件缺失或为空：$required" >&2
+              exit 1
+            fi
+            echo "打包文件有效：$required"
+          done
