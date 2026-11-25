@@ -16,6 +16,7 @@ use reqwest::header::{COOKIE, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
 use url::Url;
 
+use super::persist::{RealFileOps, ReplaceRequest, replace_atomically, with_path_lock};
 use super::{
     CURRENT_CONFIG_VERSION, Config, ConfigError, hydrate_stokens_from_cookies, load,
     open_secure_new, validate,
@@ -107,7 +108,9 @@ impl EditSession {
             path: self.working.clone(),
             source,
         })?;
-        replace_validated_with_backup(&self.target, &updated)?;
+        // 以会话开始时的原文作为基线：期间若有其它进程改过真实配置，
+        // 这里会报告并发冲突并保留待保存副本，而不是静默覆盖对方写入。
+        replace_validated_with_backup(&self.target, &updated, Some(&self.original))?;
         self.committed = true;
         let _ = fs::remove_file(&self.working);
         Ok(())
@@ -163,7 +166,10 @@ pub fn edit_file(path: &Path) -> Result<(), ConfigError> {
         source,
     })?;
     let _ = fs::remove_file(temporary);
-    replace_validated_user_edit(path, &updated)
+    // 以启动编辑器前读到的原文作为基线：编辑期间若其它进程改过真实配置，
+    // 这里会报告并发冲突并保留待保存副本，而不是静默覆盖对方写入。
+    let backup = path.extension().and_then(|value| value.to_str()) != Some("session");
+    replace_validated_inner(path, &updated, backup, Some(&original))
 }
 
 pub async fn add_account_from_stdin(
@@ -215,11 +221,14 @@ pub async fn add_account(
     let nickname = fetch_nickname(cookie, uid).await?;
     let mut account_name = format_account_name(&nickname);
 
-    let existed = path.exists();
-    let mut root = if existed {
-        read_raw(path)?
+    let original = if path.exists() {
+        Some(read_text(path)?)
     } else {
-        empty_config_value()
+        None
+    };
+    let mut root = match &original {
+        Some(source) => parse_raw(source)?,
+        None => empty_config_value(),
     };
     {
         let accounts = accounts_mut(&mut root)?;
@@ -275,8 +284,8 @@ pub async fn add_account(
         accounts.push(Value::Mapping(account));
     }
     let updated = validate_and_serialize(&root)?;
-    if existed {
-        replace_validated_user_edit(path, &updated)?;
+    if let Some(original) = original.as_deref() {
+        replace_validated_inner(path, &updated, true, Some(original))?;
     } else {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent).map_err(|source| write_error(path, source))?;
@@ -990,63 +999,90 @@ fn find_account_mut<'a>(root: &'a mut Value, name: &str) -> Result<&'a mut Mappi
         .ok_or_else(|| ConfigError::Edit(format!("未找到账号 {name:?}")))
 }
 
+/// 读-改-写全部在路径锁内完成：先读取基线，再修改、校验并原子替换。
+///
+/// `create_backup_before_replace` 为真时在替换前生成受控时间戳备份。
+fn mutate_locked(
+    path: &Path,
+    create_backup_before_replace: bool,
+    mutate: impl FnOnce(&mut Value) -> Result<(), ConfigError>,
+) -> Result<(), ConfigError> {
+    with_path_lock(path, || {
+        let original = read_text(path)?;
+        let mut value = parse_raw(&original)?;
+        mutate(&mut value)?;
+        let updated = validate_and_serialize(&value)?;
+        replace_locked(
+            path,
+            &updated,
+            create_backup_before_replace,
+            Some(&original),
+        )
+    })
+}
+
 fn mutate_raw(
     path: &Path,
     mutate: impl FnOnce(&mut Value) -> Result<(), ConfigError>,
 ) -> Result<(), ConfigError> {
-    let mut value = read_raw(path)?;
-    mutate(&mut value)?;
-    let updated = validate_and_serialize(&value)?;
-    replace_validated_user_edit(path, &updated)
+    let backup = path.extension().and_then(|value| value.to_str()) != Some("session");
+    mutate_locked(path, backup, mutate)
 }
 
 fn mutate_raw_without_backup(
     path: &Path,
     mutate: impl FnOnce(&mut Value) -> Result<(), ConfigError>,
 ) -> Result<(), ConfigError> {
-    let mut value = read_raw(path)?;
-    mutate(&mut value)?;
-    let updated = validate_and_serialize(&value)?;
-    replace_validated(path, &updated)
+    // 刷新写回：不建备份，但同样以同一次读-改-写内的原文作为基线，
+    // 期间若真实配置被其它进程改写则报告冲突，避免静默覆盖。
+    mutate_locked(path, false, mutate)
 }
 
-fn replace_validated(path: &Path, updated: &str) -> Result<(), ConfigError> {
-    replace_validated_inner(path, updated, false)
-}
-
-fn replace_validated_with_backup(path: &Path, updated: &str) -> Result<(), ConfigError> {
-    replace_validated_inner(path, updated, true)
-}
-
-fn replace_validated_user_edit(path: &Path, updated: &str) -> Result<(), ConfigError> {
-    let backup = path.extension().and_then(|value| value.to_str()) != Some("session");
-    replace_validated_inner(path, updated, backup)
+fn replace_validated_with_backup(
+    path: &Path,
+    updated: &str,
+    expected: Option<&str>,
+) -> Result<(), ConfigError> {
+    replace_validated_inner(path, updated, true, expected)
 }
 
 fn replace_validated_inner(
     path: &Path,
     updated: &str,
     create_backup_before_replace: bool,
+    expected: Option<&str>,
 ) -> Result<(), ConfigError> {
-    let temporary = temporary_path(path);
-    secure_write_new(&temporary, updated)?;
-    load(&temporary).map_err(|error| {
-        let _ = fs::remove_file(&temporary);
-        ConfigError::Edit(format!("修改后配置未通过校验，原配置未修改：{error}"))
-    })?;
-    if create_backup_before_replace && let Err(error) = create_backup(path, 5) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error);
-    }
-    let backup = path.with_extension(format!("yaml.{}.backup", std::process::id()));
-    fs::rename(path, &backup).map_err(|source| write_error(path, source))?;
-    if let Err(source) = fs::rename(&temporary, path) {
-        let _ = fs::rename(&backup, path);
-        let _ = fs::remove_file(&temporary);
-        return Err(write_error(path, source));
-    }
-    let _ = fs::remove_file(backup);
-    Ok(())
+    // 「基线比较 + 原子替换」必须处于同一把进程内路径锁内，避免同进程并发写交错。
+    with_path_lock(path, || {
+        replace_locked(path, updated, create_backup_before_replace, expected)
+    })
+}
+
+/// 在**已持有路径锁**的前提下执行原子替换。
+///
+/// 单独拆出这一层是为了让 [`mutate_locked`] 能把「读取基线 → 修改 → 校验 → 替换」
+/// 整体放进同一把锁，避免 `std::sync::Mutex` 不可重入导致的死锁。
+fn replace_locked(
+    path: &Path,
+    updated: &str,
+    create_backup_before_replace: bool,
+    expected: Option<&str>,
+) -> Result<(), ConfigError> {
+    let request = ReplaceRequest {
+        target: path,
+        content: updated,
+        expected,
+        create_backup: create_backup_before_replace,
+        backup_keep: 5,
+    };
+    replace_atomically(&RealFileOps, &request, load_staged)
+}
+
+/// 校验暂存文件能通过完整配置加载（含版本、字段与业务校验）。
+fn load_staged(path: &Path) -> Result<(), ConfigError> {
+    load(path)
+        .map(|_| ())
+        .map_err(|error| ConfigError::Edit(format!("修改后配置未通过校验，原配置未修改：{error}")))
 }
 
 pub fn create_backup(path: &Path, keep: usize) -> Result<PathBuf, ConfigError> {
@@ -1164,7 +1200,11 @@ pub fn restore_backup(path: &Path, backup: &Path) -> Result<PathBuf, ConfigError
         source,
     })?;
     let current_backup = create_backup(path, 5)?;
-    replace_validated(path, &source)?;
+    // 恢复也以恢复前的原文作为基线，避免覆盖恢复窗口内其它进程的写入。
+    with_path_lock(path, || {
+        let original = read_text(path)?;
+        replace_locked(path, &source, false, Some(&original))
+    })?;
     Ok(current_backup)
 }
 
@@ -1227,12 +1267,19 @@ fn prune_backups(directory: &Path, stem: &str, keep: usize) -> Result<(), Config
     Ok(())
 }
 
-fn read_raw(path: &Path) -> Result<Value, ConfigError> {
-    let source = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+fn read_text(path: &Path) -> Result<String, ConfigError> {
+    fs::read_to_string(path).map_err(|source| ConfigError::Read {
         path: path.to_path_buf(),
         source,
-    })?;
-    serde_yaml_ng::from_str(&source).map_err(ConfigError::Yaml)
+    })
+}
+
+fn read_raw(path: &Path) -> Result<Value, ConfigError> {
+    parse_raw(&read_text(path)?)
+}
+
+fn parse_raw(source: &str) -> Result<Value, ConfigError> {
+    serde_yaml_ng::from_str(source).map_err(ConfigError::Yaml)
 }
 
 fn validate_and_serialize(value: &Value) -> Result<String, ConfigError> {
@@ -1577,14 +1624,17 @@ pub(super) fn cleanup_stale_files_once(path: &Path) {
 
     static CLEANED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
     let cleaned = CLEANED.get_or_init(|| Mutex::new(HashSet::new()));
-    let Ok(mut cleaned) = cleaned.lock() else {
-        // 锁中毒说明其它线程 panic；此处不影响主流程，直接放弃清理。
-        return;
-    };
-    if !cleaned.insert(path.to_path_buf()) {
-        return;
+    {
+        // 只在登记阶段持有锁：目录扫描与删除放在锁外，避免拖慢其它线程。
+        let mut cleaned = match cleaned.lock() {
+            Ok(cleaned) => cleaned,
+            // 锁中毒说明其它线程 panic；此处不影响主流程，直接放弃清理。
+            Err(_) => return,
+        };
+        if !cleaned.insert(path.to_path_buf()) {
+            return;
+        }
     }
-    drop(cleaned);
     cleanup_stale_files(path);
 }
 
@@ -1592,12 +1642,33 @@ pub(super) fn cleanup_stale_files_once(path: &Path) {
 mod tests {
     use super::*;
 
-    /// 找到一个当前未使用的 PID，用于模拟异常退出遗留文件。
-    fn unused_pid() -> Option<u32> {
-        // 候选范围避开低段 PID（系统进程）且落在 pid_t 的正数范围内。
-        (100_000u32..200_000)
-            .chain(2_000_000u32..2_050_000)
-            .find(|pid| !pid_is_alive(*pid))
+    /// 取得一个**确定已退出**的 PID：启动一个立即结束的子进程并回收它。
+    ///
+    /// 比扫描「看起来空闲」的 PID 更确定，也不依赖系统的 `pid_max` 配置。
+    fn exited_pid() -> Option<u32> {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/C", "exit"]);
+            command
+        };
+        #[cfg(unix)]
+        let mut command = std::process::Command::new("true");
+        #[cfg(not(any(windows, unix)))]
+        let mut command = {
+            let mut command = std::process::Command::new("echo");
+            command.arg("");
+            command
+        };
+        let mut child = command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let pid = child.id();
+        child.wait().ok()?;
+        Some(pid)
     }
 
     #[tokio::test]
@@ -2025,14 +2096,20 @@ mod tests {
     }
 
     #[test]
-    fn pid_liveness_treats_current_process_and_placeholders_as_alive() {
+    fn pid_liveness_detects_current_process_as_alive_and_exited_child_as_dead() {
+        // 当前进程与系统占位 PID 必须视为存活。
         assert!(pid_is_alive(std::process::id()));
         assert!(pid_is_alive(0));
         assert!(pid_is_alive(1));
-        // 未使用的 PID 至少有一个可以被找到；找不到说明环境异常，直接失败更有价值。
+
+        // 已启动并回收的子进程视为已退出。
+        let Some(pid) = exited_pid() else {
+            // 无法启动子进程的环境（如受限沙箱）跳过该断言，不影响其它检查。
+            return;
+        };
         assert!(
-            unused_pid().is_some(),
-            "未能找到未使用的 PID，无法验证死进程判定"
+            !pid_is_alive(pid),
+            "已回收的子进程 PID {pid} 应判定为已退出"
         );
     }
 
@@ -2048,7 +2125,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.yaml");
         fs::write(&path, "version: 1\n").unwrap();
-        let Some(dead_pid) = unused_pid() else {
+        let Some(dead_pid) = exited_pid() else {
             return;
         };
         let stale = temp.path().join(format!("config.yaml.{dead_pid}.backup"));
@@ -2061,5 +2138,170 @@ mod tests {
         cleanup_stale_files_once(&path);
         assert!(stale.exists(), "同一路径同一进程只清理一次");
         fs::remove_file(&stale).unwrap();
+    }
+
+    #[test]
+    fn commit_reports_conflict_and_keeps_other_process_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        let name = "会话账号";
+        fs::write(
+            &path,
+            format!(
+                "version: 1\naccounts:\n  - name: {name}\n    credentials:\n      cookie: ''\n      stoken: ''\n    tasks:\n      bbs: false\n"
+            ),
+        )
+        .unwrap();
+
+        let session = EditSession::begin(&path).unwrap();
+        // 模拟另一个进程在会话期间修改了真实配置。
+        let other = format!(
+            "version: 1\naccounts:\n  - name: {name}\n    credentials:\n      cookie: ''\n      stoken: ''\n    remark: 其它进程写入\n    tasks:\n      bbs: false\n"
+        );
+        fs::write(&path, &other).unwrap();
+
+        let error = session.commit().unwrap_err();
+        let ConfigError::Conflict {
+            path: reported,
+            preserved,
+        } = error
+        else {
+            panic!("应报告并发冲突，实际为 {error:?}");
+        };
+        assert_eq!(reported, path);
+        // 其它进程的写入不被覆盖。
+        assert_eq!(fs::read_to_string(&path).unwrap(), other);
+        // 会话内容被保留到冲突副本，且副本可被加载校验。
+        let preserved_body = fs::read_to_string(&preserved).unwrap();
+        assert!(preserved_body.contains(name));
+        assert!(!preserved_body.contains("其它进程写入"));
+        assert!(
+            preserved
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("conflict")
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_succeeds_when_baseline_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        add_account(
+            &path,
+            None,
+            "account_id=123; account_mid_v2=mid; stoken=v2_secret",
+        )
+        .await
+        .unwrap();
+        let session = EditSession::begin(&path).unwrap();
+        session.commit().unwrap();
+        // 提交成功后不应残留会话副本。
+        let leftovers = fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().to_string_lossy().contains(".session"))
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[tokio::test]
+    async fn refreshed_cookie_writeback_has_no_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        add_account(
+            &path,
+            None,
+            "account_id=123; account_mid_v2=mid; stoken=v2_secret; cookie_token=old",
+        )
+        .await
+        .unwrap();
+        let name = load(&path).unwrap().config.accounts[0].name.clone();
+
+        // 正常写回：刷新后的 Cookie 落盘，且不创建受控时间戳备份。
+        assert!(
+            persist_refreshed_cookie(
+                &path,
+                &name,
+                "account_id=123; account_mid_v2=mid; stoken=v2_secret; cookie_token=new",
+            )
+            .unwrap()
+        );
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("cookie_token=new"));
+        assert!(!temp.path().join("backups").exists());
+    }
+
+    #[test]
+    fn refresh_writeback_reports_conflict_when_target_changed_after_read() {
+        // 直接验证「读取基线 → 目标被改写 → 带基线替换」这条链路：
+        // 基线不匹配时必须报告冲突、保留待保存副本，且不覆盖对方写入。
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        let baseline = "version: 1\naccounts:\n  - name: 账号A\n    credentials:\n      cookie: ''\n      stoken: ''\n    tasks:\n      bbs: false\n";
+        fs::write(&path, baseline).unwrap();
+        let other = baseline.replace("cookie: ''", "cookie: 'other-process'");
+        fs::write(&path, &other).unwrap();
+
+        let error = replace_validated_inner(
+            &path,
+            &baseline.replace("cookie: ''", "cookie: 'refreshed'"),
+            false,
+            Some(baseline),
+        )
+        .unwrap_err();
+
+        let ConfigError::Conflict { preserved, .. } = error else {
+            panic!("应报告并发冲突");
+        };
+        assert_eq!(fs::read_to_string(&path).unwrap(), other);
+        assert!(
+            fs::read_to_string(&preserved)
+                .unwrap()
+                .contains("cookie: 'refreshed'")
+        );
+    }
+
+    #[test]
+    fn replace_without_baseline_still_replaces_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        fs::write(&path, minimal_config("旧备注")).unwrap();
+        replace_validated_inner(&path, &minimal_config("新备注"), false, None).unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("remark: 新备注"));
+        assert!(!written.contains("旧备注"));
+    }
+
+    /// 一份可通过 `load` 完整校验的最小配置，`remark` 用于区分新旧内容。
+    fn minimal_config(remark: &str) -> String {
+        format!(
+            "version: 1\naccounts:\n  - name: 测试账号\n    remark: {remark}\n    credentials:\n      cookie: ''\n      stoken: ''\n    tasks:\n      bbs: false\n"
+        )
+    }
+
+    #[tokio::test]
+    async fn backup_keeps_previous_config_before_atomic_replace() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        add_account(
+            &path,
+            None,
+            "account_id=123; account_mid_v2=mid; stoken=v2_secret",
+        )
+        .await
+        .unwrap();
+        let name = load(&path).unwrap().config.accounts[0].name.clone();
+        set_schedule(&path, true, 60, false).unwrap();
+        let backups = list_backups(&path).unwrap();
+        assert!(!backups.is_empty(), "受控备份应随编辑产生");
+        assert!(
+            backups
+                .iter()
+                .all(|backup| backup.version == Some(super::super::CURRENT_CONFIG_VERSION))
+        );
+        assert_eq!(load(&path).unwrap().config.accounts[0].name, name);
     }
 }

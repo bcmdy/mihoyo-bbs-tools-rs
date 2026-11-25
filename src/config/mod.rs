@@ -19,6 +19,7 @@ mod editor;
 pub(crate) mod input;
 mod interactive;
 mod legacy;
+mod persist;
 pub use dacapo::{DacapoError, load_dacapo};
 pub use editor::{
     BackupInfo, EditSession, add_account_from_stdin, create_backup, edit_file, install_new_config,
@@ -89,6 +90,10 @@ pub enum ConfigError {
     Validation(Vec<String>),
     #[error("配置编辑失败：{0}")]
     Edit(String),
+    #[error(
+        "配置文件在本次操作期间已被其它进程修改，未覆盖：{path}；本次待保存内容已保留到 {preserved}"
+    )]
+    Conflict { path: PathBuf, preserved: PathBuf },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
