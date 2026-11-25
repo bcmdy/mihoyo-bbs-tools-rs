@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     auth::SecretString,
     config::{Config, NotificationProvider},
-    http::{HttpClient, HttpError, HttpErrorCategory, RetryPolicy, classify_http_error},
+    http::{HttpClient, HttpError, HttpErrorCategory, classify_http_error},
     service::RunReport,
 };
 
@@ -357,18 +357,7 @@ fn configured_http(
     config: &Config,
     provider: &NotificationProvider,
 ) -> Result<HttpClient, HttpError> {
-    let builder = HttpClient::builder()
-        .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy::for_extra_retries(
-            config.runtime.retry_count as usize,
-        ));
-    let proxy = match provider {
-        NotificationProvider::Telegram { proxy, .. } => {
-            proxy.as_ref().map(|value| value.expose_secret())
-        }
-        _ => None,
-    };
-    builder.proxy(proxy)?.build()
+    crate::http::factory::for_provider(config, provider)
 }
 
 fn configured_provider(config: &Config, provider: &NotificationProvider) -> Box<dyn Provider> {
@@ -942,6 +931,7 @@ fn redact_http_error(error: HttpError) -> PushError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::RetryPolicy;
     use serde_json::json;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,

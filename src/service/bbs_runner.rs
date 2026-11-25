@@ -1144,15 +1144,17 @@ fn log_unknown_missions(account: &str, summary: &CoinSummary, logged: &mut HashS
 }
 
 fn build_http(config: &Config, account: &AccountConfig) -> Result<HttpClient, &'static str> {
-    let builder = HttpClient::builder()
-        .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy::for_extra_retries(
-            usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
-        ));
-    let builder = builder
-        .proxy(account.proxy.url.as_ref().map(|url| url.expose_secret()))
-        .map_err(|_| "代理配置无效")?;
-    builder.build().map_err(|_| "HTTP 客户端初始化失败")
+    crate::http::factory::for_account(config, account).map_err(|error| safe_build_reason(&error))
+}
+
+/// 把客户端构建失败归类为固定文案，避免把代理地址等连接细节带进任务报告。
+fn safe_build_reason(error: &crate::http::HttpError) -> &'static str {
+    match error {
+        crate::http::HttpError::InvalidProxy(_) | crate::http::HttpError::InvalidUrl(_) => {
+            "代理配置无效"
+        }
+        _ => "HTTP 客户端初始化失败",
+    }
 }
 
 #[derive(Debug)]

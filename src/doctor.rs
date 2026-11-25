@@ -2,7 +2,6 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
-    time::Duration,
 };
 
 use reqwest::{
@@ -14,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     auth::CookieJar,
     config::{self, Config, NotificationProvider},
-    http::{HttpClient, HttpError, RetryPolicy, safe_http_reason},
+    http::{HttpClient, HttpError, safe_http_reason},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -460,12 +459,7 @@ async fn connectivity(client: &HttpClient, url: Url) -> Result<(), HttpError> {
 }
 
 fn client(config: &Config, proxy: Option<&str>) -> Result<HttpClient, HttpError> {
-    HttpClient::builder()
-        .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        // 诊断探测只发送一次，避免与业务重试叠加。
-        .retry(RetryPolicy::with_attempts(1))
-        .proxy(proxy)?
-        .build()
+    crate::http::factory::for_diagnostic(config, proxy)
 }
 
 fn origin(mut url: Url) -> Url {

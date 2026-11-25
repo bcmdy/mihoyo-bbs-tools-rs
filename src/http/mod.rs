@@ -1,5 +1,6 @@
 mod client;
 mod error;
+pub mod factory;
 
 pub use client::{Backoff, HttpClient, HttpClientBuilder, HttpError, RetryPolicy};
 pub use error::{

@@ -9,8 +9,6 @@ use serde_yaml_ng::{Mapping, Value};
 
 use crate::auth::CookieJar;
 #[cfg(not(test))]
-use crate::http::{HttpClient, RetryPolicy};
-#[cfg(not(test))]
 use reqwest::header::{COOKIE, HeaderMap, HeaderValue, USER_AGENT};
 #[cfg(not(test))]
 use serde::Deserialize;
@@ -328,11 +326,7 @@ async fn fetch_nickname(cookie: &str, uid: &str) -> Result<String, ConfigError> 
         HeaderValue::from_str(&crate::mihoyo::user_agent())
             .map_err(|_| ConfigError::Edit("User-Agent 包含无效请求头字符".to_owned()))?,
     );
-    let client = HttpClient::builder()
-        .retry(RetryPolicy::for_extra_retries(
-            RetryPolicy::FIXED_EXTRA_RETRIES,
-        ))
-        .build()
+    let client = crate::http::factory::for_config_lookup()
         .map_err(|_| ConfigError::Edit("昵称查询客户端初始化失败".to_owned()))?;
     let response: ProfileEnvelope = client
         .get_json_with(url, headers, &[])
