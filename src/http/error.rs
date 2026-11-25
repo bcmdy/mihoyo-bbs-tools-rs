@@ -134,6 +134,18 @@ pub fn sanitize_reqwest_error(error: reqwest::Error) -> String {
     redact_url_in_text(&error.without_url().to_string())
 }
 
+/// 把 JSON 语法错误转换为只含位置信息的类别描述。
+///
+/// `serde_json::Error` 的 Display 在类型不匹配时可能回显响应片段，因此这里只保留
+/// 行列定位，丢弃原文内容，同时保证错误仍可诊断。
+pub fn describe_json_error(error: &serde_json::Error) -> String {
+    format!(
+        "JSON 语法错误（第 {} 行第 {} 列）",
+        error.line(),
+        error.column()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

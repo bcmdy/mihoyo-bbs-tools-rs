@@ -1,15 +1,46 @@
 use std::time::Duration;
 
-use reqwest::{Method, Proxy, StatusCode, Url, header::HeaderMap};
+use reqwest::{
+    Method, Proxy, StatusCode, Url,
+    header::{HeaderMap, RETRY_AFTER},
+};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
-use super::error::{describe_proxy, sanitize_reqwest_error};
+use super::error::{describe_json_error, describe_proxy, sanitize_reqwest_error};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
     pub attempts: usize,
     pub base_delay: Duration,
+}
+
+impl RetryPolicy {
+    /// 由文档语义的“额外重试次数”构造策略：`attempts = extra + 1`。
+    ///
+    /// `runtime.retry_count` 定义为额外重试次数（`0` 表示不额外重试），而 HTTP 层
+    /// 配置的是**总尝试次数**。所有消费点都必须经本构造函数换算，避免同一配置在
+    /// 游戏签到、BBS 与推送鉴权之间含义不同。
+    pub const fn for_extra_retries(extra: usize) -> Self {
+        Self {
+            attempts: extra.saturating_add(1),
+            base_delay: Duration::from_millis(500),
+        }
+    }
+
+    /// 显式指定总尝试次数，基座延迟沿用默认值。
+    pub const fn with_attempts(attempts: usize) -> Self {
+        Self {
+            attempts,
+            base_delay: Duration::from_millis(500),
+        }
+    }
+
+    /// 无配置上下文时沿用的固定“额外重试次数”。
+    ///
+    /// 等于历史默认的总尝试 3 次（首次 + 额外 2 次）。`update` 与昵称查询不读取
+    /// 用户配置，通过该常量走统一构造函数，保证“额外重试”语义一致且行为不变。
+    pub const FIXED_EXTRA_RETRIES: usize = 2;
 }
 
 impl Default for RetryPolicy {
@@ -17,6 +48,30 @@ impl Default for RetryPolicy {
         Self {
             attempts: 3,
             base_delay: Duration::from_millis(500),
+        }
+    }
+}
+
+/// 只读请求的重试退避参数。
+///
+/// 与服务端 `Retry-After` 提示、抖动和整次调用的等待预算配合，避免 429/503 时
+/// 盲目重试或长时间阻塞。默认值保证既有的尝试次数语义不变。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Backoff {
+    /// 单次重试等待的上限，服务器 `Retry-After` 也会被裁剪到这个值。
+    pub max_retry_after: Duration,
+    /// 一次调用累计允许的等待预算，耗尽后不再重试。
+    pub max_total_delay: Duration,
+    /// 是否给等待加入抖动，避免多实例同时重试。
+    pub jitter: bool,
+}
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self {
+            max_retry_after: Duration::from_secs(10),
+            max_total_delay: Duration::from_secs(30),
+            jitter: true,
         }
     }
 }
@@ -43,6 +98,7 @@ pub enum HttpError {
 pub struct HttpClient {
     inner: reqwest::Client,
     retry: RetryPolicy,
+    backoff: Backoff,
 }
 
 /// 手写 Debug：不打印 reqwest 客户端内部配置（其 Debug 会输出代理规则），只暴露重试策略。
@@ -51,6 +107,7 @@ impl std::fmt::Debug for HttpClient {
         formatter
             .debug_struct("HttpClient")
             .field("retry", &self.retry)
+            .field("backoff", &self.backoff)
             .finish_non_exhaustive()
     }
 }
@@ -59,6 +116,7 @@ impl std::fmt::Debug for HttpClient {
 pub struct HttpClientBuilder {
     timeout: Duration,
     retry: RetryPolicy,
+    backoff: Backoff,
     proxy: Option<Url>,
     user_agent: String,
 }
@@ -70,6 +128,7 @@ impl std::fmt::Debug for HttpClientBuilder {
             .debug_struct("HttpClientBuilder")
             .field("timeout", &self.timeout)
             .field("retry", &self.retry)
+            .field("backoff", &self.backoff)
             .field("proxy", &self.proxy.as_ref().map(describe_proxy))
             .field("user_agent", &self.user_agent)
             .finish()
@@ -81,6 +140,7 @@ impl Default for HttpClientBuilder {
         Self {
             timeout: Duration::from_secs(30),
             retry: RetryPolicy::default(),
+            backoff: Backoff::default(),
             proxy: None,
             user_agent: format!("MihoyoBBSToolsRS/{}", crate::VERSION),
         }
@@ -95,6 +155,12 @@ impl HttpClientBuilder {
 
     pub fn retry(mut self, retry: RetryPolicy) -> Self {
         self.retry = retry;
+        self
+    }
+
+    /// 覆盖只读请求的退避参数（`Retry-After` 上限、总等待预算与抖动）。
+    pub fn backoff(mut self, backoff: Backoff) -> Self {
+        self.backoff = backoff;
         self
     }
 
@@ -121,6 +187,7 @@ impl HttpClientBuilder {
         Ok(HttpClient {
             inner,
             retry: self.retry,
+            backoff: self.backoff,
         })
     }
 }
@@ -133,6 +200,20 @@ impl HttpClient {
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
         self.retry = retry;
         self
+    }
+
+    /// 覆盖只读请求的退避参数。
+    pub fn with_backoff(mut self, backoff: Backoff) -> Self {
+        self.backoff = backoff;
+        self
+    }
+
+    pub fn retry_policy(&self) -> RetryPolicy {
+        self.retry
+    }
+
+    pub fn backoff(&self) -> Backoff {
+        self.backoff
     }
 
     pub async fn get_json<T>(&self, url: Url) -> Result<T, HttpError>
@@ -152,8 +233,10 @@ impl HttpClient {
         T: DeserializeOwned,
     {
         let attempts = self.retry.attempts.max(1);
+        let mut spent_delay = Duration::ZERO;
         for attempt in 0..attempts {
-            match self
+            let last_attempt = attempt + 1 >= attempts;
+            let decision = match self
                 .inner
                 .request(Method::GET, url.clone())
                 .headers(headers.clone())
@@ -162,19 +245,60 @@ impl HttpClient {
                 .await
             {
                 Ok(response) if response.status().is_success() => {
-                    return response
-                        .json()
-                        .await
-                        .map_err(|error| HttpError::Decode(sanitize_reqwest_error(error)));
+                    match response.bytes().await {
+                        Ok(body) => {
+                            // JSON 语法错误不重试：重试无法修复服务端返回的内容。
+                            return serde_json::from_slice(&body)
+                                .map_err(|error| HttpError::Decode(describe_json_error(&error)));
+                        }
+                        Err(error) => {
+                            match body_failure_action(classify_body_failure(&error), last_attempt) {
+                                BodyFailureAction::Retry => {
+                                    // 响应头成功但响应体读取超时属于只读请求的可重试失败，
+                                    // 预算耗尽后仍保留 Timeout 分类。
+                                    RetryDecision::wait(HttpError::Timeout)
+                                }
+                                BodyFailureAction::ReturnTimeout => {
+                                    return Err(HttpError::Timeout);
+                                }
+                                // 传输中断等 body 错误按解码失败保留（非语法错误，不重试）。
+                                BodyFailureAction::ReturnDecode => {
+                                    return Err(HttpError::Decode(sanitize_reqwest_error(error)));
+                                }
+                            }
+                        }
+                    }
                 }
-                Ok(response)
-                    if should_retry_status(response.status()) && attempt + 1 < attempts => {}
+                Ok(response) if should_retry_status(response.status()) && !last_attempt => {
+                    RetryDecision {
+                        hint: retry_after_hint(response.headers(), self.backoff.max_retry_after),
+                        exhausted: HttpError::Status(response.status()),
+                    }
+                }
                 Ok(response) => return Err(HttpError::Status(response.status())),
-                Err(error) if is_retryable(&error) && attempt + 1 < attempts => {}
+                Err(error) if is_retryable(&error) && !last_attempt => {
+                    let exhausted = if error.is_timeout() {
+                        HttpError::Timeout
+                    } else {
+                        HttpError::Connect(sanitize_reqwest_error(error))
+                    };
+                    RetryDecision::wait(exhausted)
+                }
                 Err(error) if error.is_timeout() => return Err(HttpError::Timeout),
                 Err(error) => return Err(HttpError::Connect(sanitize_reqwest_error(error))),
+            };
+            let delay = retry_delay(
+                self.retry.base_delay,
+                attempt,
+                decision.hint,
+                self.backoff.jitter,
+            );
+            // 预算耗尽后不再等待，也不再发送额外请求；按真实失败类别返回。
+            if !fits_budget(spent_delay, delay, self.backoff.max_total_delay) {
+                return Err(decision.exhausted);
             }
-            tokio::time::sleep(self.retry.base_delay * (attempt as u32 + 1)).await;
+            spent_delay += delay;
+            tokio::time::sleep(delay).await;
         }
         Err(HttpError::Connect("重试次数已耗尽".to_owned()))
     }
@@ -355,10 +479,108 @@ fn normalize_proxy_url(raw: &str) -> Result<Url, HttpError> {
     }
 }
 
+/// 响应体读取失败的类别。
+///
+/// 读取超时与 JSON 语法错误必须区别对待：前者是只读请求可重试的传输问题，后者重试无意义。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BodyFailure {
+    /// 读取超时（可重试）。
+    ReadTimeout,
+    /// 传输中断等其它 body 错误（不重试，按解码失败返回）。
+    Transport,
+}
+
+/// 本次 body 失败后的处理动作。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BodyFailureAction {
+    Retry,
+    ReturnTimeout,
+    ReturnDecode,
+}
+
+/// 一次失败后是否继续重试，以及预算耗尽时应返回的类别。
+struct RetryDecision {
+    /// 服务端提示的等待时长（已裁剪），`None` 表示按线性退避。
+    hint: Option<Duration>,
+    /// 重试预算耗尽时返回的真实失败类别。
+    exhausted: HttpError,
+}
+
+impl RetryDecision {
+    fn wait(exhausted: HttpError) -> Self {
+        Self {
+            hint: None,
+            exhausted,
+        }
+    }
+}
+
+fn classify_body_failure(error: &reqwest::Error) -> BodyFailure {
+    if error.is_timeout() {
+        BodyFailure::ReadTimeout
+    } else {
+        BodyFailure::Transport
+    }
+}
+
+fn body_failure_action(failure: BodyFailure, last_attempt: bool) -> BodyFailureAction {
+    match failure {
+        // 传输中断与 JSON 语法错误都不重试，统一按解码失败返回。
+        BodyFailure::Transport => BodyFailureAction::ReturnDecode,
+        BodyFailure::ReadTimeout => {
+            if last_attempt {
+                BodyFailureAction::ReturnTimeout
+            } else {
+                BodyFailureAction::Retry
+            }
+        }
+    }
+}
+
 fn should_retry_status(status: StatusCode) -> bool {
     status == StatusCode::REQUEST_TIMEOUT
         || status == StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error()
+}
+
+/// 解析 `Retry-After` 并裁剪到本地上限。
+///
+/// 只接受秒数形式；HTTP 日期形式需要额外的时间解析，这里保守忽略，避免误算长时间等待。
+fn retry_after_hint(headers: &HeaderMap, max_retry_after: Duration) -> Option<Duration> {
+    let raw = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    let seconds: u64 = raw.parse().ok()?;
+    Some(Duration::from_secs(seconds).min(max_retry_after))
+}
+
+/// 计算本次重试的等待时长：优先服从 `Retry-After`，否则线性退避；可选抖动。
+fn retry_delay(
+    base_delay: Duration,
+    attempt: usize,
+    retry_after: Option<Duration>,
+    jitter: bool,
+) -> Duration {
+    let expected = retry_after.unwrap_or_else(|| base_delay * (attempt as u32 + 1));
+    if !jitter || expected.is_zero() {
+        return expected;
+    }
+    // 抖动范围 [50%, 100%]：可确定性地缩短等待，不会超过服务器提示或预算。
+    let half = expected / 2u32;
+    half + random_fraction(half)
+}
+
+/// 以时间纳秒做简单的伪随机抖动，避免引入额外随机数依赖。
+fn random_fraction(span: Duration) -> Duration {
+    let nanos = span.as_nanos().max(1) as u64;
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.subsec_nanos() as u64)
+        .unwrap_or(0);
+    Duration::from_nanos(seed % nanos)
+}
+
+/// 判断再等一次是否会超出整次调用的等待预算。
+fn fits_budget(spent: Duration, next: Duration, max_total: Duration) -> bool {
+    spent.saturating_add(next) <= max_total
 }
 
 fn is_retryable(error: &reqwest::Error) -> bool {
@@ -368,6 +590,7 @@ fn is_retryable(error: &reqwest::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::header::HeaderValue;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
@@ -482,5 +705,449 @@ mod tests {
         assert!(display.contains("响应 JSON 无效"));
         assert!(!display.contains("secret-token-value"));
         assert!(!display.contains("query-secret-token"));
+    }
+
+    #[test]
+    fn for_extra_retries_maps_documented_semantics_to_attempts() {
+        // 文档定义 runtime.retry_count 为“额外重试次数”，0 表示只请求一次。
+        assert_eq!(RetryPolicy::for_extra_retries(0).attempts, 1);
+        assert_eq!(RetryPolicy::for_extra_retries(1).attempts, 2);
+        assert_eq!(RetryPolicy::for_extra_retries(3).attempts, 4);
+        assert_eq!(
+            RetryPolicy::for_extra_retries(0).base_delay.as_millis(),
+            500
+        );
+        // 极端值饱和而不是溢出。
+        assert_eq!(
+            RetryPolicy::for_extra_retries(usize::MAX).attempts,
+            usize::MAX
+        );
+        assert_eq!(RetryPolicy::with_attempts(1).attempts, 1);
+        assert_eq!(
+            RetryPolicy::for_extra_retries(RetryPolicy::FIXED_EXTRA_RETRIES).attempts,
+            3
+        );
+    }
+
+    /// 统计服务端实际收到的请求次数。
+    async fn count_attempts(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .map(|requests| requests.len())
+            .unwrap_or_default()
+    }
+
+    async fn count_requests_with_retryable_failures(extra_retries: usize) -> usize {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/always-500"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: RetryPolicy::for_extra_retries(extra_retries).attempts,
+                base_delay: Duration::ZERO,
+            })
+            .backoff(Backoff {
+                max_retry_after: Duration::from_secs(1),
+                max_total_delay: Duration::from_secs(5),
+                jitter: false,
+            })
+            .build()
+            .unwrap();
+
+        let result = client
+            .get_json::<serde_json::Value>(
+                Url::parse(&format!("{}/always-500", server.uri())).unwrap(),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(HttpError::Status(StatusCode::INTERNAL_SERVER_ERROR))
+        ));
+        count_attempts(&server).await
+    }
+
+    #[tokio::test]
+    async fn extra_retries_zero_sends_one_request() {
+        assert_eq!(count_requests_with_retryable_failures(0).await, 1);
+    }
+
+    #[tokio::test]
+    async fn extra_retries_one_sends_two_requests() {
+        assert_eq!(count_requests_with_retryable_failures(1).await, 2);
+    }
+
+    #[tokio::test]
+    async fn extra_retries_three_sends_four_requests() {
+        assert_eq!(count_requests_with_retryable_failures(3).await, 4);
+    }
+
+    #[tokio::test]
+    async fn success_ends_retry_loop_immediately() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        Mock::given(method("GET"))
+            .and(path("/flaky"))
+            .respond_with(move |_: &wiremock::Request| {
+                if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(503)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({ "ok": true }))
+                }
+            })
+            .mount(&server)
+            .await;
+        let client = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: RetryPolicy::for_extra_retries(3).attempts,
+                base_delay: Duration::ZERO,
+            })
+            .backoff(Backoff {
+                max_retry_after: Duration::from_secs(1),
+                max_total_delay: Duration::from_secs(5),
+                jitter: false,
+            })
+            .build()
+            .unwrap();
+
+        let value = client
+            .get_json::<serde_json::Value>(Url::parse(&format!("{}/flaky", server.uri())).unwrap())
+            .await
+            .unwrap();
+        assert!(value["ok"].as_bool().unwrap_or_default());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn non_retryable_status_ends_immediately() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/missing"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: RetryPolicy::for_extra_retries(3).attempts,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+
+        let result = client
+            .get_json::<serde_json::Value>(
+                Url::parse(&format!("{}/missing", server.uri())).unwrap(),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(HttpError::Status(StatusCode::NOT_FOUND))
+        ));
+    }
+
+    #[tokio::test]
+    async fn side_effect_requests_ignore_extra_retry_configuration() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/once-get"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/once-post"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: RetryPolicy::for_extra_retries(3).attempts,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+
+        let get_result = client
+            .get_json_once_with::<serde_json::Value>(
+                Url::parse(&format!("{}/once-get", server.uri())).unwrap(),
+                HeaderMap::new(),
+                &[],
+            )
+            .await;
+        assert!(get_result.is_err());
+        let post_result = client
+            .post_json_once_without_response(
+                Url::parse(&format!("{}/once-post", server.uri())).unwrap(),
+                HeaderMap::new(),
+                &serde_json::json!({ "value": 1 }),
+            )
+            .await;
+        assert!(post_result.is_err());
+    }
+
+    #[test]
+    fn retry_after_hint_is_capped_by_local_limit() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("120"));
+        assert_eq!(
+            retry_after_hint(&headers, Duration::from_secs(10)),
+            Some(Duration::from_secs(10))
+        );
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("2"));
+        assert_eq!(
+            retry_after_hint(&headers, Duration::from_secs(10)),
+            Some(Duration::from_secs(2))
+        );
+        let mut invalid = HeaderMap::new();
+        invalid.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
+        assert_eq!(retry_after_hint(&invalid, Duration::from_secs(10)), None);
+    }
+
+    #[test]
+    fn retry_delay_prefers_retry_after_then_linear_backoff() {
+        let base = Duration::from_millis(500);
+        assert_eq!(
+            retry_delay(base, 0, Some(Duration::from_secs(3)), false),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            retry_delay(base, 0, None, false),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            retry_delay(base, 2, None, false),
+            Duration::from_millis(1500)
+        );
+        // 抖动落在 [50%, 100%]，不会超过原始等待。
+        for attempt in 0..4 {
+            let delay = retry_delay(base, attempt, None, true);
+            let upper = base * (attempt as u32 + 1);
+            assert!(delay <= upper, "抖动超过上限：{delay:?} > {upper:?}");
+            assert!(delay >= upper / 2, "抖动低于下限：{delay:?}");
+        }
+    }
+
+    #[test]
+    fn retry_budget_limits_total_wait() {
+        let budget = Duration::from_secs(1);
+        assert!(fits_budget(
+            Duration::ZERO,
+            Duration::from_millis(400),
+            budget
+        ));
+        assert!(fits_budget(
+            Duration::from_millis(600),
+            Duration::from_millis(400),
+            budget
+        ));
+        assert!(!fits_budget(
+            Duration::from_millis(600),
+            Duration::from_millis(401),
+            budget
+        ));
+        assert!(!fits_budget(Duration::ZERO, Duration::from_secs(2), budget));
+    }
+
+    #[test]
+    fn body_failure_classification_separates_timeout_from_transport() {
+        assert_eq!(
+            body_failure_action(BodyFailure::ReadTimeout, false),
+            BodyFailureAction::Retry
+        );
+        assert_eq!(
+            body_failure_action(BodyFailure::ReadTimeout, true),
+            BodyFailureAction::ReturnTimeout
+        );
+        // 传输中断不重试，避免与只读重试策略混淆。
+        assert_eq!(
+            body_failure_action(BodyFailure::Transport, false),
+            BodyFailureAction::ReturnDecode
+        );
+        assert_eq!(
+            body_failure_action(BodyFailure::Transport, true),
+            BodyFailureAction::ReturnDecode
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_is_honored_and_capped_for_429() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        Mock::given(method("GET"))
+            .and(path("/limited"))
+            .respond_with(move |_: &wiremock::Request| {
+                let index = counter.fetch_add(1, Ordering::SeqCst);
+                if index == 0 {
+                    ResponseTemplate::new(429).insert_header("Retry-After", "0")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({ "ok": true }))
+                }
+            })
+            .mount(&server)
+            .await;
+        let client = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 2,
+                base_delay: Duration::ZERO,
+            })
+            .backoff(Backoff {
+                max_retry_after: Duration::from_secs(1),
+                max_total_delay: Duration::from_secs(5),
+                jitter: false,
+            })
+            .build()
+            .unwrap();
+
+        let value: serde_json::Value = client
+            .get_json(Url::parse(&format!("{}/limited", server.uri())).unwrap())
+            .await
+            .unwrap();
+        assert!(value["ok"].as_bool().unwrap_or_default());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn inline_json_syntax_error_is_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/bad-json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{ not json "))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 3,
+                base_delay: Duration::ZERO,
+            })
+            .build()
+            .unwrap();
+
+        let result = client
+            .get_json::<serde_json::Value>(
+                Url::parse(&format!("{}/bad-json", server.uri())).unwrap(),
+            )
+            .await;
+        let HttpError::Decode(message) = result.unwrap_err() else {
+            panic!("预期解码错误");
+        };
+        assert!(message.contains("JSON 语法错误"));
+        assert!(message.contains("行"));
+    }
+
+    #[tokio::test]
+    async fn read_only_timeout_is_retried_and_keeps_timeout_classification() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        // 服务端响应慢于客户端超时上限：只读路径按策略重试，耗尽后保留 Timeout 分类。
+        Mock::given(method("GET"))
+            .and(path("/slow-body"))
+            .respond_with(move |_: &wiremock::Request| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(300))
+                    .set_body_json(serde_json::json!({ "ok": true }))
+            })
+            .mount(&server)
+            .await;
+        let client = HttpClient::builder()
+            .timeout(Duration::from_millis(60))
+            .retry(RetryPolicy {
+                attempts: 2,
+                base_delay: Duration::ZERO,
+            })
+            .backoff(Backoff {
+                max_retry_after: Duration::from_secs(1),
+                max_total_delay: Duration::from_secs(5),
+                jitter: false,
+            })
+            .build()
+            .unwrap();
+
+        let result = client
+            .get_json::<serde_json::Value>(
+                Url::parse(&format!("{}/slow-body", server.uri())).unwrap(),
+            )
+            .await;
+        assert!(matches!(result, Err(HttpError::Timeout)));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn side_effect_paths_stay_single_attempt_with_backoff_configured() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/side-effect"))
+            .respond_with(ResponseTemplate::new(503).insert_header("Retry-After", "0"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/side-effect-post"))
+            .respond_with(ResponseTemplate::new(503).insert_header("Retry-After", "0"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = HttpClient::builder()
+            .retry(RetryPolicy {
+                attempts: 4,
+                base_delay: Duration::ZERO,
+            })
+            .backoff(Backoff {
+                max_retry_after: Duration::from_secs(1),
+                max_total_delay: Duration::from_secs(5),
+                jitter: false,
+            })
+            .build()
+            .unwrap();
+
+        let get_result = client
+            .get_json_once_with::<serde_json::Value>(
+                Url::parse(&format!("{}/side-effect", server.uri())).unwrap(),
+                HeaderMap::new(),
+                &[],
+            )
+            .await;
+        assert!(matches!(
+            get_result,
+            Err(HttpError::Status(StatusCode::SERVICE_UNAVAILABLE))
+        ));
+        let post_result = client
+            .post_json_once_without_response(
+                Url::parse(&format!("{}/side-effect-post", server.uri())).unwrap(),
+                HeaderMap::new(),
+                &serde_json::json!({ "value": 1 }),
+            )
+            .await;
+        assert!(matches!(
+            post_result,
+            Err(HttpError::Status(StatusCode::SERVICE_UNAVAILABLE))
+        ));
     }
 }
