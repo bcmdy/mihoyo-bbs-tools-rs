@@ -6,3 +6,10 @@ config/*.yaml
 !config/*.example.yaml
 *.log
 
+# 配置备份与临时文件可能包含明文凭据：默认配置目录一律忽略。
+# 注意：该规则只覆盖仓库内的默认目录；使用 -c 指定其它配置目录时需自行保护。
+config/backups/
+config/*.session
+config/*.backup
+config/*.editing
+config/*.tmp

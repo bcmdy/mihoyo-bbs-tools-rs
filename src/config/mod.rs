@@ -805,6 +805,10 @@ fn default_wecom_to_user() -> String {
 }
 
 pub fn load(path: &Path) -> Result<LoadedConfig, ConfigError> {
+    // 启动兜底：release 使用 panic = "abort"，Drop 不会执行，异常退出可能留下
+    // 含凭据的 `.session`/`.editing`/`.backup` 中间文件。这里按配置路径做一次性清理，
+    // 失败只记 warn，不影响配置加载本身。
+    editor::cleanup_stale_files_once(path);
     load_with_mode(path, false)
 }
 

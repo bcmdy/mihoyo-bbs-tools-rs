@@ -1338,9 +1338,267 @@ fn write_error(path: &Path, source: std::io::Error) -> ConfigError {
     }
 }
 
+// ===== 陈旧临时文件清理（启动兜底） =====
+//
+// 配置编辑会产生三类含凭据的中间文件，命名均为「配置文件名.PID[.纳秒].后缀」：
+//
+// - `config.yaml.<pid>.<nanos>.session`：编辑会话的受控副本（EditSession::begin）；
+// - `config.yaml.<pid>.editing`：`config edit` 交给外部编辑器的副本（temporary_path）；
+// - `config.yaml.<pid>.backup`：替换过程中旧文件的瞬时暂存（replace_validated_inner）。
+//
+// 正常路径会删除它们，但 release 使用 `panic = "abort"`、Drop 不会执行，
+// 因此需要启动兜底。这里只删除**严格匹配**上述命名、且文件名中 PID 已不属于
+// 存活进程的普通文件；解析失败、前缀不符、目录与符号链接一律不动。
+
+/// 陈旧中间文件的类型，仅用于日志说明。
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum StaleKind {
+    Session,
+    Editing,
+    Backup,
+}
+
+impl StaleKind {
+    const fn suffix(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Editing => "editing",
+            Self::Backup => "backup",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Session => "会话副本",
+            Self::Editing => "编辑器副本",
+            Self::Backup => "替换暂存",
+        }
+    }
+}
+
+const STALE_KINDS: [StaleKind; 3] = [StaleKind::Session, StaleKind::Editing, StaleKind::Backup];
+
+/// 解析文件名是否严格匹配「前缀.PID[.纳秒].后缀」，匹配时返回 PID。
+///
+/// 只有 `.session` 允许出现纳秒时间戳中间段；`.editing` 与 `.backup` 必须紧接 PID。
+fn parse_stale_candidate(file_name: &str, prefix: &str, expected: StaleKind) -> Option<u32> {
+    let rest = file_name.strip_prefix(prefix)?.strip_prefix('.')?;
+    let segments = rest.split('.').collect::<Vec<_>>();
+    if segments.len() < 2 || segments.len() > 3 {
+        return None;
+    }
+    let pid_part = segments[0];
+    if pid_part.is_empty() || !pid_part.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let suffix = segments[segments.len() - 1];
+    if !suffix.eq_ignore_ascii_case(expected.suffix()) {
+        return None;
+    }
+    if segments.len() == 3 {
+        // 中间段只允许会话副本的纳秒时间戳，且必须全为数字。
+        if expected != StaleKind::Session {
+            return None;
+        }
+        let stamp = segments[1];
+        if stamp.is_empty() || !stamp.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+    }
+    pid_part.parse::<u32>().ok()
+}
+
+/// 判断 PID 是否仍属于存活进程。
+///
+/// PID 0 与 1 视为系统占位一律不删；查询失败按「存活」处理，宁可留下文件也不误删。
+fn pid_is_alive(pid: u32) -> bool {
+    if pid <= 1 {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        pid_alive_windows(pid)
+    }
+    #[cfg(unix)]
+    {
+        pid_alive_unix(pid)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        true
+    }
+}
+
+#[cfg(unix)]
+fn pid_alive_unix(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return true;
+    };
+    // SAFETY: kill(pid, 0) 只探测进程是否存在与是否有权限，不解引用任何指针。
+    let result = unsafe { libc::kill(pid, 0) };
+    if result == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn pid_alive_windows(pid: u32) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, WAIT_OBJECT_0},
+        System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+            WaitForSingleObject,
+        },
+    };
+
+    // SAFETY: OpenProcess 只读取 PID，不写入调用方指针；返回句柄由下方 CloseHandle 释放。
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    };
+    if handle.is_null() {
+        // ERROR_INVALID_PARAMETER 表示该 PID 不存在；其它错误（如权限不足）保守视为存活。
+        // SAFETY: GetLastError 只读取当前线程的错误码。
+        let error = unsafe { GetLastError() };
+        return error != ERROR_INVALID_PARAMETER;
+    }
+    // SAFETY: handle 来自 OpenProcess 且非空；0 毫秒表示立即返回。
+    let wait = unsafe { WaitForSingleObject(handle, 0) };
+    // SAFETY: handle 只在本函数内使用，关闭一次即可。
+    unsafe {
+        CloseHandle(handle);
+    }
+    // WAIT_OBJECT_0 表示进程已退出；WAIT_TIMEOUT 或 WAIT_FAILED 都按存活处理。
+    wait != WAIT_OBJECT_0
+}
+
+/// 扫描配置文件的父目录，返回符合本程序命名规则且 `is_alive` 判定为已退出的文件。
+///
+/// 该函数不修改文件系统；是否删除由调用方决定。
+fn stale_temporary_files(
+    path: &Path,
+    is_alive: impl Fn(u32) -> bool,
+) -> Vec<(PathBuf, u32, StaleKind)> {
+    let Some(parent) = path.parent() else {
+        return Vec::new();
+    };
+    // 中间文件由 `Path::with_extension` 生成，文件名恒为 `<stem>.yaml.<pid>...`。
+    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+        return Vec::new();
+    };
+    if stem.is_empty() {
+        return Vec::new();
+    }
+    let prefix = format!("{stem}.yaml");
+    let directory = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let candidate = entry.path();
+        // 只处理普通文件：目录与符号链接一律跳过，避免越界删除。
+        let Ok(metadata) = fs::symlink_metadata(&candidate) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        if candidate.as_path() == path {
+            continue;
+        }
+        let Some(file_name) = candidate.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Some((pid, kind)) = STALE_KINDS.iter().find_map(|kind| {
+            parse_stale_candidate(file_name, &prefix, *kind).map(|pid| (pid, *kind))
+        }) else {
+            continue;
+        };
+        if is_alive(pid) {
+            continue;
+        }
+        found.push((candidate, pid, kind));
+    }
+    found.sort();
+    found
+}
+
+/// 启动兜底：清理同目录下 PID 已退出的陈旧中间文件，返回删除数量。
+///
+/// 任何失败只记录 warn，不影响主流程；日志只含路径、PID 与错误文本，不含文件内容。
+fn cleanup_stale_files(path: &Path) -> usize {
+    cleanup_stale_files_with(path, pid_is_alive)
+}
+
+/// [`cleanup_stale_files`] 的可注入版本，`is_alive` 决定某个 PID 是否仍存活。
+fn cleanup_stale_files_with(path: &Path, is_alive: impl Fn(u32) -> bool) -> usize {
+    let mut removed = 0;
+    for (candidate, pid, kind) in stale_temporary_files(path, is_alive) {
+        match fs::remove_file(&candidate) {
+            Ok(()) => {
+                removed += 1;
+                tracing::warn!(
+                    path = %candidate.display(),
+                    pid,
+                    "已清理上次异常退出遗留的{}临时文件",
+                    kind.label()
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    path = %candidate.display(),
+                    error = %error,
+                    "无法清理遗留的{}临时文件，请手动确认该文件是否含凭据",
+                    kind.label()
+                );
+            }
+        }
+    }
+    removed
+}
+
+/// 进程内只执行一次启动清理，供配置加载入口调用。
+///
+/// 用 `OnceLock` 而不是每轮都扫描：清理属于启动兜底，重复扫描只增加目录 IO。
+pub(super) fn cleanup_stale_files_once(path: &Path) {
+    use std::{
+        collections::HashSet,
+        sync::{Mutex, OnceLock},
+    };
+
+    static CLEANED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let cleaned = CLEANED.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut cleaned) = cleaned.lock() else {
+        // 锁中毒说明其它线程 panic；此处不影响主流程，直接放弃清理。
+        return;
+    };
+    if !cleaned.insert(path.to_path_buf()) {
+        return;
+    }
+    drop(cleaned);
+    cleanup_stale_files(path);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 找到一个当前未使用的 PID，用于模拟异常退出遗留文件。
+    fn unused_pid() -> Option<u32> {
+        // 候选范围避开低段 PID（系统进程）且落在 pid_t 的正数范围内。
+        (100_000u32..200_000)
+            .chain(2_000_000u32..2_050_000)
+            .find(|pid| !pid_is_alive(*pid))
+    }
 
     #[tokio::test]
     async fn add_account_creates_missing_parent_and_valid_config() {
@@ -1644,5 +1902,164 @@ mod tests {
         let written = fs::read_to_string(path).unwrap();
         assert!(written.contains("${MIHOYO_COOKIE}"));
         assert!(!written.contains("refreshed-secret"));
+    }
+
+    #[test]
+    fn stale_candidate_parser_accepts_only_program_names() {
+        let cases = [
+            (
+                "config.yaml.4242.1700000000000000000.session",
+                StaleKind::Session,
+                Some(4242),
+            ),
+            ("config.yaml.4242.session", StaleKind::Session, Some(4242)),
+            ("config.yaml.4242.editing", StaleKind::Editing, Some(4242)),
+            ("config.yaml.4242.backup", StaleKind::Backup, Some(4242)),
+            // 后缀与类型必须对应。
+            ("config.yaml.4242.editing", StaleKind::Session, None),
+            ("config.yaml.4242.backup", StaleKind::Editing, None),
+            // 非数字 PID、缺失 PID、多余段、其它前缀都不匹配。
+            ("config.yaml.pid.backup", StaleKind::Backup, None),
+            ("config.yaml.backup", StaleKind::Backup, None),
+            ("config.yaml.4242.1.backup", StaleKind::Backup, None),
+            ("other.yaml.4242.backup", StaleKind::Backup, None),
+            ("config.yaml.4242.backup.1", StaleKind::Backup, None),
+            ("config.yaml.4242.conflict.yaml", StaleKind::Backup, None),
+            // 中间段只允许出现在会话副本里，而且必须是数字。
+            ("config.yaml.4242.abc.session", StaleKind::Session, None),
+            (
+                "config.yaml.4242.1700000000000000000.backup",
+                StaleKind::Backup,
+                None,
+            ),
+        ];
+        for (file_name, kind, expected) in cases {
+            assert_eq!(
+                parse_stale_candidate(file_name, "config.yaml", kind),
+                expected,
+                "文件名 {file_name} 类型 {kind:?}"
+            );
+        }
+        // PID 超出 u32 范围时不匹配。
+        assert_eq!(
+            parse_stale_candidate(
+                "config.yaml.4294967296.backup",
+                "config.yaml",
+                StaleKind::Backup
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_scan_keeps_files_owned_by_live_pid() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        fs::write(&path, "version: 1\n").unwrap();
+        let live = temp.path().join("config.yaml.42.editing");
+        let dead = temp.path().join("config.yaml.43.editing");
+        fs::write(&live, "live").unwrap();
+        fs::write(&dead, "dead").unwrap();
+
+        let found = stale_temporary_files(&path, |pid| pid == 42);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, dead);
+        assert_eq!(found[0].1, 43);
+        assert_eq!(found[0].2, StaleKind::Editing);
+    }
+
+    #[test]
+    fn stale_scan_skips_other_prefixes_and_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        fs::write(&path, "version: 1\n").unwrap();
+        let decoys = [
+            "other.yaml.99.backup",
+            "config.yaml.backup",
+            "config.yaml.99.yaml",
+            "config.yaml.99.conflict.yaml",
+            "config.yaml.99.session.tmp",
+        ];
+        for name in decoys {
+            fs::write(temp.path().join(name), "keep").unwrap();
+        }
+        fs::create_dir(temp.path().join("config.yaml.99.editing")).unwrap();
+
+        let found = stale_temporary_files(&path, |_| false);
+        assert!(
+            found.is_empty(),
+            "不应把非本程序命名的文件当作陈旧文件：{found:?}"
+        );
+        for name in decoys {
+            assert!(temp.path().join(name).exists(), "{name} 不应被清理");
+        }
+        assert!(temp.path().join("config.yaml.99.editing").is_dir());
+    }
+
+    #[test]
+    fn cleanup_stale_files_removes_only_dead_pid_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        fs::write(&path, "version: 1\n").unwrap();
+        let stale = [
+            "config.yaml.7.1700000000000000000.session",
+            "config.yaml.7.backup",
+            "config.yaml.7.editing",
+        ];
+        for name in &stale {
+            fs::write(temp.path().join(name), "secret-cookie").unwrap();
+        }
+        let live = temp
+            .path()
+            .join(format!("config.yaml.{}.editing", std::process::id()));
+        fs::write(&live, "secret-cookie").unwrap();
+
+        // 注入「只有当前进程存活」的判定，避免依赖测试机上的 PID 分配情况。
+        let removed = cleanup_stale_files_with(&path, |pid| pid == std::process::id());
+        assert_eq!(removed, stale.len());
+        for name in &stale {
+            assert!(!temp.path().join(name).exists(), "{name} 应被清理");
+        }
+        assert!(live.exists(), "存活进程的临时文件不能被删除");
+        assert!(path.exists(), "目标配置不能被删除");
+    }
+
+    #[test]
+    fn pid_liveness_treats_current_process_and_placeholders_as_alive() {
+        assert!(pid_is_alive(std::process::id()));
+        assert!(pid_is_alive(0));
+        assert!(pid_is_alive(1));
+        // 未使用的 PID 至少有一个可以被找到；找不到说明环境异常，直接失败更有价值。
+        assert!(
+            unused_pid().is_some(),
+            "未能找到未使用的 PID，无法验证死进程判定"
+        );
+    }
+
+    #[test]
+    fn cleanup_stale_files_ignores_missing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("missing/config.yaml");
+        assert_eq!(cleanup_stale_files(&path), 0);
+    }
+
+    #[test]
+    fn stale_cleanup_runs_once_per_config_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.yaml");
+        fs::write(&path, "version: 1\n").unwrap();
+        let Some(dead_pid) = unused_pid() else {
+            return;
+        };
+        let stale = temp.path().join(format!("config.yaml.{dead_pid}.backup"));
+        fs::write(&stale, "secret-cookie").unwrap();
+
+        cleanup_stale_files_once(&path);
+        assert!(!stale.exists(), "首次调用应清理陈旧文件");
+        // 同一路径同一进程只清理一次：再次调用不应重复扫描。
+        fs::write(&stale, "secret-cookie").unwrap();
+        cleanup_stale_files_once(&path);
+        assert!(stale.exists(), "同一路径同一进程只清理一次");
+        fs::remove_file(&stale).unwrap();
     }
 }

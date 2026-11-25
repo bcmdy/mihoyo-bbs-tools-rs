@@ -890,6 +890,7 @@ dependencies = [
  "clap",
  "hmac",
  "lettre",
+ "libc",
  "md-5",
  "rand",
  "reqwest",
@@ -907,6 +908,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
  "wiremock",
 ]
 
