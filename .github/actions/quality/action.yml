@@ -1,0 +1,36 @@
+name: Rust 质量检查
+description: >-
+  复用格式、Clippy 与测试检查，供 CI 与发布工作流在同一提交上共享。
+  调用方需先检出代码，并安装带 rustfmt、clippy 组件的 Rust 工具链。
+
+# 说明：composite action 内不做 checkout，也不安装 Rust，由调用方决定检出提交
+# 与工具链版本，这样 CI 与发布流程能保证“检查和构建使用同一提交”。
+
+runs:
+  using: composite
+  steps:
+    - name: 检查格式
+      shell: bash
+      run: cargo fmt --all -- --check
+
+    - name: Clippy 静态检查
+      shell: bash
+      run: |
+        set +e
+        cargo clippy --all-targets --all-features --locked -- -D warnings 2>&1 | tee clippy.log
+        code=${PIPESTATUS[0]}
+        if [ "$code" -ne 0 ]; then
+          details=$(tail -n 80 clippy.log)
+          details="${details//'%'/'%25'}"
+          details="${details//$'\r'/'%0D'}"
+          details="${details//$'\n'/'%0A'}"
+          echo "::error title=Clippy 失败::$details"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 120 clippy.log >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+        fi
+        exit "$code"
+
+    - name: 执行测试
+      shell: bash
+      run: cargo test --all-features --locked

@@ -15,8 +15,51 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: 质量检查（同一提交）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: 确定待检查版本
+        id: version
+        shell: bash
+        env:
+          RAW_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          raw_version="$RAW_VERSION"
+          version="${raw_version#v}"
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "版本号只能包含字母、数字、点、下划线和连字符" >&2
+            exit 1
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: 检出手动指定的版本标签
+        # 手动发布时必须检查与最终构建相同的标签提交，避免“检查 main、构建旧标签”。
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git checkout --detach "$TAG"
+
+      - name: 安装 Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: 检查格式、Clippy 与测试
+        # 与 CI 共用同一份 composite 质量检查；标签发布前必须先通过，避免“构建成功但测试失败”的版本被发布。
+        uses: ./.github/actions/quality
+
   build-linux:
     name: 构建 Linux ${{ matrix.package_arch }}
+    needs: quality
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 60
     outputs:
@@ -44,7 +87,6 @@ jobs:
             cross_ar: arm-linux-gnueabihf-ar
             apt_package: gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user
     env:
-      GIT_COMMIT: ${{ github.sha }}
       CARGO_TARGET: ${{ matrix.target }}
       PACKAGE_ARCH: ${{ matrix.package_arch }}
       CROSS_CC: ${{ matrix.cross_cc }}
@@ -79,6 +121,15 @@ jobs:
         run: |
           git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
           git checkout --detach "$TAG"
+
+      - name: 记录最终检出的提交
+        # 必须在最终检出（含手动指定标签）之后取值：标签触发的 github.sha 与标签实际
+        # 指向的提交一致，手动触发则可能不同，故统一用 HEAD 作为 GIT_COMMIT。
+        shell: bash
+        run: |
+          commit=$(git rev-parse HEAD)
+          echo "GIT_COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "本次构建提交：$commit"
 
       - name: 安装 Rust
         run: |
@@ -163,9 +214,8 @@ jobs:
 
   build-windows:
     name: 构建 Windows x86_64
+    needs: quality
     runs-on: windows-latest
-    env:
-      GIT_COMMIT: ${{ github.sha }}
 
     steps:
       - name: 检出代码
@@ -196,6 +246,15 @@ jobs:
           $refspec = "refs/tags/{0}:refs/tags/{0}" -f $env:TAG
           git fetch --force origin $refspec
           git checkout --detach $env:TAG
+
+      - name: 记录最终检出的提交
+        # 与 Linux 构建一致：在最终检出之后用 HEAD 作为 GIT_COMMIT，保证程序
+        # `version` 输出与实际标签提交一致。
+        shell: pwsh
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          "GIT_COMMIT=$commit" | Add-Content -Path $env:GITHUB_ENV
+          Write-Output "本次构建提交：$commit"
 
       - name: 安装 Rust
         run: |
@@ -241,6 +300,7 @@ jobs:
   publish:
     name: 创建 GitHub Release
     needs:
+      - quality
       - build-linux
       - build-windows
     runs-on: ubuntu-latest

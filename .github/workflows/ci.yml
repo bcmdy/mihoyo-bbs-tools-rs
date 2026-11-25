@@ -86,8 +86,9 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: 检查格式
-        run: cargo fmt --all -- --check
+      - name: 检查格式、Clippy 与测试
+        # 与发布工作流共用同一份 composite 质量检查，避免两处逻辑漂移。
+        uses: ./.github/actions/quality
 
       - name: 校验最低 Rust 版本
         # Cargo.toml 声明 rust-version = "1.88"；用 1.88.0 工具链独立校验锁定依赖，
@@ -105,26 +106,6 @@ jobs:
             exit 1
           fi
           grep -q 'ring v' <<< "$tree"
-
-      - name: Clippy 静态检查
-        run: |
-          set +e
-          cargo clippy --all-targets --all-features --locked -- -D warnings 2>&1 | tee clippy.log
-          code=${PIPESTATUS[0]}
-          if [ "$code" -ne 0 ]; then
-            details=$(tail -n 80 clippy.log)
-            details="${details//'%'/'%25'}"
-            details="${details//$'\r'/'%0D'}"
-            details="${details//$'\n'/'%0A'}"
-            echo "::error title=Clippy 失败::$details"
-            echo '```text' >> "$GITHUB_STEP_SUMMARY"
-            tail -n 120 clippy.log >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          fi
-          exit "$code"
-
-      - name: 执行测试
-        run: cargo test --all-features --locked
 
   build:
     name: 编译 ${{ matrix.os }}
