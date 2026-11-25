@@ -77,10 +77,27 @@ jobs:
             flake.lock
           if-no-files-found: error
 
+      - name: 检查锁文件是否有实际变更
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --cached --quiet -- Cargo.lock flake.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "依赖锁文件无需更新"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git --no-pager diff --cached --stat -- Cargo.lock flake.lock
+          fi
+
       - name: 通过 Pull Request 提交锁文件
+        id: cpr
         # 不直接推送 main：锁文件变更需要经过常规 CI 与人工复核。
         # 注意默认 GITHUB_TOKEN 产生的推送/PR 不会再次触发 push 类工作流，
         # 因此上面的编译与 Nix 构建校验必须在同一次运行内完成。
+        # 仓库策略若禁止 Actions 创建 PR，本步骤会失败并保留上面上传的 artifact；
+        # 此时请下载 artifact 后手动建 PR，不要退回直推 main。
+        if: steps.changes.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -103,3 +120,18 @@ jobs:
           add-paths: |
             Cargo.lock
             flake.lock
+
+      - name: 汇总结果
+        if: always()
+        shell: bash
+        env:
+          CHANGED: ${{ steps.changes.outputs.changed }}
+          PR_RESULT: ${{ steps.cpr.outcome }}
+        run: |
+          {
+            echo "### 依赖锁文件验证"
+            echo "| 项目 | 结果 |"
+            echo "|---|---|"
+            echo "| 锁文件变更 | ${CHANGED:-未检测} |"
+            echo "| PR 提交 | ${PR_RESULT:-未执行} |"
+          } >> "$GITHUB_STEP_SUMMARY"
