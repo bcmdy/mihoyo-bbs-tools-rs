@@ -2310,7 +2310,7 @@ mod tests {
         .await
         .unwrap();
         let name = load(&path).unwrap().config.accounts[0].name.clone();
-        set_schedule(&path, true, 60, false).unwrap();
+        set_schedule(&path, true, 60, false, None).unwrap();
         let backups = list_backups(&path).unwrap();
         assert!(!backups.is_empty(), "受控备份应随编辑产生");
         assert!(

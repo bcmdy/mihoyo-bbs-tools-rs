@@ -1,5 +1,4 @@
 use std::path::Path;
-#[cfg(test)]
 use std::time::Duration;
 
 #[cfg(test)]
