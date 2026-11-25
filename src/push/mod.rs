@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     auth::SecretString,
     config::{Config, NotificationProvider},
-    http::{HttpClient, HttpError, RetryPolicy},
+    http::{HttpClient, HttpError, HttpErrorCategory, classify_http_error},
     service::RunReport,
 };
 
@@ -357,19 +357,7 @@ fn configured_http(
     config: &Config,
     provider: &NotificationProvider,
 ) -> Result<HttpClient, HttpError> {
-    let builder = HttpClient::builder()
-        .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy {
-            attempts: config.runtime.retry_count as usize + 1,
-            base_delay: Duration::from_millis(500),
-        });
-    let proxy = match provider {
-        NotificationProvider::Telegram { proxy, .. } => {
-            proxy.as_ref().map(|value| value.expose_secret())
-        }
-        _ => None,
-    };
-    builder.proxy(proxy)?.build()
+    crate::http::factory::for_provider(config, provider)
 }
 
 fn configured_provider(config: &Config, provider: &NotificationProvider) -> Box<dyn Provider> {
@@ -569,16 +557,112 @@ impl CompatProvider {
         }
     }
     async fn json(&self, url: Url, body: &serde_json::Value) -> Result<(), PushError> {
-        self.http
-            .post_json_once_without_response(url, HeaderMap::new(), body)
+        let response = self
+            .http
+            .post_json_once_body(url, HeaderMap::new(), body)
             .await
-            .map_err(redact_http_error)
+            .map_err(redact_http_error)?;
+        check_compat_response(configured_kind(&self.config), response)
     }
     async fn form(&self, url: Url, body: &[(&str, String)]) -> Result<(), PushError> {
-        self.http
-            .post_form_once_without_response(url, body)
+        let response = self
+            .http
+            .post_form_once_body(url, body)
             .await
-            .map_err(redact_http_error)
+            .map_err(redact_http_error)?;
+        check_compat_response(configured_kind(&self.config), response)
+    }
+}
+
+/// 兼容渠道的最小业务响应模型。
+///
+/// 这些服务即使返回 HTTP 200，也可能在响应体里用非零 `errcode`/`code`/`retcode`
+/// 表示拒绝（凭据失效、限流、参数错误等），只查状态码会把失败记成发送成功。
+/// 字段一律可选且 `serde(default)`：缺少业务码的响应（`204`、空体或纯文本）保持
+/// 按 HTTP 状态判定，避免把兼容响应误报成失败。
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+struct CompatResponse {
+    #[serde(default)]
+    errcode: Option<i64>,
+    #[serde(default)]
+    code: Option<i64>,
+    #[serde(default)]
+    retcode: Option<i64>,
+}
+
+/// 各渠道对“成功”的定义。协议里没有稳定业务码的渠道保持只认 HTTP 状态。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompatSuccessRule {
+    /// `errcode == 0`（企业微信机器人、企业微信应用、钉钉机器人）。
+    ErrcodeZero,
+    /// `code == 0`（Server 酱 3）。
+    CodeZero,
+    /// `errcode` 或 `code` 任一存在时必须为 0（飞书机器人两种响应格式并存）。
+    AnyZero,
+    /// `code == 1000`（WxPusher）。
+    CodeIs1000,
+    /// `retcode == 0`（CQHTTP）。
+    RetcodeZero,
+    /// 只认 HTTP 状态（Gotify、Discord、IFTTT 等对象或空响应）。
+    StatusOnly,
+}
+
+const fn compat_success_rule(kind: ProviderKind) -> CompatSuccessRule {
+    match kind {
+        ProviderKind::Wecomrobot | ProviderKind::Wecom | ProviderKind::Dingrobot => {
+            CompatSuccessRule::ErrcodeZero
+        }
+        ProviderKind::Serverchan3 => CompatSuccessRule::CodeZero,
+        ProviderKind::Feishubot => CompatSuccessRule::AnyZero,
+        ProviderKind::Wxpusher => CompatSuccessRule::CodeIs1000,
+        ProviderKind::Cqhttp => CompatSuccessRule::RetcodeZero,
+        ProviderKind::Gotify
+        | ProviderKind::Discord
+        | ProviderKind::Ifttt
+        | ProviderKind::Telegram
+        | ProviderKind::Webhook
+        | ProviderKind::Pushplus
+        | ProviderKind::Ftqq
+        | ProviderKind::Pushme
+        | ProviderKind::Pushdeer
+        | ProviderKind::Bark
+        | ProviderKind::Qmsg
+        | ProviderKind::Smtp
+        | ProviderKind::WindowsToast => CompatSuccessRule::StatusOnly,
+    }
+}
+
+/// 校验一次 HTTP 200（或 2xx）响应的业务成功码。
+///
+/// 只返回脱敏后的错误码，不回显响应原文；本函数不触发任何重发。
+fn check_compat_response(kind: ProviderKind, body: Option<String>) -> Result<(), PushError> {
+    let rule = compat_success_rule(kind);
+    if rule == CompatSuccessRule::StatusOnly {
+        return Ok(());
+    }
+    let Some(body) = body else {
+        // 空响应体（如 `204 No Content`）按状态码视为成功。
+        return Ok(());
+    };
+    let Ok(response) = serde_json::from_str::<CompatResponse>(&body) else {
+        // 非 JSON 响应体（部分网关只回纯文本）无法校验业务码，按状态码判定。
+        return Ok(());
+    };
+    match rejected_code(rule, response) {
+        Some(code) => Err(PushError::ServiceRejected(code)),
+        None => Ok(()),
+    }
+}
+
+/// 返回业务拒绝码；`None` 表示成功，或该响应不包含可校验的业务码。
+fn rejected_code(rule: CompatSuccessRule, response: CompatResponse) -> Option<i64> {
+    match rule {
+        CompatSuccessRule::ErrcodeZero => response.errcode.filter(|code| *code != 0),
+        CompatSuccessRule::CodeZero => response.code.filter(|code| *code != 0),
+        CompatSuccessRule::AnyZero => response.errcode.or(response.code).filter(|code| *code != 0),
+        CompatSuccessRule::CodeIs1000 => response.code.filter(|code| *code != 1000),
+        CompatSuccessRule::RetcodeZero => response.retcode.filter(|code| *code != 0),
+        CompatSuccessRule::StatusOnly => None,
     }
 }
 
@@ -828,13 +912,17 @@ impl Provider for PushplusProvider {
     }
 }
 
+/// 把 HTTP 错误收敛为不含 URL、代理凭据或响应原文的推送错误类别。
+///
+/// 分类表由 [`crate::http::classify_http_error`] 统一维护，避免推送与诊断两处口径漂移；
+/// 认证层依赖的 `HttpError` 变体语义保持不变。
 fn redact_http_error(error: HttpError) -> PushError {
-    match error {
-        HttpError::InvalidUrl(_) => PushError::InvalidEndpoint,
-        HttpError::Timeout => PushError::Timeout,
-        HttpError::Status(status) => PushError::HttpStatus(status.as_u16()),
-        HttpError::Decode(_) => PushError::InvalidResponse,
-        HttpError::InvalidProxy(_) | HttpError::Connect(_) | HttpError::Build(_) => {
+    match classify_http_error(&error) {
+        HttpErrorCategory::InvalidUrl => PushError::InvalidEndpoint,
+        HttpErrorCategory::Timeout => PushError::Timeout,
+        HttpErrorCategory::Status(code) => PushError::HttpStatus(code),
+        HttpErrorCategory::Decode => PushError::InvalidResponse,
+        HttpErrorCategory::InvalidProxy | HttpErrorCategory::Connect | HttpErrorCategory::Build => {
             PushError::Network
         }
     }
@@ -843,6 +931,7 @@ fn redact_http_error(error: HttpError) -> PushError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::RetryPolicy;
     use serde_json::json;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -864,6 +953,260 @@ mod tests {
             title: "执行结果".to_owned(),
             body: "签到成功".to_owned(),
         }
+    }
+
+    /// 构造一个使用给定 YAML 片段的兼容渠道 Provider。
+    fn compat_provider(source: &str, server: &MockServer) -> CompatProvider {
+        let source = source.replace("{base}", &server.uri());
+        let config: Config = serde_yaml_ng::from_str(&format!(
+            "version: 1\naccounts: []\nnotifications:\n  providers:\n{source}"
+        ))
+        .unwrap();
+        let configured = config.notifications.providers.first().unwrap().clone();
+        CompatProvider {
+            http: http(),
+            config: configured,
+        }
+    }
+
+    #[test]
+    fn configured_http_uses_documented_extra_retry_semantics() {
+        let source = "version: 1\naccounts: []\nruntime:\n  retry_count: 0\n";
+        let config: Config = serde_yaml_ng::from_str(source).unwrap();
+        let provider = NotificationProvider::Webhook {
+            url: SecretString::new("https://example.com/hook"),
+        };
+        let http = configured_http(&config, &provider).unwrap();
+        // retry_count 是额外重试次数：0 表示推送鉴权只尝试一次。
+        assert_eq!(http.retry_policy().attempts, 1);
+
+        let source = "version: 1\naccounts: []\nruntime:\n  retry_count: 3\n";
+        let config: Config = serde_yaml_ng::from_str(source).unwrap();
+        let http = configured_http(&config, &provider).unwrap();
+        assert_eq!(http.retry_policy().attempts, 4);
+        assert_eq!(http.retry_policy().base_delay, Duration::from_millis(500));
+        // 退避预算在没有显式覆盖时沿用安全默认值。
+        assert_eq!(http.backoff().max_total_delay, Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn wecomrobot_business_error_is_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/robot"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "errcode": 93000,
+                "errmsg": "invalid webhook url"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = compat_provider(
+            "    - type: wecomrobot\n      url: '{base}/robot'\n",
+            &server,
+        );
+
+        let error = provider.send(&notification()).await.unwrap_err();
+        assert_eq!(error, PushError::ServiceRejected(93000));
+        assert!(error.to_string().contains("93000"));
+    }
+
+    #[tokio::test]
+    async fn wecomrobot_success_code_is_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/robot"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "errcode": 0,
+                "errmsg": "ok"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = compat_provider(
+            "    - type: wecomrobot\n      url: '{base}/robot'\n",
+            &server,
+        );
+
+        assert_eq!(provider.send(&notification()).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn cqhttp_retcode_error_is_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/send"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": "failed",
+                "retcode": 100
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = compat_provider("    - type: cqhttp\n      url: '{base}/send'\n", &server);
+
+        assert_eq!(
+            provider.send(&notification()).await,
+            Err(PushError::ServiceRejected(100))
+        );
+    }
+
+    #[tokio::test]
+    async fn compat_empty_204_response_is_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/empty"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = compat_provider(
+            "    - type: wecomrobot\n      url: '{base}/empty'\n",
+            &server,
+        );
+
+        assert_eq!(provider.send(&notification()).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn compat_business_error_does_not_leak_response_secret() {
+        let server = MockServer::start().await;
+        let secret = "leaked-gateway-secret";
+        Mock::given(method("POST"))
+            .and(path("/leaky"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "errcode": 40001,
+                "errmsg": format!("invalid token {secret}")
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = compat_provider(
+            "    - type: wecomrobot\n      url: '{base}/leaky'\n",
+            &server,
+        );
+
+        let error = provider.send(&notification()).await.unwrap_err();
+        assert_eq!(error.to_string(), "推送服务拒绝请求（代码 40001）");
+        assert!(!error.to_string().contains(secret));
+        let report = PushReport {
+            deliveries: vec![DeliveryResult {
+                provider: ProviderKind::Wecomrobot,
+                status: DeliveryStatus::Failed,
+                message: error.to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains(secret));
+        assert!(json.contains("40001"));
+    }
+
+    #[tokio::test]
+    async fn compat_provider_sends_notification_exactly_once_on_business_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/once"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "errcode": 1 })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = compat_provider(
+            "    - type: dingrobot\n      webhook: '{base}/once'\n",
+            &server,
+        );
+
+        let report = PushDispatcher::new(vec![Box::new(provider)])
+            .dispatch(&notification())
+            .await;
+        assert_eq!(report.deliveries.len(), 1);
+        assert_eq!(report.deliveries[0].status, DeliveryStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn gotify_object_response_is_sent_without_business_code() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/message"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 1 })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = compat_provider(
+            "    - type: gotify\n      token: 'gotify-secret'\n      api_url: '{base}/'\n",
+            &server,
+        );
+
+        assert_eq!(provider.send(&notification()).await, Ok(()));
+    }
+
+    #[test]
+    fn compat_success_rules_follow_channel_protocols() {
+        assert_eq!(
+            compat_success_rule(ProviderKind::Wecomrobot),
+            CompatSuccessRule::ErrcodeZero
+        );
+        assert_eq!(
+            compat_success_rule(ProviderKind::Dingrobot),
+            CompatSuccessRule::ErrcodeZero
+        );
+        assert_eq!(
+            compat_success_rule(ProviderKind::Feishubot),
+            CompatSuccessRule::AnyZero
+        );
+        assert_eq!(
+            compat_success_rule(ProviderKind::Serverchan3),
+            CompatSuccessRule::CodeZero
+        );
+        assert_eq!(
+            compat_success_rule(ProviderKind::Cqhttp),
+            CompatSuccessRule::RetcodeZero
+        );
+        assert_eq!(
+            compat_success_rule(ProviderKind::Wxpusher),
+            CompatSuccessRule::CodeIs1000
+        );
+        assert_eq!(
+            compat_success_rule(ProviderKind::Gotify),
+            CompatSuccessRule::StatusOnly
+        );
+        assert_eq!(
+            compat_success_rule(ProviderKind::Discord),
+            CompatSuccessRule::StatusOnly
+        );
+        assert_eq!(
+            compat_success_rule(ProviderKind::Ifttt),
+            CompatSuccessRule::StatusOnly
+        );
+    }
+
+    #[test]
+    fn compat_rejected_code_uses_protocol_specific_success_value() {
+        let parse = |text: &str| serde_json::from_str::<CompatResponse>(text).unwrap();
+        assert_eq!(
+            rejected_code(CompatSuccessRule::CodeIs1000, parse(r#"{"code":1000}"#)),
+            None
+        );
+        assert_eq!(
+            rejected_code(CompatSuccessRule::CodeIs1000, parse(r#"{"code":1001}"#)),
+            Some(1001)
+        );
+        assert_eq!(
+            rejected_code(CompatSuccessRule::AnyZero, parse(r#"{"code":0}"#)),
+            None
+        );
+        assert_eq!(
+            rejected_code(CompatSuccessRule::AnyZero, parse(r#"{"errcode":19001}"#)),
+            Some(19001)
+        );
+        assert_eq!(
+            rejected_code(CompatSuccessRule::RetcodeZero, parse(r#"{"retcode":100}"#)),
+            Some(100)
+        );
+        // 缺少业务码的响应不视为失败。
+        assert_eq!(
+            rejected_code(CompatSuccessRule::ErrcodeZero, parse(r#"{"ok":true}"#)),
+            None
+        );
     }
 
     #[tokio::test]

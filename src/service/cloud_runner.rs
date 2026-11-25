@@ -6,7 +6,7 @@ use crate::{
     auth::SecretString,
     cloud_game::{CloudGame, CloudGameClient, CloudGameError, CloudWallet},
     config::{AccountConfig, Config},
-    http::{HttpClient, RetryPolicy},
+    http::HttpClient,
 };
 
 use super::{RunReport, TaskOutcome, TaskRecord};
@@ -197,16 +197,10 @@ fn wallet_record(
 }
 
 fn build_http(config: &Config, account: &AccountConfig) -> Result<HttpClient, String> {
-    HttpClient::builder()
-        .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy {
-            attempts: usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
-            base_delay: Duration::from_millis(500),
-        })
-        .proxy(account.proxy.url.as_ref().map(SecretString::expose_secret))
-        .map_err(|error| error.to_string())?
-        .build()
-        .map_err(|error| error.to_string())
+    crate::http::factory::for_account(config, account).map_err(|error| {
+        // 只暴露类别，不把代理地址等连接细节写进任务报告。
+        crate::http::safe_http_reason(&error).to_owned()
+    })
 }
 
 fn format_minutes(minutes: u64) -> String {

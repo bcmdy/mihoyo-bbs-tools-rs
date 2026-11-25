@@ -2,7 +2,6 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
-    time::Duration,
 };
 
 use reqwest::{
@@ -14,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     auth::CookieJar,
     config::{self, Config, NotificationProvider},
-    http::{HttpClient, HttpError, RetryPolicy},
+    http::{HttpClient, HttpError, safe_http_reason},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -460,14 +459,7 @@ async fn connectivity(client: &HttpClient, url: Url) -> Result<(), HttpError> {
 }
 
 fn client(config: &Config, proxy: Option<&str>) -> Result<HttpClient, HttpError> {
-    HttpClient::builder()
-        .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy {
-            attempts: 1,
-            base_delay: Duration::ZERO,
-        })
-        .proxy(proxy)?
-        .build()
+    crate::http::factory::for_diagnostic(config, proxy)
 }
 
 fn origin(mut url: Url) -> Url {
@@ -496,18 +488,6 @@ fn directory_writable(directory: &Path) -> Result<(), String> {
     drop(file);
     let _ = fs::remove_file(probe);
     result
-}
-
-fn safe_http_reason(error: &HttpError) -> &'static str {
-    match error {
-        HttpError::InvalidUrl(_) => "服务地址无效",
-        HttpError::InvalidProxy(_) => "代理地址无效",
-        HttpError::Timeout => "请求超时",
-        HttpError::Connect(_) => "连接失败（可能是 DNS、TLS、网络或代理问题）",
-        HttpError::Status(_) => "服务返回了 HTTP 错误状态",
-        HttpError::Decode(_) => "服务响应格式无效",
-        HttpError::Build(_) => "HTTP 客户端初始化失败",
-    }
 }
 
 const fn status_name(status: DiagnosticStatus) -> &'static str {

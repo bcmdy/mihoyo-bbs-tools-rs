@@ -1,7 +1,11 @@
-use std::{path::Path, time::Duration};
+use std::path::Path;
+#[cfg(test)]
+use std::time::Duration;
 
 #[cfg(test)]
 use crate::auth::SecretString;
+#[cfg(test)]
+use crate::http::RetryPolicy;
 use crate::{
     captcha::CaptchaClient,
     checkin::{
@@ -10,7 +14,7 @@ use crate::{
     },
     checkin::{HoyolabCheckinClient, HoyolabCheckinError, HoyolabGame},
     config::{AccountConfig, Config, Game},
-    http::{HttpClient, RetryPolicy},
+    http::HttpClient,
     signing::{DsSigner, SystemClock, ThreadRandom},
 };
 
@@ -150,15 +154,10 @@ async fn run_china_account(config: &Config, account: &AccountConfig) -> RunRepor
 }
 
 fn build_account_http(config: &Config, account: &AccountConfig) -> Result<HttpClient, String> {
-    let builder = HttpClient::builder()
-        .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-        .retry(RetryPolicy {
-            attempts: usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
-            base_delay: Duration::from_millis(500),
-        })
-        .proxy(account.proxy.url.as_ref().map(|url| url.expose_secret()))
-        .map_err(|error| error.to_string())?;
-    builder.build().map_err(|error| error.to_string())
+    crate::http::factory::for_account(config, account).map_err(|error| {
+        // 只暴露类别，不把代理地址等连接细节写进任务报告。
+        crate::http::safe_http_reason(&error).to_owned()
+    })
 }
 
 pub async fn run_hoyolab_checkin(config: &Config) -> RunReport {
@@ -167,27 +166,7 @@ pub async fn run_hoyolab_checkin(config: &Config) -> RunReport {
         if !account.enabled || !account.tasks.hoyolab_checkin {
             continue;
         }
-        let builder = HttpClient::builder()
-            .timeout(Duration::from_secs(config.runtime.request_timeout_seconds))
-            .retry(RetryPolicy {
-                attempts: usize::try_from(config.runtime.retry_count).unwrap_or(usize::MAX),
-                base_delay: Duration::from_millis(500),
-            });
-        let builder = match builder.proxy(account.proxy.url.as_ref().map(|url| url.expose_secret()))
-        {
-            Ok(builder) => builder,
-            Err(error) => {
-                report.push(record(
-                    &account.name,
-                    "HoYoLAB 签到",
-                    "代理",
-                    TaskOutcome::NetworkFailed,
-                    &error.to_string(),
-                ));
-                continue;
-            }
-        };
-        let http = match builder.build() {
+        let http = match crate::http::factory::for_account(config, account) {
             Ok(http) => http,
             Err(error) => {
                 report.push(record(
@@ -195,7 +174,7 @@ pub async fn run_hoyolab_checkin(config: &Config) -> RunReport {
                     "HoYoLAB 签到",
                     "HTTP 客户端",
                     TaskOutcome::NetworkFailed,
-                    &error.to_string(),
+                    crate::http::safe_http_reason(&error),
                 ));
                 continue;
             }
