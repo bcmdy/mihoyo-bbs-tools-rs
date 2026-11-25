@@ -110,7 +110,9 @@ pub fn prune(directory: &Path, stem: &str, retention_days: u64) -> PruneReport {
         }
     }
 
-    dated.sort_by(|left, right| right.0.cmp(&left.0));
+    // 按日期降序（最新的在前）；`sort_by_key` 与 `sort_by` 同为稳定排序，
+    // 同日期条目保持目录读取顺序，因此保留/删除的取舍与原先完全一致。
+    dated.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     let keep_limit = usize::try_from(retention_days).unwrap_or(usize::MAX);
     for (date, path) in dated.into_iter().skip(keep_limit) {
         if date >= today {
