@@ -120,6 +120,29 @@ jobs:
           fi
           grep -q 'ring v' <<< "$tree"
 
+  windows-tests:
+    name: Windows 离线测试与静态检查
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: 安装 Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+
+      - name: 执行测试（含离线 CLI 回归）
+        # 源码内 208 个单元测试与 tests/cli_smoke.rs 均不联网、不写用户目录、
+        # 不依赖桌面通知或计划任务安装；用 Windows 运行以覆盖 cfg(windows) 分支。
+        run: cargo test --all-features --locked
+
+      - name: Clippy 静态检查
+        # 只保留 -D warnings，Windows 上的 cfg(windows) 代码才会被真正检查。
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
   build:
     name: 编译 ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
