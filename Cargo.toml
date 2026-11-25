@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 description = "社区维护的米游社与 HoYoLAB 自动任务工具"
 repository = "https://github.com/bcmdy/mihoyo-bbs-tools-rs"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [[bin]]
 name = "MihoyoBBSToolsRS"

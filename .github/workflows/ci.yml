@@ -89,6 +89,13 @@ jobs:
       - name: 检查格式
         run: cargo fmt --all -- --check
 
+      - name: 校验最低 Rust 版本
+        # Cargo.toml 声明 rust-version = "1.88"；用 1.88.0 工具链独立校验锁定依赖，
+        # 防止引入更高版本语法或依赖后回退最低版本兼容性。
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          cargo +1.88.0 check --locked --all-targets --all-features
+
       - name: 检查 TLS 依赖
         shell: bash
         run: |
