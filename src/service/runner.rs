@@ -15,7 +15,7 @@ use crate::{
 };
 
 use super::{
-    CredentialPersistence, RunReport, TaskOutcome, TaskRecord,
+    CredentialPersistence, RecordKind, RunReport, TaskId, TaskOutcome, TaskRecord,
     credential_refresh::{has_authentication_failure, refresh_account_cookie},
     resolve_device_id,
 };
@@ -334,6 +334,7 @@ fn push_hoyolab_error(
     subject: &str,
     error: HoyolabCheckinError,
 ) {
+    let error_code = hoyolab_error_code(&error);
     let (outcome, message) = match error {
         HoyolabCheckinError::CookieInvalid => (
             TaskOutcome::AuthenticationFailed,
@@ -342,10 +343,13 @@ fn push_hoyolab_error(
         HoyolabCheckinError::Http(_) => (TaskOutcome::NetworkFailed, "网络请求失败".to_owned()),
         other => (TaskOutcome::Failed, other.to_string()),
     };
-    report.push(record(account, "HoYoLAB 签到", subject, outcome, &message));
+    report.push(
+        record(account, "HoYoLAB 签到", subject, outcome, &message).with_error_code(error_code),
+    );
 }
 
 fn push_error(report: &mut RunReport, account: &str, subject: &str, error: CheckinError) {
+    let error_code = checkin_error_code(&error);
     let (outcome, message) = match error {
         CheckinError::CookieInvalid => (
             TaskOutcome::AuthenticationFailed,
@@ -354,7 +358,30 @@ fn push_error(report: &mut RunReport, account: &str, subject: &str, error: Check
         CheckinError::Http(_) => (TaskOutcome::NetworkFailed, "网络请求失败".to_owned()),
         other => (TaskOutcome::Failed, other.to_string()),
     };
-    report.push(record(account, "国内游戏签到", subject, outcome, &message));
+    report.push(
+        record(account, "国内游戏签到", subject, outcome, &message).with_error_code(error_code),
+    );
+}
+
+/// 签到错误的稳定错误码；`Api` 保留 retcode 便于外部聚合。
+fn checkin_error_code(error: &CheckinError) -> String {
+    match error {
+        CheckinError::CookieInvalid => "cookie_invalid".to_owned(),
+        CheckinError::Http(_) => "http_error".to_owned(),
+        CheckinError::InvalidHeader(_) => "invalid_header".to_owned(),
+        CheckinError::InvalidResponse(_) => "invalid_response".to_owned(),
+        CheckinError::Api { retcode, .. } => format!("retcode:{retcode}"),
+    }
+}
+
+fn hoyolab_error_code(error: &HoyolabCheckinError) -> String {
+    match error {
+        HoyolabCheckinError::CookieInvalid => "cookie_invalid".to_owned(),
+        HoyolabCheckinError::Http(_) => "http_error".to_owned(),
+        HoyolabCheckinError::InvalidHeader(_) => "invalid_header".to_owned(),
+        HoyolabCheckinError::InvalidResponse(_) => "invalid_response".to_owned(),
+        HoyolabCheckinError::Api { retcode, .. } => format!("retcode:{retcode}"),
+    }
 }
 
 fn record(
@@ -364,12 +391,29 @@ fn record(
     outcome: TaskOutcome,
     message: &str,
 ) -> TaskRecord {
-    TaskRecord {
-        account: account.to_owned(),
-        task: task.to_owned(),
-        subject: subject.to_owned(),
-        outcome,
-        message: message.to_owned(),
+    TaskRecord::new(account, task, subject, outcome, message)
+        .with_task_id(checkin_task_id(task))
+        .with_kind(checkin_record_kind(task))
+}
+
+/// 按签到任务名映射稳定标识。
+fn checkin_task_id(task: &str) -> TaskId {
+    match task {
+        "国内游戏签到" => TaskId::ChinaCheckin,
+        "HoYoLAB 签到" => TaskId::HoyolabCheckin,
+        "凭据刷新" => TaskId::CredentialRefresh,
+        "网络初始化" => TaskId::Config,
+        "配置" => TaskId::Config,
+        "通知" => TaskId::Notification,
+        _ => TaskId::Config,
+    }
+}
+
+/// 凭据刷新、网络初始化与配置提示属诊断信息，不计入任务数。
+fn checkin_record_kind(task: &str) -> RecordKind {
+    match task {
+        "凭据刷新" | "网络初始化" | "配置" | "通知" => RecordKind::Diagnostic,
+        _ => RecordKind::Task,
     }
 }
 

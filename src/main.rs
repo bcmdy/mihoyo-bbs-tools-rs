@@ -529,10 +529,15 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
     Ok(0)
 }
 
+/// JSON 报告结构版本；A15 起为 2，新增字段均为可选，旧消费者可继续读取。
+const STRUCTURED_OUTPUT_SCHEMA_VERSION: u8 = 2;
+
 #[derive(Serialize)]
 struct StructuredRunOutput<'a> {
     schema_version: u8,
     exit_code: u8,
+    /// 仅统计真正的任务结果，不含诊断与汇总记录。
+    task_counts: service::TaskCounts,
     records: &'a [service::TaskRecord],
     notifications: &'a [push::DeliveryResult],
 }
@@ -574,8 +579,9 @@ async fn finish_report(
         ReportFormat::Text => print!("{rendered}"),
         ReportFormat::Json => {
             let output = StructuredRunOutput {
-                schema_version: 1,
+                schema_version: STRUCTURED_OUTPUT_SCHEMA_VERSION,
                 exit_code,
+                task_counts: report.task_counts(),
                 records: &report.records,
                 notifications: &push_report.deliveries,
             };

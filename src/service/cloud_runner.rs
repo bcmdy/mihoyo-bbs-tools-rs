@@ -9,7 +9,7 @@ use crate::{
     http::{HttpClient, RetryPolicy},
 };
 
-use super::{RunReport, TaskOutcome, TaskRecord};
+use super::{RecordKind, RunReport, TaskId, TaskOutcome, TaskRecord};
 
 pub async fn run_cloud_games(
     config: &Config,
@@ -233,12 +233,27 @@ fn record(
     outcome: TaskOutcome,
     message: impl Into<String>,
 ) -> TaskRecord {
-    TaskRecord {
-        account: account.name.clone(),
-        task: task.to_owned(),
-        subject: subject.to_owned(),
-        outcome,
-        message: message.into(),
+    TaskRecord::new(&account.name, task, subject, outcome, message)
+        .with_task_id(cloud_task_id(task))
+        .with_kind(cloud_record_kind(task))
+}
+
+/// 按云游戏任务名映射稳定标识。
+fn cloud_task_id(task: &str) -> TaskId {
+    match task {
+        "国内云游戏" => TaskId::ChinaCloudGame,
+        "国际服云游戏" => TaskId::OverseasCloudGame,
+        "配置" => TaskId::Config,
+        "通知" => TaskId::Notification,
+        _ => TaskId::ChinaCloudGame,
+    }
+}
+
+/// 「配置」提示属诊断信息，不计入任务数。
+fn cloud_record_kind(task: &str) -> RecordKind {
+    match task {
+        "配置" | "通知" => RecordKind::Diagnostic,
+        _ => RecordKind::Task,
     }
 }
 
