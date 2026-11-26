@@ -35,6 +35,12 @@ pub enum BbsError {
     CaptchaRequired,
     #[error("BBS 接口错误 {retcode}：{message}")]
     Api { retcode: i64, message: String },
+    /// 社区签到返回 `1008`（打卡失败或重复打卡）。
+    ///
+    /// 该错误码同时覆盖“今天已经签到”与“打卡确实失败”两种语义，无法仅凭 retcode
+    /// 判定，因此单独归类为结果未知，由上层用米游币任务状态复查决定最终结论。
+    #[error("社区签到结果未知（1008）：{message}，需按米游币任务状态复查")]
+    SignResultUnknown { message: String },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -286,6 +292,13 @@ impl BbsClient {
         if forum_sign_already_completed(&response.message) {
             return Ok(ForumSignState::AlreadySigned);
         }
+        // 1008「打卡失败或重复打卡」既可能是幂等重复，也可能是真实失败，
+        // 这里不判失败，交给上层按米游币任务状态复查决定。
+        if response.retcode == SIGN_RESULT_UNKNOWN_RETCODE {
+            return Err(BbsError::SignResultUnknown {
+                message: response.message,
+            });
+        }
         self.success(response)?;
         Ok(ForumSignState::Submitted)
     }
@@ -416,6 +429,9 @@ struct ApiEnvelope<T> {
     message: String,
     data: Option<T>,
 }
+
+/// 社区签到「打卡失败或重复打卡」的 retcode。
+const SIGN_RESULT_UNKNOWN_RETCODE: i64 = 1008;
 
 fn forum_sign_already_completed(message: &str) -> bool {
     let normalized = message.trim().to_ascii_lowercase();
@@ -815,6 +831,29 @@ mod tests {
                 .unwrap(),
             ForumSignState::Submitted
         );
+    }
+
+    #[tokio::test]
+    async fn forum_sign_reports_1008_as_unknown_instead_of_api_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/apihub/app/api/signIn"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "retcode": 1008,
+                "message": "打卡失败或重复打卡",
+                "data": null
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // 1008 同时可能表示已签到或真实失败，不能就地判成功或失败。
+        assert!(matches!(
+            client(&server)
+                .sign_forum_once(&ForumSignRequest::new("2"), "body-ds", None)
+                .await,
+            Err(BbsError::SignResultUnknown { .. })
+        ));
     }
 
     #[tokio::test]

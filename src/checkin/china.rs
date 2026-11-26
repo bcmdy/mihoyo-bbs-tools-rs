@@ -59,8 +59,12 @@ impl ChinaCheckinClient {
         }
     }
 
+    /// 设置国内签到 User-Agent；版本号会被归一化为当前客户端版本。
+    ///
+    /// 用户自定义的 UA 常带旧版本或不带 `miHoYoBBS/`，而米游社校验要求版本与
+    /// Salt 对应，因此在入口处统一处理，避免各调用点重复实现。
     pub fn user_agent(mut self, user_agent: impl Into<String>) -> Self {
-        self.user_agent = user_agent.into();
+        self.user_agent = mihoyo::user_agent_with_version(&user_agent.into());
         self
     }
 
@@ -306,6 +310,20 @@ mod tests {
         for name in ["x-rpc-device_name", "x-rpc-device_model", "x-rpc-device_fp"] {
             assert!(headers.get(name).is_none());
         }
+    }
+
+    #[test]
+    fn configured_user_agent_is_normalized_to_current_version() {
+        let http = HttpClient::builder().build().unwrap();
+        let expected = format!("custom-agent miHoYoBBS/{}", crate::mihoyo::APP_VERSION);
+        let client =
+            ChinaCheckinClient::new(http, SecretString::new("cookie_token=test-secret"), "id")
+                .user_agent("custom-agent");
+        let headers = client.headers(ChinaGame::Genshin, "ds").unwrap();
+        assert_eq!(
+            headers["user-agent"],
+            HeaderValue::from_str(&expected).unwrap()
+        );
     }
 
     #[tokio::test]

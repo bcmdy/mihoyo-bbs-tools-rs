@@ -64,6 +64,37 @@ pub fn user_agent() -> String {
     format!("{USER_AGENT_PREFIX}{APP_VERSION}")
 }
 
+/// 把用户配置的国内米游社 User-Agent 归一化为带当前客户端版本的形态。
+///
+/// 米游社客户端版本随 Salt 一起更新，而用户自定义的 User-Agent 通常是从浏览器
+/// 或旧配置复制的固定字符串。这里按上游同一规则处理，保证版本号始终与当前
+/// [`APP_VERSION`] 一致：
+///
+/// - 空字符串返回默认，即 [`user_agent`]；
+/// - 已含 `miHoYoBBS` 时，丢弃其后的旧版本号并重新追加；
+/// - 未含时，在末尾追加 ` miHoYoBBS/<版本>`。
+///
+/// 只用于国内米游社请求；HoYoLAB 的独立 User-Agent 不含 `miHoYoBBS`，不要套用。
+pub fn user_agent_with_version(configured: &str) -> String {
+    let configured = configured.trim();
+    if configured.is_empty() {
+        return user_agent();
+    }
+    let suffix = format!("miHoYoBBS/{APP_VERSION}");
+    match configured.find("miHoYoBBS") {
+        Some(index) => {
+            // 保留 `miHoYoBBS` 之前的原样内容（含其前的分隔空格），只替换版本部分。
+            let prefix = configured[..index].trim_end();
+            if prefix.is_empty() {
+                suffix
+            } else {
+                format!("{prefix} {suffix}")
+            }
+        }
+        None => format!("{configured} {suffix}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +112,39 @@ mod tests {
         assert_eq!(BODY_SALT.len(), 32, "Body Salt 长度应为 32");
         assert!(BODY_SALT.chars().all(|c| c.is_ascii_alphanumeric()));
         assert_ne!(APP_SALT, WEB_SALT);
+    }
+
+    #[test]
+    fn normalizes_configured_user_agent_to_current_version() {
+        // 空值回退默认。
+        assert_eq!(user_agent_with_version(""), user_agent());
+        assert_eq!(user_agent_with_version("   "), user_agent());
+
+        // 未含 miHoYoBBS：末尾追加当前版本。
+        assert_eq!(
+            user_agent_with_version("custom-agent"),
+            format!("custom-agent miHoYoBBS/{APP_VERSION}")
+        );
+
+        // 含旧版本：替换版本号，且不重复 miHoYoBBS。
+        assert_eq!(
+            user_agent_with_version("Mozilla/5.0 miHoYoBBS/2.84.1"),
+            format!("Mozilla/5.0 miHoYoBBS/{APP_VERSION}")
+        );
+
+        // 已是最新版本时结果不变（幂等）。
+        let current = user_agent();
+        assert_eq!(user_agent_with_version(&current), current);
+        assert_eq!(
+            user_agent_with_version(&user_agent_with_version(&current)),
+            current
+        );
+
+        // 只剩 miHoYoBBS 前缀时退化为纯版本串。
+        assert_eq!(
+            user_agent_with_version("miHoYoBBS/1.0.0"),
+            format!("miHoYoBBS/{APP_VERSION}")
+        );
     }
 
     #[test]

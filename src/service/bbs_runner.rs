@@ -453,6 +453,7 @@ async fn run_sign_task(context: &mut BbsTaskContext<'_>, forums: &[&ForumSpec]) 
                         forum.name.to_owned(),
                         result.captcha_solved,
                         result.already_signed,
+                        result.result_unknown,
                     ));
                 }
                 Err(ActionError::Captcha(message)) => {
@@ -492,7 +493,13 @@ async fn run_sign_task(context: &mut BbsTaskContext<'_>, forums: &[&ForumSpec]) 
             before.as_ref(),
             &after,
         );
-        let idempotent = completed_this_round == forums.len() && all_idempotent;
+        // 存在 1008（结果未知）的板块时，不能用“接口未报错”作为幂等成功依据，
+        // 最终结论必须来自复查：任务 58 已领取或米游币确有变化。
+        let round_has_unknown = completed[completed_before..]
+            .iter()
+            .any(|(_, _, _, result_unknown)| *result_unknown);
+        let idempotent =
+            completed_this_round == forums.len() && all_idempotent && !round_has_unknown;
         let confirmed = task_confirmed(before.as_ref(), &after, MissionKind::Sign, idempotent);
         let credited_points = credited_points(before.as_ref(), &after);
         store_rechecked_summary(context, after);
@@ -992,7 +999,7 @@ fn select_unseen_posts(
 fn push_confirmed_signs(
     report: &mut RunReport,
     account: &str,
-    completed: &mut Vec<(String, bool, bool)>,
+    completed: &mut Vec<(String, bool, bool, bool)>,
     attempts: u32,
     mut credited_points: u32,
 ) {
@@ -1015,9 +1022,12 @@ fn push_confirmed_signs(
         }
     }
     latest_signs.reverse();
-    for (forum, captcha_solved, already_signed) in latest_signs {
+    for (forum, captcha_solved, already_signed, result_unknown) in latest_signs {
         let confirmation = if already_signed {
             format!("签到接口确认今日已签到，第 {attempts} 轮复查完成")
+        } else if result_unknown {
+            // 1008 无法区分“已签”与“失败”，结论以复查为准。
+            format!("签到返回 1008（打卡失败或重复打卡），第 {attempts} 轮复查确认任务已领取")
         } else {
             format!("第 {attempts} 轮复查确认社区签到米游币领取")
         };
@@ -1207,6 +1217,8 @@ enum ActionError {
 struct ForumSignResult {
     captcha_solved: bool,
     already_signed: bool,
+    /// 签到返回 1008：结果未知，不能就地判定成功或失败，需按复查结论处理。
+    result_unknown: bool,
 }
 
 async fn sign_forum_with_captcha(
@@ -1222,6 +1234,12 @@ async fn sign_forum_with_captcha(
         Ok(state) => Ok(ForumSignResult {
             captcha_solved: false,
             already_signed: state == ForumSignState::AlreadySigned,
+            result_unknown: false,
+        }),
+        Err(BbsError::SignResultUnknown { .. }) => Ok(ForumSignResult {
+            captcha_solved: false,
+            already_signed: false,
+            result_unknown: true,
         }),
         Err(BbsError::CaptchaRequired) => {
             let challenge =
@@ -1231,6 +1249,12 @@ async fn sign_forum_with_captcha(
                 Ok(state) => Ok(ForumSignResult {
                     captcha_solved: true,
                     already_signed: state == ForumSignState::AlreadySigned,
+                    result_unknown: false,
+                }),
+                Err(BbsError::SignResultUnknown { .. }) => Ok(ForumSignResult {
+                    captcha_solved: true,
+                    already_signed: false,
+                    result_unknown: true,
                 }),
                 Err(BbsError::CaptchaRequired) => Err(ActionError::Captcha(
                     "验证码校验通过，但原签到动作重试后仍要求验证码".to_owned(),
@@ -1363,6 +1387,7 @@ const fn bbs_error_kind(error: &BbsError) -> &'static str {
         BbsError::InvalidResponse(_) => "invalid_response",
         BbsError::AuthExpired => "auth_expired",
         BbsError::CaptchaRequired => "captcha_required",
+        BbsError::SignResultUnknown { .. } => "sign_result_unknown",
         BbsError::Api { .. } => "api",
     }
 }
@@ -1401,6 +1426,7 @@ fn bbs_error_code(error: &BbsError) -> String {
         BbsError::Http(_) => "http_error".to_owned(),
         BbsError::InvalidHeader(_) => "invalid_header".to_owned(),
         BbsError::InvalidResponse(_) => "invalid_response".to_owned(),
+        BbsError::SignResultUnknown { .. } => "retcode:1008".to_owned(),
         BbsError::Api { retcode, .. } => format!("retcode:{retcode}"),
     }
 }
