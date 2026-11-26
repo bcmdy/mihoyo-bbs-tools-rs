@@ -9,6 +9,14 @@ const UID_KEYS: &[&str] = &[
 ];
 const MID_KEYS: &[&str] = &["account_mid_v2", "ltmid_v2", "mid"];
 
+/// V2 字段存在时，旧名字段应与其保持同值（米游社 App 注入 WebView 的做法）。
+const V2_ALIASES: &[(&str, &str)] = &[
+    ("ltoken_v2", "ltoken"),
+    ("ltuid_v2", "ltuid"),
+    ("account_id_v2", "account_id"),
+    ("cookie_token_v2", "cookie_token"),
+];
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CookieError {
     MissingEquals { segment: String },
@@ -105,11 +113,99 @@ impl CookieJar {
         self.get("cookie_token").filter(|value| !value.is_empty())
     }
 
+    /// 返回 `cookie_token_v2`，缺失时回退到 `cookie_token`。
+    pub fn any_cookie_token(&self) -> Option<&str> {
+        self.get("cookie_token_v2")
+            .filter(|value| !value.is_empty())
+            .or_else(|| self.cookie_token())
+    }
+
+    /// 返回 `ltoken_v2`，缺失时回退到 `ltoken`。
+    pub fn any_ltoken(&self) -> Option<&str> {
+        ["ltoken_v2", "ltoken"]
+            .into_iter()
+            .find_map(|name| self.get(name).filter(|value| !value.is_empty()))
+    }
+
+    /// 是否使用 V2 命名的凭据：`cookie_token_v2` 或 `ltoken_v2` 的存在即为 V2。
+    pub fn uses_v2_tokens(&self) -> bool {
+        ["cookie_token_v2", "ltoken_v2", "account_id_v2", "ltuid_v2"]
+            .into_iter()
+            .any(|name| self.get(name).is_some())
+    }
+
+    /// 写入 V1 `cookie_token`，不改动其它字段。
+    ///
+    /// 保留该入口用于「明确写入 V1 键」的场景；V2 账号应使用
+    /// [`Self::replace_cookie_token_value`]。
     pub fn replace_cookie_token(
         &mut self,
         token: impl Into<String>,
     ) -> Result<Option<String>, CookieError> {
         self.insert("cookie_token", token)
+    }
+
+    /// 写入刷新后的 CookieToken，并同步 V1/V2 别名。
+    ///
+    /// 当 Cookie 使用 V2 字段（或调用方要求 `prefer_v2`）时写入 `cookie_token_v2`，
+    /// 否则沿用旧键 `cookie_token`。写入后按 [`V2_ALIASES`] 让 V2 字段的旧名保持同值，
+    /// 避免残留失效的 V1 旧值。
+    pub fn replace_cookie_token_value(
+        &mut self,
+        token: impl Into<String>,
+        prefer_v2: bool,
+    ) -> Result<Option<String>, CookieError> {
+        let token = token.into();
+        let key = if prefer_v2 || self.uses_v2_tokens() {
+            "cookie_token_v2"
+        } else {
+            "cookie_token"
+        };
+        let previous = self.insert(key, token)?;
+        self.sync_aliases();
+        Ok(previous)
+    }
+
+    /// 写入换票得到的 LToken，并同步 `ltuid_v2` / `ltmid_v2` 与 V1 别名。
+    pub fn replace_ltoken(
+        &mut self,
+        token: impl Into<String>,
+        uid: &str,
+        mid: Option<&str>,
+    ) -> Result<Option<String>, CookieError> {
+        let previous = self.insert("ltoken_v2", token)?;
+        if !uid.is_empty() {
+            self.insert("ltuid_v2", uid)?;
+        }
+        if let Some(mid) = mid.filter(|value| !value.is_empty()) {
+            self.insert("ltmid_v2", mid)?;
+        }
+        self.sync_aliases();
+        Ok(previous)
+    }
+
+    /// 按 [`V2_ALIASES`] 把 V1 旧名同步为对应的 V2 值；返回是否有字段被改动。
+    pub fn sync_aliases(&mut self) -> bool {
+        let mut changed = false;
+        for (v2_key, v1_key) in V2_ALIASES {
+            let Some(value) = self
+                .get(v2_key)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if self.get(v1_key) != Some(value.as_str()) {
+                // 直接替换值，不改变既有键的位置，也不新增重复键。
+                if let Some((_, slot)) = self.entries.iter_mut().find(|(name, _)| name == v1_key) {
+                    *slot = value;
+                } else {
+                    self.entries.push(((*v1_key).to_owned(), value));
+                }
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub fn to_header(&self) -> String {

@@ -64,6 +64,11 @@ pub enum CredentialError {
     StokenExpired {
         retcode: i64,
     },
+    /// 通行证换票被服务端拒绝（非凭据失效类错误）。
+    PassportExchange {
+        retcode: i64,
+        target: &'static str,
+    },
     RefreshAlreadyAttempted,
     HttpStatus(u16),
     Network,
@@ -89,6 +94,9 @@ impl fmt::Display for CredentialError {
             }
             Self::StokenExpired { retcode } => {
                 write!(formatter, "SToken 已失效（{retcode}）")
+            }
+            Self::PassportExchange { retcode, target } => {
+                write!(formatter, "通行证换取 {target} 失败（{retcode}）")
             }
             Self::RefreshAlreadyAttempted => formatter.write_str("本轮凭据刷新已经尝试过"),
             Self::HttpStatus(status) => write!(formatter, "认证接口返回 HTTP {status}"),
@@ -187,9 +195,33 @@ impl Credentials {
 
     pub fn replace_cookie_token(&mut self, token: &str) -> Result<(), CredentialError> {
         let mut jar = CookieJar::parse(self.cookie.expose_secret())?;
-        jar.replace_cookie_token(token)?;
+        // V2 SToken 或 Cookie 已使用 V2 字段时，刷新结果必须写回 V2 键，
+        // 否则社区任务仍会读到旧的 `cookie_token_v2`。
+        jar.replace_cookie_token_value(token, self.prefers_v2_tokens())?;
         self.cookie = SecretString::new(jar.to_header());
         Ok(())
+    }
+
+    /// 写入换票得到的 LToken，并补齐 `ltuid_v2` / `ltmid_v2`。
+    pub fn replace_ltoken(&mut self, token: &str) -> Result<(), CredentialError> {
+        let mut jar = CookieJar::parse(self.cookie.expose_secret())?;
+        jar.replace_ltoken(
+            token,
+            self.stuid.as_deref().unwrap_or_default(),
+            self.mid.as_deref(),
+        )?;
+        self.cookie = SecretString::new(jar.to_header());
+        Ok(())
+    }
+
+    /// 刷新结果应写入 V2 键：V2 SToken，或当前 Cookie 已使用 V2 字段。
+    fn prefers_v2_tokens(&self) -> bool {
+        if self.requires_mid() {
+            return true;
+        }
+        CookieJar::parse(self.cookie.expose_secret())
+            .map(|jar| jar.uses_v2_tokens())
+            .unwrap_or(false)
     }
 }
 
@@ -211,6 +243,48 @@ mod tests {
         assert!(!debug.contains("stoken-secret"));
         assert!(!debug.contains("123456789"));
         assert!(!debug.contains("sensitive-mid-value"));
+    }
+
+    #[test]
+    fn v2_token_refresh_writes_v2_key_and_syncs_aliases() {
+        let mut credentials = Credentials::new(
+            "account_id_v2=123; account_mid_v2=mid-value; cookie_token_v2=stale; cookie_token=stale",
+            "v2_token",
+        );
+        credentials.hydrate_from_cookie().unwrap();
+        credentials.replace_cookie_token("fresh").unwrap();
+
+        let cookie = credentials.cookie.expose_secret();
+        assert!(cookie.contains("cookie_token_v2=fresh"), "{cookie}");
+        assert!(cookie.contains("cookie_token=fresh"), "{cookie}");
+        assert!(!cookie.contains("stale"), "{cookie}");
+    }
+
+    #[test]
+    fn legacy_token_refresh_keeps_v1_key() {
+        let mut credentials = Credentials::new("account_id=123; cookie_token=stale", "legacy");
+        credentials.hydrate_from_cookie().unwrap();
+        credentials.replace_cookie_token("fresh").unwrap();
+
+        let cookie = credentials.cookie.expose_secret();
+        assert!(cookie.contains("cookie_token=fresh"), "{cookie}");
+        assert!(!cookie.contains("cookie_token_v2"), "{cookie}");
+    }
+
+    #[test]
+    fn replace_ltoken_adds_v2_identity_fields() {
+        let mut credentials = Credentials::new(
+            "account_id_v2=123; account_mid_v2=mid-value; stoken=v2_x",
+            "v2_token",
+        );
+        credentials.hydrate_from_cookie().unwrap();
+        credentials.replace_ltoken("ltoken-value").unwrap();
+
+        let cookie = credentials.cookie.expose_secret();
+        assert!(cookie.contains("ltoken_v2=ltoken-value"), "{cookie}");
+        assert!(cookie.contains("ltoken=ltoken-value"), "{cookie}");
+        assert!(cookie.contains("ltuid_v2=123"), "{cookie}");
+        assert!(cookie.contains("ltmid_v2=mid-value"), "{cookie}");
     }
 
     #[test]

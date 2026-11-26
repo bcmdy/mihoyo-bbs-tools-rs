@@ -363,6 +363,38 @@ impl HttpClient {
         }
     }
 
+    /// 发送一次原始字节 POST，并解析 JSON 响应。
+    ///
+    /// 与 [`Self::post_json_once`] 的区别是**不重新序列化请求体**：通行证换票等接口
+    /// 的签名基于实际发送的字节，用结构化 JSON 重新编码可能改变空白与字段顺序而
+    /// 导致验签失败。调用方必须自行设置 `Content-Type`。
+    pub async fn post_bytes_once<T>(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+        body: Vec<u8>,
+    ) -> Result<T, HttpError>
+    where
+        T: DeserializeOwned,
+    {
+        match self
+            .inner
+            .request(Method::POST, url)
+            .headers(headers)
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => response
+                .json()
+                .await
+                .map_err(|error| HttpError::Decode(sanitize_reqwest_error(error))),
+            Ok(response) => Err(HttpError::Status(response.status())),
+            Err(error) if error.is_timeout() => Err(HttpError::Timeout),
+            Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
+        }
+    }
+
     /// 发送一次 JSON POST，并在成功时读取响应体用于业务码校验。
     ///
     /// 适用于 Webhook 等成功响应可能为空或并非 JSON 的接口。与

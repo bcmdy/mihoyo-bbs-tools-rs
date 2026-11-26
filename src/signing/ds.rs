@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use md5::{Digest, Md5};
 use rand::{Rng, seq::SliceRandom};
 
-use crate::mihoyo::{APP_SALT, BODY_SALT, WEB_SALT};
+use crate::mihoyo::{APP_SALT, BODY_SALT, PASSPORT_SALT, WEB_SALT};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DsHeader {
@@ -133,6 +133,17 @@ where
             body,
         )
     }
+
+    /// 通行证（passport）接口的 Body DS：随机数为 6 位字符串，Salt 与业务接口不同。
+    pub fn sign_passport(&mut self, body: &[u8]) -> DsHeader {
+        sign_ds2_with_nonce(
+            PASSPORT_SALT,
+            self.clock.unix_timestamp(),
+            &self.random.legacy_nonce(),
+            "",
+            body,
+        )
+    }
 }
 
 pub fn sign_ds_with(salt: &str, timestamp: u64, random: &str) -> DsHeader {
@@ -145,10 +156,27 @@ pub fn sign_ds_with(salt: &str, timestamp: u64, random: &str) -> DsHeader {
 }
 
 /// `body` 应直接传入随后发送的同一组 UTF-8 JSON 字节，避免序列化差异导致验签失败。
+///
+/// App 侧 Body DS 的随机数是 `100001..=200000` 的整数，参见
+/// [`sign_ds2_with_nonce`] 的字符串版本。
 pub fn sign_ds2_with(
     salt: &str,
     timestamp: u64,
     random: u32,
+    query: &str,
+    body: &[u8],
+) -> DsHeader {
+    sign_ds2_with_nonce(salt, timestamp, &random.to_string(), query, body)
+}
+
+/// 与 [`sign_ds2_with`] 相同，但随机数使用任意字符串。
+///
+/// 通行证（passport）换票接口要求 `r` 为 6 位小写字母与数字的组合，因此不能复用
+/// 整型随机数；`body` 同样必须是随后发送的原始字节。
+pub fn sign_ds2_with_nonce(
+    salt: &str,
+    timestamp: u64,
+    random: &str,
     query: &str,
     body: &[u8],
 ) -> DsHeader {
@@ -160,7 +188,7 @@ pub fn sign_ds2_with(
     hasher.update(suffix.as_bytes());
     DsHeader {
         timestamp,
-        random: random.to_string(),
+        random: random.to_owned(),
         checksum: format!("{:x}", hasher.finalize()),
     }
 }
@@ -210,6 +238,15 @@ mod tests {
         assert_eq!(
             header.to_string(),
             "1700000000,123456,86864c6c03e06442cbd6df13a84a5028"
+        );
+    }
+
+    #[test]
+    fn creates_passport_ds_from_exact_body_bytes() {
+        let header = sign_ds2_with_nonce(PASSPORT_SALT, 1_700_000_000, "abc123", "", br#"{"a":1}"#);
+        assert_eq!(
+            header.to_string(),
+            "1700000000,abc123,2cc30df237d3a4c9b552fd038ced7764"
         );
     }
 

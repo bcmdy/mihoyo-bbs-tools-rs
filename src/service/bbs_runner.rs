@@ -1,7 +1,7 @@
 use std::{collections::HashSet, path::Path, time::Duration};
 
 use crate::{
-    auth::{Credentials, SecretString},
+    auth::{BackfillOutcome, Credentials, SecretString},
     bbs::{
         BbsClient, BbsError, CoinSummary, ForumSignRequest, ForumSignState, ForumSpec, MissionKind,
         PostRef, forum_by_id,
@@ -15,7 +15,9 @@ use crate::{
 use super::{
     CoinDetails, CredentialPersistence, RecordDetails, RecordKind, RunReport, TaskId, TaskOutcome,
     TaskRecord,
-    credential_refresh::{has_authentication_failure, refresh_account_cookie},
+    credential_refresh::{
+        backfill_account_credentials, has_authentication_failure, refresh_account_cookie,
+    },
     resolve_device_id,
 };
 
@@ -51,6 +53,35 @@ async fn run_bbs_inner(config: &mut Config, persistence: CredentialPersistence<'
     for account_index in 0..config.accounts.len() {
         let account = config.accounts[account_index].clone();
         if account.enabled && account.tasks.bbs.is_enabled() {
+            // V2 账号可能缺少 cookie_token / ltoken；社区任务对这两个字段敏感，
+            // 因此先补齐（只发缺失字段的换票请求），再执行任务。
+            if let Ok(http) = build_http(config, &account) {
+                match backfill_account_credentials(config, account_index, http, persistence.path())
+                    .await
+                {
+                    Ok(BackfillOutcome::Updated) => {
+                        // 复用「凭据刷新」任务标识：属于诊断类记录，不计入业务任务首屏统计。
+                        report.push(record(
+                            &account.name,
+                            "凭据刷新",
+                            "V2 凭据补齐",
+                            TaskOutcome::Success,
+                            "已通过通行证换票补齐缺失的 cookie_token/ltoken",
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(message) => {
+                        report.push(record(
+                            &account.name,
+                            "凭据刷新",
+                            "V2 凭据补齐",
+                            TaskOutcome::Failed,
+                            &format!("补齐 V2 凭据失败：{message}"),
+                        ));
+                    }
+                }
+            }
+            let account = config.accounts[account_index].clone();
             let mut first = RunReport::default();
             run_account(&mut first, config, &account).await;
             if !has_authentication_failure(&first) {

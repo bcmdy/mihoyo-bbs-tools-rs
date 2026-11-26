@@ -22,6 +22,9 @@ pub const BODY_SALT: &str = "t0qEgfub6cvueAPgR5m9aQWWVciEer7v";
 /// 部分接口要求携带的 `x-rpc-verify_key`。
 pub const VERIFY_KEY: &str = "bll8iq97cem8";
 
+/// 通行证接口使用的 `x-rpc-app_id`；与 [`VERIFY_KEY`] 取值相同，但语义不同。
+pub const APP_ID: &str = VERIFY_KEY;
+
 /// App 客户端类型（`x-rpc-client_type`）。
 pub const CLIENT_TYPE_APP: &str = "2";
 
@@ -30,6 +33,27 @@ pub const CLIENT_TYPE_WEB: &str = "5";
 
 /// 云游戏客户端类型（`x-rpc-client_type`）。
 pub const CLIENT_TYPE_CLOUD_GAME: &str = "3";
+
+/// 通行证（passport）接口使用的 DS Salt，一般不变。
+pub const PASSPORT_SALT: &str = "JwYDpKvLj6MrMqqYU6jTKF17KNO2PXoS";
+
+/// 通行证 SDK 版本，用于 `x-rpc-sdk_version` 与 `x-rpc-account_version`。
+pub const PASSPORT_VERSION: &str = "2.44.0";
+
+/// 通行证接口使用的游戏业务标识（`x-rpc-game_biz`）。
+pub const PASSPORT_GAME_BIZ: &str = "bbs_cn";
+
+/// 米游社 App 的 `x-rpc-sys_version`（Android 12）。
+pub const SYS_VERSION: &str = "12";
+
+/// 通行证换票的目标 Token 类型：LToken。
+pub const TOKEN_TYPE_LTOKEN: u32 = 2;
+
+/// 通行证换票的目标 Token 类型：CookieToken。
+pub const TOKEN_TYPE_COOKIE_TOKEN: u32 = 4;
+
+/// 换票请求中 `src_token.token_type` 的取值：SToken。
+pub const SRC_TOKEN_TYPE_STOKEN: u32 = 1;
 
 /// 国内米游社 User-Agent 中 `miHoYoBBS/` 之前的前缀。
 const USER_AGENT_PREFIX: &str =
