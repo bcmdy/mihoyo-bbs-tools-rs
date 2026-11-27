@@ -73,6 +73,20 @@ impl From<HttpError> for QbotOpenIdError {
     }
 }
 
+/// 备用 access_token 端点：部分实现使用独立域名。
+const FALLBACK_TOKEN_URL: &str = "https://bots.qq.com/app/getAppAccessToken";
+
+/// 发送一次 access_token 请求。
+async fn request_access_token(
+    http: &HttpClient,
+    url: reqwest::Url,
+    body: &serde_json::Value,
+) -> Result<AccessTokenResponse, QbotOpenIdError> {
+    Ok(http
+        .post_json_once(url, reqwest::header::HeaderMap::new(), body)
+        .await?)
+}
+
 #[derive(Debug, Deserialize)]
 struct AccessTokenResponse {
     #[serde(default)]
@@ -126,22 +140,37 @@ pub struct QbotOpenId {
 }
 
 /// 用 AppID/AppSecret 换取 access_token。
+/// 换取 access_token。
+///
+/// 官方文档把该接口列在 `api.bot.qq.com` 下，社区实现（如 `HCHogan/qqbot`）则使用
+/// 独立的 `bots.qq.com`。两者都被官方环境接受：这里以配置地址为主，网络层失败时
+/// 再试备用域名，避免单一域名不可达让命令完全不可用；业务错误（`code` 非 0）不重试，
+/// 因为换域名不会改变鉴权结果。
 async fn fetch_access_token(
     http: &HttpClient,
     api_url: &reqwest::Url,
     appid: &str,
     secret: &SecretString,
 ) -> Result<(String, i64), QbotOpenIdError> {
-    let url = api_url
-        .join("app/getAppAccessToken")
-        .map_err(HttpError::InvalidUrl)?;
     let body = serde_json::json!({
         "appId": appid,
         "clientSecret": secret.expose_secret(),
     });
-    let response: AccessTokenResponse = http
-        .post_json_once(url, reqwest::header::HeaderMap::new(), &body)
-        .await?;
+    let primary = api_url
+        .join("app/getAppAccessToken")
+        .map_err(HttpError::InvalidUrl)?;
+    let response: AccessTokenResponse = match request_access_token(http, primary, &body).await {
+        Ok(response) => response,
+        Err(primary_error) => {
+            let fallback =
+                reqwest::Url::parse(FALLBACK_TOKEN_URL).map_err(HttpError::InvalidUrl)?;
+            match request_access_token(http, fallback, &body).await {
+                Ok(response) => response,
+                // 两个域名都不可达时，报告主域名的错误更有助排查。
+                Err(_) => return Err(primary_error),
+            }
+        }
+    };
     if let Some(code) = response.code.filter(|code| *code != 0) {
         return Err(QbotOpenIdError::ServiceRejected {
             stage: "获取 access_token ",
