@@ -21,8 +21,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
     auth::SecretString,
+    config::default_qbot_api_url,
     http::{HttpClient, HttpError},
-    mihoyo::default_qbot_api_url,
 };
 
 /// 单聊消息事件的 intent 位。`1 << 25` 表示只订阅 C2C 单聊消息。
@@ -77,10 +77,24 @@ impl From<HttpError> for QbotOpenIdError {
 struct AccessTokenResponse {
     #[serde(default)]
     access_token: Option<String>,
-    #[serde(default)]
+    /// 官方示例返回字符串 `"7200"`，实际也可能是数字，两种都要接受。
+    #[serde(default, deserialize_with = "deserialize_optional_seconds")]
     expires_in: Option<i64>,
     #[serde(default)]
     code: Option<i64>,
+}
+
+/// 接受字符串或数字形式的秒数。
+fn deserialize_optional_seconds<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::Number(number)) => number.as_i64(),
+        Some(serde_json::Value::String(text)) => text.trim().parse::<i64>().ok(),
+        _ => None,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +202,10 @@ fn websocket_accept(sec_key: &str) -> String {
 }
 
 /// 最小 SHA-1 实现（FIPS 180-4），只用于 WebSocket 握手校验。
+///
+/// 消息扩展天然是「按下标读写同一数组」，改成迭代器会显著降低可读性，
+/// 因此这里显式允许 `needless_range_loop`。
+#[allow(clippy::needless_range_loop)]
 fn sha1(input: &[u8]) -> [u8; 20] {
     let mut h: [u32; 5] = [
         0x6745_2301,
@@ -242,8 +260,8 @@ fn sha1(input: &[u8]) -> [u8; 20] {
     }
 
     let mut output = [0u8; 20];
-    for (index, value) in h.iter().enumerate() {
-        output[index * 4..index * 4 + 4].copy_from_slice(&value.to_be_bytes());
+    for (slot, value) in output.chunks_exact_mut(4).zip(h.iter()) {
+        slot.copy_from_slice(&value.to_be_bytes());
     }
     output
 }
@@ -454,12 +472,22 @@ impl GatewaySession {
     }
 }
 
+/// 单个连接的等待结果。
+enum SessionOutcome {
+    /// 收到单聊消息，取得 OpenID。
+    OpenId(String),
+    /// 截止时间内未收到消息。
+    TimedOut,
+}
+
 /// 在单个连接上完成鉴权并等待单聊消息。
+///
+/// 返回 `Err` 表示连接级失败（由外层重连），`Ok` 表示本次会话正常结束。
 async fn wait_on_session(
     session: &mut GatewaySession,
     access_token: &str,
     deadline: u64,
-) -> Result<Result<String, QbotOpenIdError>, QbotOpenIdError> {
+) -> Result<SessionOutcome, QbotOpenIdError> {
     let mut heartbeat = 45u64;
     let mut last_heartbeat = unix_now();
     let mut last_seq: Option<i64> = None;
@@ -516,7 +544,7 @@ async fn wait_on_session(
                             .and_then(serde_json::Value::as_str)
                             .filter(|openid| !openid.is_empty())
                     {
-                        return Ok(Ok(openid.to_owned()));
+                        return Ok(SessionOutcome::OpenId(openid.to_owned()));
                     }
                 }
                 // 要求重连。
@@ -532,7 +560,7 @@ async fn wait_on_session(
             last_heartbeat = unix_now();
         }
     }
-    Ok(Err(QbotOpenIdError::Timeout))
+    Ok(SessionOutcome::TimedOut)
 }
 
 /// 获取单聊 OpenID：换取令牌、连接网关并等待用户发送消息。
@@ -558,9 +586,11 @@ pub async fn fetch_open_id(
     while unix_now() < deadline {
         match GatewaySession::connect(http, &gateway).await {
             Ok(mut session) => match wait_on_session(&mut session, &access_token, deadline).await {
-                Ok(Ok(openid)) => return Ok(QbotOpenId { openid, expires_in }),
-                Ok(Err(QbotOpenIdError::Timeout)) => last_error = Some(QbotOpenIdError::Timeout),
-                Ok(Err(error)) | Err(error) => last_error = Some(error),
+                Ok(SessionOutcome::OpenId(openid)) => {
+                    return Ok(QbotOpenId { openid, expires_in });
+                }
+                Ok(SessionOutcome::TimedOut) => last_error = Some(QbotOpenIdError::Timeout),
+                Err(error) => last_error = Some(error),
             },
             Err(error) => last_error = Some(error),
         }
@@ -602,6 +632,20 @@ mod tests {
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[test]
+    fn access_token_accepts_string_and_numeric_expiry() {
+        let from_string: AccessTokenResponse =
+            serde_json::from_str(r#"{"access_token":"t","expires_in":"7200"}"#).unwrap();
+        assert_eq!(from_string.expires_in, Some(7200));
+
+        let from_number: AccessTokenResponse =
+            serde_json::from_str(r#"{"access_token":"t","expires_in":7200}"#).unwrap();
+        assert_eq!(from_number.expires_in, Some(7200));
+
+        let missing: AccessTokenResponse = serde_json::from_str(r#"{"access_token":"t"}"#).unwrap();
+        assert_eq!(missing.expires_in, None);
     }
 
     #[test]
