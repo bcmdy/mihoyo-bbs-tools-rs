@@ -629,6 +629,9 @@ fn provider_target(provider: &NotificationProvider) -> String {
     match provider {
         NotificationProvider::Telegram { chat_id, .. } => mask_tail(chat_id),
         NotificationProvider::Smtp { to, .. } => mask_email(to),
+        NotificationProvider::Qbot { openid, .. } => {
+            format!("单聊 OpenID {}", mask_tail(openid.expose_secret()))
+        }
         NotificationProvider::WindowsToast { .. } => "当前 Windows 桌面".to_owned(),
         _ => "已配置（敏感地址不显示）".to_owned(),
     }
@@ -750,6 +753,7 @@ fn provider_types() -> &'static [&'static str] {
         "wxpusher",
         "serverchan3",
         "smtp",
+        "qbot",
         "windows_toast",
     ]
 }
@@ -835,6 +839,12 @@ fn provider_fields(kind: &str) -> &'static [ProviderField] {
         field("tls", true, Some("implicit")),
         field("timeout_seconds", false, None),
     ];
+    const QBOT: &[ProviderField] = &[
+        field("appid", true, None),
+        secret_field("secret", true, None),
+        secret_field("openid", true, None),
+        secret_field("api_url", false, Some("https://api.bot.qq.com")),
+    ];
     const WINDOWS_TOAST: &[ProviderField] =
         &[field("title_prefix", false, Some("MihoyoBBSTools RS"))];
     match kind {
@@ -855,6 +865,7 @@ fn provider_fields(kind: &str) -> &'static [ProviderField] {
         "wxpusher" => WXPUSHER,
         "serverchan3" => SERVERCHAN3,
         "smtp" => SMTP,
+        "qbot" => QBOT,
         "windows_toast" => WINDOWS_TOAST,
         _ => &[],
     }
@@ -903,6 +914,7 @@ fn provider_type(provider: &NotificationProvider) -> &'static str {
         NotificationProvider::Wxpusher { .. } => "wxpusher",
         NotificationProvider::Serverchan3 { .. } => "serverchan3",
         NotificationProvider::Smtp { .. } => "smtp",
+        NotificationProvider::Qbot { .. } => "qbot",
         NotificationProvider::WindowsToast { .. } => "windows_toast",
     }
 }
@@ -928,6 +940,7 @@ pub(crate) fn provider_display(kind: &str) -> &'static str {
         "wxpusher" => "WxPusher",
         "serverchan3" => "Server 酱 3",
         "smtp" => "SMTP 邮件",
+        "qbot" => "QQ 机器人单聊",
         "windows_toast" => "Windows 本地通知",
         _ => "未知通知渠道",
     }

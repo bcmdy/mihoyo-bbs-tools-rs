@@ -1,6 +1,9 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
-use reqwest::{Url, header::HeaderMap};
+use reqwest::{
+    Url,
+    header::{AUTHORIZATION, HeaderMap, HeaderValue},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -10,7 +13,9 @@ use crate::{
     service::RunReport,
 };
 
+mod qbot;
 mod smtp;
+pub use qbot::{QbotOpenId, QbotOpenIdError, fetch_open_id as fetch_qbot_open_id};
 use smtp::SmtpProvider;
 mod windows_toast;
 use windows_toast::WindowsToastProvider;
@@ -66,6 +71,7 @@ pub enum ProviderKind {
     Wxpusher,
     Serverchan3,
     Smtp,
+    Qbot,
     WindowsToast,
 }
 
@@ -91,6 +97,7 @@ impl ProviderKind {
             Self::Wxpusher => "wxpusher",
             Self::Serverchan3 => "serverchan3",
             Self::Smtp => "smtp",
+            Self::Qbot => "qbot",
             Self::WindowsToast => "windows_toast",
         }
     }
@@ -116,6 +123,7 @@ impl ProviderKind {
             Self::Wxpusher => "WxPusher",
             Self::Serverchan3 => "Server 酱 3",
             Self::Smtp => "SMTP 邮件",
+            Self::Qbot => "QQ 机器人单聊",
             Self::WindowsToast => "Windows 本地通知",
         }
     }
@@ -177,6 +185,10 @@ pub enum PushError {
     UnsupportedWindowsToast,
     #[error("Windows 本地通知提交失败")]
     WindowsToastDelivery,
+    #[error("QQ 机器人 access_token 获取失败")]
+    QbotAccessToken,
+    #[error("QQ 机器人推送失败")]
+    QbotDelivery,
 }
 
 pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), PushError>> + Send + 'a>>;
@@ -336,6 +348,9 @@ fn provider_target(provider: &NotificationProvider) -> String {
     match provider {
         NotificationProvider::Telegram { chat_id, .. } => mask_tail(chat_id),
         NotificationProvider::Smtp { to, .. } => mask_email(to),
+        NotificationProvider::Qbot { openid, .. } => {
+            format!("单聊 OpenID {}", mask_tail(openid.expose_secret()))
+        }
         NotificationProvider::WindowsToast { .. } => "当前 Windows 桌面".to_owned(),
         _ => "已配置（敏感地址不显示）".to_owned(),
     }
@@ -414,10 +429,173 @@ fn configured_provider(config: &Config, provider: &NotificationProvider) -> Box<
         NotificationProvider::Pushplus { token, topic } => {
             Box::new(PushplusProvider::new(http, token.clone(), topic.clone()))
         }
+        NotificationProvider::Qbot {
+            appid,
+            secret,
+            openid,
+            api_url,
+        } => Box::new(QbotProvider::new(
+            http,
+            appid.clone(),
+            secret.clone(),
+            openid.clone(),
+            api_url.clone(),
+        )),
         other => Box::new(CompatProvider {
             http,
             config: other.clone(),
         }),
+    }
+}
+
+/// QQ 官方机器人单聊推送。
+///
+/// 分两步：先用 AppID/AppSecret 换取 `access_token`，再带
+/// `Authorization: QQBot <token>` 向 `/v2/users/{openid}/messages` 发送文本。
+///
+/// 关键点：该服务即使调用失败也可能返回 HTTP 200，错误在响应体 `code` 里，
+/// 因此两步都必须校验业务码，不能只看状态码。access_token 有效期 7200 秒，
+/// 这里不做缓存：本项目一次运行只推送一次，缓存收益抵不过失效判断的复杂度。
+#[derive(Clone)]
+struct QbotProvider {
+    http: HttpClient,
+    appid: String,
+    secret: SecretString,
+    openid: SecretString,
+    api_url: Url,
+}
+
+impl std::fmt::Debug for QbotProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QbotProvider")
+            .field("appid", &self.appid)
+            .field("api_url", &self.api_url)
+            .finish_non_exhaustive()
+    }
+}
+
+impl QbotProvider {
+    fn new(
+        http: HttpClient,
+        appid: String,
+        secret: SecretString,
+        openid: SecretString,
+        api_url: Option<Url>,
+    ) -> Self {
+        Self {
+            http,
+            appid,
+            secret,
+            openid,
+            api_url: api_url.unwrap_or_else(crate::config::default_qbot_api_url),
+        }
+    }
+
+    fn endpoint(&self, path: &str) -> Result<Url, PushError> {
+        self.api_url
+            .join(path)
+            .map_err(|_| PushError::InvalidEndpoint)
+    }
+}
+
+#[derive(Serialize)]
+struct QbotTokenRequest<'a> {
+    #[serde(rename = "appId")]
+    app_id: &'a str,
+    #[serde(rename = "clientSecret")]
+    client_secret: &'a str,
+}
+
+#[derive(Deserialize)]
+struct QbotTokenResponse {
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    code: Option<i64>,
+    /// 服务端错误描述；不进入日志与报告，避免回显服务端原文。
+    #[serde(default, rename = "message")]
+    _message: Option<String>,
+}
+
+#[derive(Serialize)]
+struct QbotMessageRequest<'a> {
+    content: &'a str,
+    msg_type: u32,
+}
+
+#[derive(Deserialize)]
+struct QbotMessageResponse {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    code: Option<i64>,
+    /// 同上：保留字段但不输出。
+    #[serde(default, rename = "message")]
+    _message: Option<String>,
+}
+
+impl Provider for QbotProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Qbot
+    }
+
+    fn send<'a>(&'a self, notification: &'a Notification) -> SendFuture<'a> {
+        Box::pin(async move {
+            let token_url = self.endpoint("app/getAppAccessToken")?;
+            let token_response: QbotTokenResponse = self
+                .http
+                .post_json_once(
+                    token_url,
+                    HeaderMap::new(),
+                    &QbotTokenRequest {
+                        app_id: &self.appid,
+                        client_secret: self.secret.expose_secret(),
+                    },
+                )
+                .await
+                .map_err(redact_http_error)?;
+            // 失败同样是 HTTP 200，必须优先看业务码。
+            if let Some(code) = token_response.code.filter(|code| *code != 0) {
+                return Err(PushError::ServiceRejected(code));
+            }
+            let access_token = token_response
+                .access_token
+                .filter(|token| !token.is_empty())
+                .ok_or(PushError::QbotAccessToken)?;
+
+            let message_url = self.endpoint(&format!(
+                "v2/users/{}/messages",
+                self.openid.expose_secret()
+            ))?;
+            let mut headers = HeaderMap::new();
+            let authorisation = format!("QQBot {access_token}");
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&authorisation).map_err(|_| PushError::InvalidResponse)?,
+            );
+            let content = format!("{}\n{}", notification.title, notification.body);
+            let response: QbotMessageResponse = self
+                .http
+                .post_json_once(
+                    message_url,
+                    headers,
+                    &QbotMessageRequest {
+                        content: &content,
+                        msg_type: 0,
+                    },
+                )
+                .await
+                .map_err(redact_http_error)?;
+            if let Some(code) = response.code.filter(|code| *code != 0) {
+                return Err(PushError::ServiceRejected(code));
+            }
+            // 成功响应必须带消息 id；缺失说明不是成功回执。
+            response
+                .id
+                .filter(|id| !id.is_empty())
+                .map(|_| ())
+                .ok_or(PushError::QbotDelivery)
+        })
     }
 }
 
@@ -457,6 +635,7 @@ fn configured_kind(provider: &NotificationProvider) -> ProviderKind {
         NotificationProvider::Wxpusher { .. } => ProviderKind::Wxpusher,
         NotificationProvider::Serverchan3 { .. } => ProviderKind::Serverchan3,
         NotificationProvider::Smtp { .. } => ProviderKind::Smtp,
+        NotificationProvider::Qbot { .. } => ProviderKind::Qbot,
         NotificationProvider::WindowsToast { .. } => ProviderKind::WindowsToast,
     }
 }
@@ -553,7 +732,7 @@ impl CompatProvider {
                 let mut send=base.join("cgi-bin/message/send").map_err(|_|PushError::InvalidEndpoint)?; send.query_pairs_mut().append_pair("access_token",&token.access_token);
                 self.json(send,&serde_json::json!({"touser":to_user,"msgtype":"text","agentid":agent_id,"text":{"content":text},"safe":0})).await
             }
-            Telegram{..}|Webhook{..}|Pushplus{..}|Smtp{..}|WindowsToast{..} => unreachable!(),
+            Qbot{..}|Telegram{..}|Webhook{..}|Pushplus{..}|Smtp{..}|WindowsToast{..} => unreachable!(),
         }
     }
     async fn json(&self, url: Url, body: &serde_json::Value) -> Result<(), PushError> {
@@ -628,6 +807,7 @@ const fn compat_success_rule(kind: ProviderKind) -> CompatSuccessRule {
         | ProviderKind::Bark
         | ProviderKind::Qmsg
         | ProviderKind::Smtp
+        | ProviderKind::Qbot
         | ProviderKind::WindowsToast => CompatSuccessRule::StatusOnly,
     }
 }
@@ -1279,6 +1459,118 @@ mod tests {
             Url::parse(&format!("{}/send", server.uri())).unwrap(),
         );
         assert_eq!(provider.send(&notification()).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn qbot_exchanges_token_then_posts_message_with_bearer_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/app/getAppAccessToken"))
+            .and(body_json(json!({
+                "appId": "102000001",
+                "clientSecret": "qbot-secret"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "token-value",
+                "expires_in": "7200"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/users/openid-value/messages"))
+            .and(header("authorization", "QQBot token-value"))
+            .and(body_json(json!({
+                "content": "执行结果\n签到成功",
+                "msg_type": 0
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "message-id"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = QbotProvider::new(
+            http(),
+            "102000001".to_owned(),
+            SecretString::new("qbot-secret"),
+            SecretString::new("openid-value"),
+            Some(Url::parse(&server.uri()).unwrap()),
+        );
+        assert_eq!(provider.send(&notification()).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn qbot_reports_business_error_returned_with_http_200() {
+        let server = MockServer::start().await;
+        // 开放平台失败也是 200，错误只在 code 里；必须按业务码判失败。
+        Mock::given(method("POST"))
+            .and(path("/app/getAppAccessToken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 100016,
+                "message": "invalid appid or secret"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = QbotProvider::new(
+            http(),
+            "102000001".to_owned(),
+            SecretString::new("bad-secret"),
+            SecretString::new("openid-value"),
+            Some(Url::parse(&server.uri()).unwrap()),
+        );
+        assert_eq!(
+            provider.send(&notification()).await,
+            Err(PushError::ServiceRejected(100016))
+        );
+    }
+
+    #[tokio::test]
+    async fn qbot_requires_message_id_in_success_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/app/getAppAccessToken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "token-value"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/users/openid-value/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 11244
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = QbotProvider::new(
+            http(),
+            "102000001".to_owned(),
+            SecretString::new("qbot-secret"),
+            SecretString::new("openid-value"),
+            Some(Url::parse(&server.uri()).unwrap()),
+        );
+        assert_eq!(
+            provider.send(&notification()).await,
+            Err(PushError::ServiceRejected(11244))
+        );
+    }
+
+    #[test]
+    fn qbot_secrets_are_redacted_in_debug_output() {
+        let provider = QbotProvider::new(
+            http(),
+            "102000001".to_owned(),
+            SecretString::new("qbot-secret"),
+            SecretString::new("openid-value"),
+            None,
+        );
+        let debug = format!("{provider:?}");
+        assert!(!debug.contains("qbot-secret"), "{debug}");
+        assert!(!debug.contains("openid-value"), "{debug}");
     }
 
     #[tokio::test]

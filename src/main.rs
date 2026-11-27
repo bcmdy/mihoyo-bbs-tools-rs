@@ -6,6 +6,7 @@ use std::{
 
 use clap::Parser;
 use mihoyo_bbs_tools::{
+    auth,
     cli::{
         AutomationCommand, CheckinRegion, Cli, Command, ConfigCommand, DirectoryRunArgs,
         NotificationCommand, QinglongArgs, ReportFormat, RunTask, UpdateCommand,
@@ -172,6 +173,14 @@ async fn run(cli: Cli) -> Result<u8, AppError> {
             println!("配置已迁移到 {}", output.display());
         }
         Command::PrintExampleConfig => print!("{}", config::EXAMPLE_CONFIG),
+        Command::QbotOpenId {
+            config: path,
+            appid,
+            secret,
+            timeout,
+        } => {
+            return execute_qbot_openid(&path, appid, secret, timeout).await;
+        }
         Command::CreateLauncher { output, force } => {
             let path =
                 mihoyo_bbs_tools::launcher::create_windows_launcher(output.as_deref(), force)
@@ -601,7 +610,8 @@ fn cli_config_path(cli: &Cli) -> Option<&std::path::Path> {
         | Command::Doctor { config, .. }
         | Command::Checkin { config, .. }
         | Command::Run { config, .. }
-        | Command::Schedule { config, .. } => Some(config),
+        | Command::Schedule { config, .. }
+        | Command::QbotOpenId { config, .. } => Some(config),
         Command::Config { command } => match command {
             ConfigCommand::Init { config }
             | ConfigCommand::Setup { config }
@@ -783,6 +793,82 @@ async fn execute_directory(args: DirectoryRunArgs) -> Result<u8, AppError> {
     print!("{summary}");
     tracing::info!("{}", summary.trim_end());
     Ok(batch.exit_code())
+}
+
+/// 获取 QQ 机器人单聊 OpenID 并写回配置。
+///
+/// 交互约定：AppID 可以来自参数或配置；AppSecret 属于敏感凭据，优先从参数/配置读取，
+/// 缺失时走星号掩码输入，避免出现在命令行历史与日志里。
+async fn execute_qbot_openid(
+    path: &std::path::Path,
+    appid: Option<String>,
+    secret: Option<String>,
+    timeout: u64,
+) -> Result<u8, AppError> {
+    let loaded = config::load(path)?;
+    let existing = loaded
+        .config
+        .notifications
+        .providers
+        .iter()
+        .find_map(|provider| {
+            if let config::NotificationProvider::Qbot {
+                appid: configured_appid,
+                secret: configured_secret,
+                ..
+            } = provider
+            {
+                Some((configured_appid.clone(), configured_secret.clone()))
+            } else {
+                None
+            }
+        });
+    let (configured_appid, configured_secret) = match existing {
+        Some((appid, secret)) => (Some(appid), Some(secret)),
+        None => (None, None),
+    };
+
+    let appid = match appid.or(configured_appid) {
+        Some(appid) if !appid.trim().is_empty() => appid,
+        _ => config::prompt_interactive("QQ 机器人 AppID")?,
+    };
+    if appid.trim().is_empty() {
+        return Err(AppError::Task("AppID 不能为空".to_owned()));
+    }
+    let secret = match secret {
+        Some(secret) if !secret.trim().is_empty() => secret,
+        _ => match configured_secret.filter(|secret| !secret.expose_secret().trim().is_empty()) {
+            Some(secret) => secret.expose_secret().to_owned(),
+            None => config::prompt_secret("QQ 机器人 AppSecret")?,
+        },
+    };
+    if secret.trim().is_empty() {
+        return Err(AppError::Task("AppSecret 不能为空".to_owned()));
+    }
+
+    let http = mihoyo_bbs_tools::http::factory::for_update()?;
+    println!("正在获取访问令牌并连接 QQ 机器人网关…");
+    println!("请使用手机 QQ 向该机器人发送一条单聊消息，收到后会自动写入配置。");
+    let openid = mihoyo_bbs_tools::push::fetch_qbot_open_id(
+        &http,
+        &appid,
+        &auth::SecretString::new(secret.clone()),
+        None,
+        timeout,
+    )
+    .await
+    .map_err(|error| AppError::Task(error.to_string()))?;
+
+    let index = config::set_qbot_open_id(path, &openid.openid, &appid, &secret)?;
+    println!("已获取单聊 OpenID 并写入第 {index} 个通知渠道（qbot）。");
+    println!("配置中的 openid 已脱敏保存；如需推送请确认 notifications.enabled 为 true。");
+    if openid.expires_in > 0 {
+        println!(
+            "本次访问令牌有效约 {} 秒，仅用于本次操作。",
+            openid.expires_in
+        );
+    }
+    Ok(0)
 }
 
 async fn execute_qinglong(args: QinglongArgs) -> Result<u8, AppError> {

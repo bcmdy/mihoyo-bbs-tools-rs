@@ -363,6 +363,38 @@ impl HttpClient {
         }
     }
 
+    /// 发起一次 HTTP 请求并在服务端同意 upgrade 时返回原始连接。
+    ///
+    /// 用于需要切换到其它协议（如 WebSocket）的场景：调用方自行设置
+    /// `Connection: Upgrade`、`Upgrade`、`Sec-WebSocket-*` 等头，本方法只负责
+    /// 复用既有的代理与 TLS 配置、校验状态码并交出可升级的响应。
+    ///
+    /// 只在握手阶段使用一次，不套用网络重试。
+    pub async fn get_upgrade_once(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+    ) -> Result<reqwest::Response, HttpError> {
+        match self
+            .inner
+            .request(Method::GET, url)
+            .headers(headers)
+            .send()
+            .await
+        {
+            // 101 Switching Protocols 是成功的 upgrade 响应，不属于 2xx。
+            Ok(response)
+                if response.status().is_success()
+                    || response.status() == StatusCode::SWITCHING_PROTOCOLS =>
+            {
+                Ok(response)
+            }
+            Ok(response) => Err(HttpError::Status(response.status())),
+            Err(error) if error.is_timeout() => Err(HttpError::Timeout),
+            Err(error) => Err(HttpError::Connect(sanitize_reqwest_error(error))),
+        }
+    }
+
     /// 发送一次原始字节 POST，并解析 JSON 响应。
     ///
     /// 与 [`Self::post_json_once`] 的区别是**不重新序列化请求体**：通行证换票等接口

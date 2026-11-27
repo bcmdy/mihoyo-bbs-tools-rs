@@ -94,6 +94,25 @@ pub enum Command {
     MigrateConfig(MigrationArgs),
     /// 将完整的脱敏默认配置模板输出到标准输出
     PrintExampleConfig,
+    /// 获取 QQ 机器人单聊 OpenID 并写入配置
+    ///
+    /// 需要 QQ 开放平台的 AppID 与 AppSecret：程序先用它们换取访问令牌，
+    /// 再连接网关等待你向机器人发送一条单聊消息，最后把 OpenID 写回
+    /// `notifications.providers` 中匹配的 qbot 渠道。
+    QbotOpenId {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "config/config.yaml")]
+        config: PathBuf,
+        /// QQ 机器人 AppID；省略时读取配置或交互输入
+        #[arg(long)]
+        appid: Option<String>,
+        /// QQ 机器人 AppSecret；省略时读取配置或安全输入。不会写入命令行历史
+        #[arg(long)]
+        secret: Option<String>,
+        /// 等待单聊消息的超时秒数
+        #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(10..=3600))]
+        timeout: u64,
+    },
     /// 在 Windows 创建可移动的异步启动 BAT
     CreateLauncher {
         /// BAT 输出路径；默认生成在当前 EXE 所在目录

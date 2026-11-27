@@ -27,9 +27,10 @@ pub use editor::{
     replace_account_cookie, restore_backup, set_account_china_checkin, set_account_cloud_games,
     set_account_device, set_account_games, set_account_general, set_account_hoyolab,
     set_account_proxy, set_account_tasks, set_captcha_endpoint, set_logging,
-    set_notification_options, set_notification_provider, set_runtime, set_schedule,
+    set_notification_options, set_notification_provider, set_qbot_open_id, set_runtime,
+    set_schedule,
 };
-pub use input::confirm as confirm_interactive;
+pub use input::{confirm as confirm_interactive, prompt_secret, prompt_text as prompt_interactive};
 pub use interactive::{InitResult, init as interactive_init, setup as interactive_setup};
 
 pub const CURRENT_CONFIG_VERSION: u64 = 1;
@@ -731,6 +732,26 @@ pub enum NotificationProvider {
         #[serde(default)]
         timeout_seconds: Option<u64>,
     },
+    /// QQ 官方机器人单聊推送。
+    ///
+    /// 需要开放平台创建机器人并开通单聊权限；`openid` 是接收者与机器人单聊的
+    /// OpenID，可用 `config qbot-openid` 获取。
+    Qbot {
+        appid: String,
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        secret: SecretString,
+        #[serde(
+            deserialize_with = "deserialize_secret",
+            serialize_with = "serialize_secret"
+        )]
+        openid: SecretString,
+        /// API 根地址；省略时使用官方地址。
+        #[serde(default)]
+        api_url: Option<Url>,
+    },
     WindowsToast {
         #[serde(default = "default_windows_toast_title_prefix")]
         title_prefix: String,
@@ -759,6 +780,7 @@ impl NotificationProvider {
             Self::Wxpusher { .. } => "wxpusher",
             Self::Serverchan3 { .. } => "serverchan3",
             Self::Smtp { .. } => "smtp",
+            Self::Qbot { .. } => "qbot",
             Self::WindowsToast { .. } => "windows_toast",
         }
     }
@@ -781,6 +803,9 @@ impl NotificationProvider {
             | Self::Feishubot { webhook }
             | Self::Discord { webhook } => Url::parse(webhook.expose_secret()).ok(),
             Self::Gotify { api_url, .. } => Some(api_url.clone()),
+            Self::Qbot { api_url, .. } => {
+                Some(api_url.clone().unwrap_or_else(default_qbot_api_url))
+            }
             Self::Pushplus { .. }
             | Self::Serverchan3 { .. }
             | Self::Smtp { .. }
@@ -815,6 +840,11 @@ fn default_windows_toast_title_prefix() -> String {
 
 fn default_wecom_to_user() -> String {
     "@all".to_owned()
+}
+
+/// QQ 机器人开放平台 API 根地址。
+pub(crate) fn default_qbot_api_url() -> Url {
+    Url::parse("https://api.bot.qq.com").expect("固定 QQ 机器人 API URL 应当有效")
 }
 
 pub fn load(path: &Path) -> Result<LoadedConfig, ConfigError> {
@@ -1394,6 +1424,21 @@ fn validate_provider(provider: &NotificationProvider, index: usize, errors: &mut
                 errors.push(format!("{path}.timeout_seconds 必须在 1 到 300 之间"));
             }
         }
+        NotificationProvider::Qbot {
+            appid,
+            secret,
+            openid,
+            api_url,
+        } => {
+            if appid.trim().is_empty() {
+                errors.push(format!("{path}.appid 不能为空"));
+            } else if !appid.trim().bytes().all(|byte| byte.is_ascii_digit()) {
+                errors.push(format!("{path}.appid 必须是纯数字 AppID"));
+            }
+            validate_required_secret(secret, &format!("{path}.secret"), errors);
+            validate_required_secret(openid, &format!("{path}.openid"), errors);
+            validate_optional_http_url(api_url.as_ref(), &format!("{path}.api_url"), errors);
+        }
         NotificationProvider::WindowsToast { title_prefix } => {
             if title_prefix.chars().any(|character| character.is_control()) {
                 errors.push(format!("{path}.title_prefix 不能包含控制字符"));
@@ -1777,6 +1822,7 @@ fn collect_unknown_field_warnings(value: &Value) -> Vec<String> {
                             "tls",
                             "timeout_seconds",
                         ][..],
+                        Some("qbot") => &["type", "appid", "secret", "openid", "api_url"][..],
                         Some("windows_toast") => &["type", "title_prefix"][..],
                         _ => &["type"][..],
                     };

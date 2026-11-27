@@ -170,5 +170,12 @@ notifications:
   #   subject: "MihoyoBBSTools RS"
   #   tls: implicit
   #   timeout_seconds: null
+  # - type: qbot
+  #   # QQ 官方机器人单聊推送；appid/secret 在 QQ 开放平台「开发设置」获取
+  #   # openid 可运行 `MihoyoBBSToolsRS qbot-open-id` 自动获取并写回本文件
+  #   appid: "102000001"
+  #   secret: "${QBOT_SECRET}"
+  #   openid: "${QBOT_OPENID}"
+  #   api_url: null
   # - type: windows_toast
   #   title_prefix: "MihoyoBBSTools RS"

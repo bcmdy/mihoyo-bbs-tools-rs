@@ -892,6 +892,79 @@ pub fn set_notification_provider(
     })
 }
 
+/// 把 QQ 机器人单聊 OpenID 写回配置中的 qbot 渠道。
+///
+/// 只更新匹配的 `type: qbot` 条目；配置里还没有 qbot 渠道时才新建一条，
+/// 并补齐 `appid`/`secret`，避免生成半成品配置。其余字段与注释的保留策略
+/// 与其它编辑操作一致（受控重写 + 校验 + 备份）。
+pub fn set_qbot_open_id(
+    path: &Path,
+    openid: &str,
+    appid: &str,
+    secret: &str,
+) -> Result<usize, ConfigError> {
+    if openid.trim().is_empty() {
+        return Err(ConfigError::Edit("OpenID 不能为空".into()));
+    }
+    let mut updated_index = 0;
+    mutate_raw(path, |root| {
+        let notifications = root
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("配置根节点无效".into()))?
+            .entry(key("notifications"))
+            .or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .ok_or_else(|| ConfigError::Edit("notifications 必须是对象".into()))?;
+        let providers = notifications
+            .entry(key("providers"))
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut()
+            .ok_or_else(|| ConfigError::Edit("notifications.providers 必须是列表".into()))?;
+
+        let existing = providers.iter_mut().position(|provider| {
+            provider
+                .as_mapping()
+                .and_then(|provider| provider.get(key("type")))
+                .and_then(Value::as_str)
+                == Some("qbot")
+        });
+        let provider = if let Some(index) = existing {
+            updated_index = index + 1;
+            providers
+                .get_mut(index)
+                .and_then(Value::as_mapping_mut)
+                .ok_or_else(|| ConfigError::Edit("qbot 通知渠道结构无效".into()))?
+        } else {
+            let mut created = Mapping::new();
+            created.insert(key("type"), Value::String("qbot".to_owned()));
+            created.insert(key("appid"), Value::String(appid.to_owned()));
+            created.insert(key("secret"), Value::String(secret.to_owned()));
+            created.insert(key("openid"), Value::String(openid.to_owned()));
+            providers.push(Value::Mapping(created));
+            updated_index = providers.len();
+            providers
+                .last_mut()
+                .and_then(Value::as_mapping_mut)
+                .expect("刚添加的 qbot 渠道是对象")
+        };
+
+        provider.insert(key("openid"), Value::String(openid.to_owned()));
+        // 已存在的渠道只在缺失时补 appid/secret，避免覆盖用户手工修改。
+        if !appid.trim().is_empty() {
+            provider
+                .entry(key("appid"))
+                .or_insert_with(|| Value::String(appid.to_owned()));
+        }
+        if !secret.trim().is_empty() {
+            provider
+                .entry(key("secret"))
+                .or_insert_with(|| Value::String(secret.to_owned()));
+        }
+        Ok(())
+    })?;
+    Ok(updated_index)
+}
+
 pub fn remove_notification_provider(path: &Path, index: usize) -> Result<(), ConfigError> {
     mutate_raw(path, |root| {
         let notifications = root
