@@ -222,10 +222,20 @@ fn sha1(input: &[u8]) -> [u8; 20] {
     }
     message.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in message.chunks_exact(64) {
+    // 逐块处理：用索引而不是 `chunks_exact`，既避开 clippy 的
+    // `chunks_exact_to_as_chunks` 建议（其替代 `as_chunks` 在部分版本不可用），
+    // 也避免为常量分块尺寸引入额外 lint 抑制。
+    let block_count = message.len() / 64;
+    for block in 0..block_count {
         let mut w = [0u32; 80];
-        for (index, word) in chunk.chunks_exact(4).enumerate() {
-            w[index] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        for index in 0..16 {
+            let offset = block * 64 + index * 4;
+            w[index] = u32::from_be_bytes([
+                message[offset],
+                message[offset + 1],
+                message[offset + 2],
+                message[offset + 3],
+            ]);
         }
         for index in 16..80 {
             w[index] = (w[index - 3] ^ w[index - 8] ^ w[index - 14] ^ w[index - 16]).rotate_left(1);
@@ -260,17 +270,25 @@ fn sha1(input: &[u8]) -> [u8; 20] {
     }
 
     let mut output = [0u8; 20];
-    for (slot, value) in output.chunks_exact_mut(4).zip(h.iter()) {
-        slot.copy_from_slice(&value.to_be_bytes());
+    for (index, value) in h.iter().enumerate() {
+        output[index * 4..index * 4 + 4].copy_from_slice(&value.to_be_bytes());
     }
     output
+}
+
+/// 一次帧解析的结果。
+struct ParsedFrame {
+    opcode: u8,
+    payload: Vec<u8>,
+    /// 本帧在缓冲区中占用的字节数。
+    consumed: usize,
 }
 
 /// 从字节缓冲解析一个 WebSocket 帧，返回帧与已消费的字节数。
 ///
 /// 数据不完整时返回 `Ok(None)` 且不消费；抽出为纯函数便于在不建立连接的情况下
 /// 覆盖长度编码、掩码与分片边界。
-fn parse_frame_bytes(buffer: &[u8]) -> Result<Option<((u8, Vec<u8>), usize)>, QbotOpenIdError> {
+fn parse_frame_bytes(buffer: &[u8]) -> Result<Option<ParsedFrame>, QbotOpenIdError> {
     if buffer.len() < 2 {
         return Ok(None);
     }
@@ -320,7 +338,11 @@ fn parse_frame_bytes(buffer: &[u8]) -> Result<Option<((u8, Vec<u8>), usize)>, Qb
             *byte ^= mask[index % 4];
         }
     }
-    Ok(Some(((opcode, payload), offset + length)))
+    Ok(Some(ParsedFrame {
+        opcode,
+        payload,
+        consumed: offset + length,
+    }))
 }
 
 /// 一次 WebSocket 会话：握手后等待 `C2C_MESSAGE_CREATE` 事件。
@@ -426,11 +448,11 @@ impl GatewaySession {
 
     /// 尝试从缓冲区解析出一帧；数据不足时返回 `None`。
     fn parse_frame(&mut self) -> Result<Option<(u8, Vec<u8>)>, QbotOpenIdError> {
-        let Some((frame, consumed)) = parse_frame_bytes(&self.buffer)? else {
+        let Some(frame) = parse_frame_bytes(&self.buffer)? else {
             return Ok(None);
         };
-        self.buffer.drain(..consumed);
-        Ok(Some(frame))
+        self.buffer.drain(..frame.consumed);
+        Ok(Some((frame.opcode, frame.payload)))
     }
 
     /// 发送一个客户端帧（必须加掩码）。
@@ -671,10 +693,10 @@ mod tests {
                 .map(|(index, byte)| byte ^ mask[index % 4]),
         );
 
-        let ((opcode, decoded), consumed) = parse_frame_bytes(&frame).unwrap().unwrap();
-        assert_eq!(opcode, 0x1);
-        assert_eq!(decoded, b"hello");
-        assert_eq!(consumed, frame.len());
+        let parsed = parse_frame_bytes(&frame).unwrap().unwrap();
+        assert_eq!(parsed.opcode, 0x1);
+        assert_eq!(parsed.payload, b"hello");
+        assert_eq!(parsed.consumed, frame.len());
 
         // 不足一帧时返回 None。
         assert!(parse_frame_bytes(&[0x81]).unwrap().is_none());
@@ -688,16 +710,16 @@ mod tests {
         let mut frame = vec![0x81, 126];
         frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
         frame.extend_from_slice(&payload);
-        let ((opcode, decoded), consumed) = parse_frame_bytes(&frame).unwrap().unwrap();
-        assert_eq!(opcode, 0x1);
-        assert_eq!(decoded, payload);
-        assert_eq!(consumed, frame.len());
+        let parsed = parse_frame_bytes(&frame).unwrap().unwrap();
+        assert_eq!(parsed.opcode, 0x1);
+        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.consumed, frame.len());
 
         // 同缓冲区内两帧：只消费第一帧。
         let mut two = frame.clone();
         two.extend_from_slice(&frame);
-        let ((_, first), consumed) = parse_frame_bytes(&two).unwrap().unwrap();
-        assert_eq!(first, payload);
-        assert_eq!(consumed, frame.len());
+        let first = parse_frame_bytes(&two).unwrap().unwrap();
+        assert_eq!(first.payload, payload);
+        assert_eq!(first.consumed, frame.len());
     }
 }
