@@ -297,12 +297,144 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  build-macos:
+    name: 构建 macOS ${{ matrix.package_arch }}
+    needs: quality
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            package_arch: arm64
+            runs_on: macos-14
+          - target: x86_64-apple-darwin
+            package_arch: x86_64
+            runs_on: macos-14
+    env:
+      CARGO_TARGET: ${{ matrix.target }}
+      PACKAGE_ARCH: ${{ matrix.package_arch }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: 确定构建版本
+        id: version
+        shell: bash
+        env:
+          RAW_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          raw_version="$RAW_VERSION"
+          version="${raw_version#v}"
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "版本号只能包含字母、数字、点、下划线和连字符" >&2
+            exit 1
+          fi
+          echo "MIHOYO_BBS_TOOLS_VERSION=$version" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=MihoyoBBSToolsRS-$version-macos-$PACKAGE_ARCH" >> "$GITHUB_ENV"
+          echo "package_name=MihoyoBBSToolsRS-$version-macos-$PACKAGE_ARCH" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: 检出手动指定的版本标签
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git checkout --detach "$TAG"
+
+      - name: 记录最终检出的提交
+        # 与其它平台一致：在最终检出后用 HEAD 作为 GIT_COMMIT，
+        # 保证程序 `version` 输出的提交与实际标签一致。
+        shell: bash
+        run: |
+          commit="$(git rev-parse HEAD)"
+          echo "GIT_COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "本次构建提交：$commit"
+
+      - name: 安装 Rust 目标
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$CARGO_TARGET"
+
+      - name: 编译 Release
+        # macOS 没有 cross 工具链需求：macos-14 是 arm64 runner，
+        # 用 rustup target 直接产出两个架构的产物。
+        shell: bash
+        run: |
+          set +e
+          cargo build --release --locked --target "$CARGO_TARGET" 2>&1 | tee build.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            details=$(tail -n 100 build.log)
+            details="${details//'%'/'%25'}"
+            details="${details//$'\r'/'%0D'}"
+            details="${details//$'\n'/'%0A'}"
+            echo "::error title=macOS $PACKAGE_ARCH 发布构建失败::$details"
+          fi
+          exit "$code"
+
+      - name: 验证目标程序可启动
+        shell: bash
+        run: |
+          binary="target/$CARGO_TARGET/release/MihoyoBBSToolsRS"
+          if [[ "$CARGO_TARGET" == "aarch64-apple-darwin" ]]; then
+            "$binary" version
+          else
+            # Intel 产物在 arm64 runner 上经 Rosetta 运行；未安装 Rosetta 时
+            # 退化为只检查文件存在与可执行位。
+            if arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+              arch -x86_64 "$binary" version
+            else
+              echo "未安装 Rosetta，跳过 x86_64 产物运行验证"
+              test -x "$binary"
+            fi
+          fi
+
+      - name: 打包并生成校验文件
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="$PACKAGE_NAME"
+          package_dir="package/$package_name"
+          binary_path="target/$CARGO_TARGET/release/MihoyoBBSToolsRS"
+          mkdir -p "$package_dir/config" "$package_dir/dacapo" dist
+          cp "$binary_path" "$package_dir/"
+          cp docs/使用说明.md "$package_dir/使用说明.md"
+          cp config/config.example.yaml "$package_dir/config/"
+          cp integrations/dacapo/template.yml "$package_dir/dacapo/"
+          tar -C package -czf "dist/$package_name.tar.gz" "$package_name"
+          binary_bytes=$(stat -f %z "$binary_path")
+          archive_bytes=$(stat -f %z "dist/$package_name.tar.gz")
+          {
+            echo "### macOS $PACKAGE_ARCH 体积"
+            echo "| 文件 | 字节数 |"
+            echo "|---|---:|"
+            echo "| MihoyoBBSToolsRS | $binary_bytes |"
+            echo "| $package_name.tar.gz | $archive_bytes |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cd dist
+          shasum -a 256 "$package_name.tar.gz" > "$package_name.tar.gz.sha256"
+
+      - name: 上传 macOS 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.package_name }}
+          path: dist/*
+          if-no-files-found: error
+
   publish:
     name: 创建 GitHub Release
     needs:
       - quality
       - build-linux
       - build-windows
+      - build-macos
     runs-on: ubuntu-latest
     permissions:
       contents: write

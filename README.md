@@ -1,6 +1,6 @@
 # MihoyoBBSTools RS
 
-面向 Windows 与 Linux 的米游社、HoYoLAB 自动签到和社区任务工具。支持多账号、验证码平台、代理、日志及多种通知渠道。
+面向 Windows、Linux 与 macOS 的米游社、HoYoLAB 自动签到和社区任务工具。支持多账号、验证码平台、代理、日志及多种通知渠道。
 
 > MihoyoBBSTools RS 是社区维护的非官方开源项目，与米哈游、HoYoverse 及其关联公司无隶属、授权、认可或合作关系。使用前请自行确认账号安全和相关服务条款。
 
@@ -18,7 +18,7 @@
 - Telegram、微信相关渠道、SMTP、Webhook、Windows 本地通知等多种推送方式。
 - 按日滚动文件日志、结构化 JSON 报告、目录批量运行和常驻调度。
 - 首次配置向导、离线/在线诊断、通知独立测试、受控备份恢复和 Windows 自动运行管理。
-- Windows x86_64、Linux x86_64/ARM64/ARMv7 发布包及多架构容器镜像。
+- Windows x86_64、Linux x86_64/ARM64/ARMv7、macOS ARM64/x86_64 发布包及多架构容器镜像。
 
 ## 下载
 
@@ -30,6 +30,8 @@
 | Linux | x86_64 | `MihoyoBBSToolsRS-<版本>-linux-x86_64.tar.gz` |
 | Linux | ARM64 / aarch64 | `MihoyoBBSToolsRS-<版本>-linux-arm64.tar.gz` |
 | Linux | ARMv7 | `MihoyoBBSToolsRS-<版本>-linux-armv7.tar.gz` |
+| macOS | ARM64 / aarch64 | `MihoyoBBSToolsRS-<版本>-macos-arm64.tar.gz` |
+| macOS | x86_64 | `MihoyoBBSToolsRS-<版本>-macos-x86_64.tar.gz` |
 
 发布包名称带版本号，包内程序名始终为 `MihoyoBBSToolsRS.exe` 或 `MihoyoBBSToolsRS`，升级时可直接替换程序。每个发布包旁的 `.sha256` 文件用于校验下载内容。
 
@@ -145,7 +147,7 @@ DaCapo 是可选的第三方 JSON 配置适配入口，不是签到任务或必�
 
 ## 开发与项目状态
 
-本项目使用 GitHub Actions 完成 Rust 格式检查、Clippy、测试、Linux/Windows 构建、Nix 检查、TLS 握手和多架构容器验证。已完成方案和历史优化记录由 Git 提交历史保存，不再作为用户文档分发。
+本项目使用 GitHub Actions 完成 Rust 格式检查、Clippy、测试、Linux/Windows/macOS 构建、Nix 检查、TLS 握手和多架构容器验证。已完成方案和历史优化记录由 Git 提交历史保存，不再作为用户文档分发。
 
 开发维护参考：[项目优化建议](docs/项目优化建议.md)，包含代码依据、优先级、实施顺序与验收标准。
 

@@ -177,6 +177,9 @@ pub enum PushError {
     InvalidResponse,
     #[error("推送服务拒绝请求（代码 {0}）")]
     ServiceRejected(i64),
+    /// 服务返回了非预期文本（不含原文，避免回显服务端内容）。
+    #[error("推送服务返回非预期响应")]
+    ServiceRejectedText,
     #[error("邮件地址或正文无效")]
     InvalidMessage,
     #[error("SMTP 邮件发送失败")]
@@ -782,6 +785,8 @@ enum CompatSuccessRule {
     CodeIs1000,
     /// `retcode == 0`（CQHTTP）。
     RetcodeZero,
+    /// 响应体恰为 `success`（PushMe）。
+    BodyIsSuccess,
     /// 只认 HTTP 状态（Gotify、Discord、IFTTT 等对象或空响应）。
     StatusOnly,
 }
@@ -795,6 +800,7 @@ const fn compat_success_rule(kind: ProviderKind) -> CompatSuccessRule {
         ProviderKind::Feishubot => CompatSuccessRule::AnyZero,
         ProviderKind::Wxpusher => CompatSuccessRule::CodeIs1000,
         ProviderKind::Cqhttp => CompatSuccessRule::RetcodeZero,
+        ProviderKind::Pushme => CompatSuccessRule::BodyIsSuccess,
         ProviderKind::Gotify
         | ProviderKind::Discord
         | ProviderKind::Ifttt
@@ -802,7 +808,6 @@ const fn compat_success_rule(kind: ProviderKind) -> CompatSuccessRule {
         | ProviderKind::Webhook
         | ProviderKind::Pushplus
         | ProviderKind::Ftqq
-        | ProviderKind::Pushme
         | ProviderKind::Pushdeer
         | ProviderKind::Bark
         | ProviderKind::Qmsg
@@ -824,6 +829,15 @@ fn check_compat_response(kind: ProviderKind, body: Option<String>) -> Result<(),
         // 空响应体（如 `204 No Content`）按状态码视为成功。
         return Ok(());
     };
+    if rule == CompatSuccessRule::BodyIsSuccess {
+        // PushMe 成功时回纯文本 `success`，失败时是其它文本或空体。
+        // 这里必须逐字比较，不能像其它渠道那样“非 JSON 就放行”。
+        return if body.trim() == "success" {
+            Ok(())
+        } else {
+            Err(PushError::ServiceRejectedText)
+        };
+    }
     let Ok(response) = serde_json::from_str::<CompatResponse>(&body) else {
         // 非 JSON 响应体（部分网关只回纯文本）无法校验业务码，按状态码判定。
         return Ok(());
@@ -842,7 +856,8 @@ fn rejected_code(rule: CompatSuccessRule, response: CompatResponse) -> Option<i6
         CompatSuccessRule::AnyZero => response.errcode.or(response.code).filter(|code| *code != 0),
         CompatSuccessRule::CodeIs1000 => response.code.filter(|code| *code != 1000),
         CompatSuccessRule::RetcodeZero => response.retcode.filter(|code| *code != 0),
-        CompatSuccessRule::StatusOnly => None,
+        // 纯文本规则在 `check_compat_response` 中提前处理。
+        CompatSuccessRule::BodyIsSuccess | CompatSuccessRule::StatusOnly => None,
     }
 }
 
@@ -1357,6 +1372,38 @@ mod tests {
             compat_success_rule(ProviderKind::Ifttt),
             CompatSuccessRule::StatusOnly
         );
+        assert_eq!(
+            compat_success_rule(ProviderKind::Pushme),
+            CompatSuccessRule::BodyIsSuccess
+        );
+    }
+
+    #[test]
+    fn pushme_requires_exact_success_body() {
+        assert_eq!(
+            compat_success_rule(ProviderKind::Pushme),
+            CompatSuccessRule::BodyIsSuccess
+        );
+
+        // 上游同样逐字比较 `response.text == "success"`。
+        assert_eq!(
+            check_compat_response(ProviderKind::Pushme, Some("success".to_owned())),
+            Ok(())
+        );
+        assert_eq!(
+            check_compat_response(ProviderKind::Pushme, Some("success\n".to_owned())),
+            Ok(())
+        );
+        assert_eq!(
+            check_compat_response(ProviderKind::Pushme, Some("fail".to_owned())),
+            Err(PushError::ServiceRejectedText)
+        );
+        assert_eq!(
+            check_compat_response(ProviderKind::Pushme, Some("<html></html>".to_owned())),
+            Err(PushError::ServiceRejectedText)
+        );
+        // 空响应体（2xx）沿用“按状态码判定”的既有约定。
+        assert_eq!(check_compat_response(ProviderKind::Pushme, None), Ok(()));
     }
 
     #[test]

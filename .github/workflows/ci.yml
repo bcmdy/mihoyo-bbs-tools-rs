@@ -164,8 +164,11 @@ jobs:
       fail-fast: false
       matrix:
         os:
+          # macOS 只做编译验证：发布流程会为两个架构单独构建，
+          # 这里提前暴露平台相关的条件编译与依赖问题。
           - ubuntu-latest
           - windows-latest
+          - macos-14
 
     steps:
       - name: 检出代码
@@ -196,6 +199,26 @@ jobs:
           echo "MIHOYO_BBS_TOOLS_VERSION=$version" >> "$GITHUB_ENV"
           echo "PACKAGE_NAME=MihoyoBBSToolsRS-$version-linux-x86_64" >> "$GITHUB_ENV"
           echo "package_name=MihoyoBBSToolsRS-$version-linux-x86_64" >> "$GITHUB_OUTPUT"
+
+      - name: 确定 macOS 构建版本
+        id: version_macos
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          RAW_VERSION: ${{ inputs.version }}
+        run: |
+          raw_version="$RAW_VERSION"
+          if [[ -z "$raw_version" ]]; then
+            raw_version="ci-${GITHUB_RUN_NUMBER}"
+          fi
+          version="${raw_version#v}"
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "版本号只能包含字母、数字、点、下划线和连字符" >&2
+            exit 1
+          fi
+          echo "MIHOYO_BBS_TOOLS_VERSION=$version" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=MihoyoBBSToolsRS-$version-macos-arm64" >> "$GITHUB_ENV"
+          echo "package_name=MihoyoBBSToolsRS-$version-macos-arm64" >> "$GITHUB_OUTPUT"
 
       - name: 确定 Windows 构建版本
         id: version_windows
@@ -242,6 +265,23 @@ jobs:
       - name: 编译 Release
         if: runner.os == 'Windows'
         run: cargo build --release --locked
+
+      - name: 编译 Release
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set +e
+          cargo build --release --locked 2>&1 | tee build.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=macOS 构建失败::见构建日志"
+          fi
+          exit "$code"
+
+      - name: 验证 macOS 程序可启动
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./target/release/MihoyoBBSToolsRS version
 
       - name: 打包 Linux 使用文件
         if: runner.os == 'Linux'
@@ -295,10 +335,35 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
           "$hash  $packageName.zip" | Set-Content -Encoding ascii "$archive.sha256"
 
+      - name: 打包 macOS 使用文件
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="$PACKAGE_NAME"
+          package_dir="package/$package_name"
+          mkdir -p "$package_dir/config" "$package_dir/dacapo" dist
+          cp target/release/MihoyoBBSToolsRS "$package_dir/"
+          cp docs/使用说明.md "$package_dir/使用说明.md"
+          cp config/config.example.yaml "$package_dir/config/"
+          cp integrations/dacapo/template.yml "$package_dir/dacapo/"
+          tar -C package -czf "dist/$package_name.tar.gz" "$package_name"
+          binary_bytes=$(stat -f %z target/release/MihoyoBBSToolsRS)
+          archive_bytes=$(stat -f %z "dist/$package_name.tar.gz")
+          {
+            echo "### macOS arm64 体积"
+            echo "| 文件 | 字节数 |"
+            echo "|---|---:|"
+            echo "| MihoyoBBSToolsRS | $binary_bytes |"
+            echo "| $package_name.tar.gz | $archive_bytes |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cd dist
+          shasum -a 256 "$package_name.tar.gz" > "$package_name.tar.gz.sha256"
+
       - name: 上传完整使用包
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.version_linux.outputs.package_name || steps.version_windows.outputs.package_name }}
+          name: ${{ steps.version_linux.outputs.package_name || steps.version_windows.outputs.package_name || steps.version_macos.outputs.package_name }}
           path: dist/*
           if-no-files-found: error
 
