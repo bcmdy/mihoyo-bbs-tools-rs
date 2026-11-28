@@ -1,0 +1,4 @@
+修复：flake apps 输出缺少 default 属性
+
+- apps.default.program 应为 self.packages.<system>.default，
+  上一提交误写为 self.packages.<system>，导致 nix flake check 求值失败

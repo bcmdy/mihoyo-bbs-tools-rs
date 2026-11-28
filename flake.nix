@@ -74,7 +74,7 @@
         {
           default = {
             type = "app";
-            program = "${self.packages.${system}}/bin/MihoyoBBSToolsRS";
+            program = "${self.packages.${system}.default}/bin/MihoyoBBSToolsRS";
           };
         }
       );
