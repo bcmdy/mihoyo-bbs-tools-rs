@@ -302,9 +302,6 @@ jobs:
     needs: quality
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 60
-    # macOS runner 按 10 倍时长计费，额度不足时 GitHub 会直接取消 job。
-    # 设为非阻塞：macOS 包缺失不应阻止 Linux/Windows 正常发布。
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -433,11 +430,13 @@ jobs:
 
   publish:
     name: 创建 GitHub Release
+    # 不把 build-macos 列为 needs：macOS runner 额度不足时 GitHub 会把该 job
+    # 标成 `cancelled`，而 `needs` 不区分失败与取消，会连带阻塞整个发布。
+    # macOS 产物若成功上传会被一并发布，缺失则 Release 只含 Linux/Windows 包。
     needs:
       - quality
       - build-linux
       - build-windows
-      - build-macos
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -1,5 +1,6 @@
-修复：macOS 构建不阻塞其它平台
+修复：macOS 构建改为可选，不再阻塞主 CI 与发布
 
-- CI 与发布流程的 macOS job 设为非阻塞：GitHub macOS runner 按 10 倍计费，
-  额度不足时会直接取消 job，这不是代码问题
-- 文档说明该限制及缺失 macOS 包时的替代做法
+- macOS job 被 GitHub 取消时 continue-on-error 不生效（只兜 failure、不兜 cancelled），
+  因此从 CI 矩阵移出，改为仅 workflow_dispatch 手动运行
+- 发布流程不再把 macOS 列为 publish 的前置：macOS 产物缺失时只发布 Linux/Windows 包
+- 文档说明 macOS runner 计费限制与手动验证方式

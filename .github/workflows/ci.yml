@@ -163,19 +163,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 只列 Linux 与 Windows：macOS runner 按 10 倍时长计费，额度不足时
+        # GitHub 会把 job 标成 `cancelled`，而 `continue-on-error` 只兜住
+        # `failure`、兜不住 `cancelled`，留在矩阵里会让整个 Rust CI 变红。
+        # macOS 编译验证因此独立成 `build-macos` job（手动触发，见文件末尾）。
         os:
-          # macOS 只做编译验证：发布流程会为两个架构单独构建，
-          # 这里提前暴露平台相关的条件编译与依赖问题。
-          #
-          # 注意：GitHub 的 macOS runner 按 10 倍时长计费，额度耗尽时 job 会
-          # 以“cancelled”在数秒内结束。该行因此设为非阻塞（见下方
-          # `continue-on-error`），避免 macOS 额度问题挡住 Linux/Windows 结果。
           - ubuntu-latest
           - windows-latest
-          - macos-14
-    # macOS 编译验证不阻塞主流程：额度不足时 GitHub 会直接取消该 job，
-    # 这不是代码问题。Linux 与 Windows 的编译结果仍然必须通过。
-    continue-on-error: ${{ matrix.os == 'macos-14' }}
 
     steps:
       - name: 检出代码
@@ -373,6 +367,34 @@ jobs:
           name: ${{ steps.version_linux.outputs.package_name || steps.version_windows.outputs.package_name || steps.version_macos.outputs.package_name }}
           path: dist/*
           if-no-files-found: error
+
+  build-macos:
+    name: 编译 macOS（可选）
+    # 独立成 job 且默认不在 push 时运行：macOS runner 按 10 倍时长计费，
+    # 额度不足会被 GitHub 直接取消。留在必须通过的矩阵里会让主 CI 变红，
+    # 因此改为手动或定时验证 —— 用 workflow_dispatch 勾选或直接运行本 job。
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Rust 构建缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "build-macos"
+
+      - name: 安装 Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: 编译 Release
+        run: cargo build --release --locked
+
+      - name: 验证程序可启动
+        run: ./target/release/MihoyoBBSToolsRS version
 
   build-linux-arm:
     name: 编译 Linux ${{ matrix.package_arch }}
