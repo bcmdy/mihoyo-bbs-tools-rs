@@ -166,9 +166,16 @@ jobs:
         os:
           # macOS 只做编译验证：发布流程会为两个架构单独构建，
           # 这里提前暴露平台相关的条件编译与依赖问题。
+          #
+          # 注意：GitHub 的 macOS runner 按 10 倍时长计费，额度耗尽时 job 会
+          # 以“cancelled”在数秒内结束。该行因此设为非阻塞（见下方
+          # `continue-on-error`），避免 macOS 额度问题挡住 Linux/Windows 结果。
           - ubuntu-latest
           - windows-latest
           - macos-14
+    # macOS 编译验证不阻塞主流程：额度不足时 GitHub 会直接取消该 job，
+    # 这不是代码问题。Linux 与 Windows 的编译结果仍然必须通过。
+    continue-on-error: ${{ matrix.os == 'macos-14' }}
 
     steps:
       - name: 检出代码

@@ -1,4 +1,5 @@
-修复：flake apps 输出缺少 default 属性
+修复：macOS 构建不阻塞其它平台
 
-- apps.default.program 应为 self.packages.<system>.default，
-  上一提交误写为 self.packages.<system>，导致 nix flake check 求值失败
+- CI 与发布流程的 macOS job 设为非阻塞：GitHub macOS runner 按 10 倍计费，
+  额度不足时会直接取消 job，这不是代码问题
+- 文档说明该限制及缺失 macOS 包时的替代做法

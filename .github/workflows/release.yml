@@ -302,6 +302,9 @@ jobs:
     needs: quality
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 60
+    # macOS runner 按 10 倍时长计费，额度不足时 GitHub 会直接取消 job。
+    # 设为非阻塞：macOS 包缺失不应阻止 Linux/Windows 正常发布。
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
