@@ -1,6 +1,0 @@
-修复：macOS 构建改为可选，不再阻塞主 CI 与发布
-
-- macOS job 被 GitHub 取消时 continue-on-error 不生效（只兜 failure、不兜 cancelled），
-  因此从 CI 矩阵移出，改为仅 workflow_dispatch 手动运行
-- 发布流程不再把 macOS 列为 publish 的前置：macOS 产物缺失时只发布 Linux/Windows 包
-- 文档说明 macOS runner 计费限制与手动验证方式

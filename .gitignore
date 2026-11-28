@@ -13,3 +13,6 @@ config/*.session
 config/*.backup
 config/*.editing
 config/*.tmp
+
+# 提交信息临时文件（仅本地使用）
+.git-commit-msg.txt
