@@ -19,6 +19,7 @@
 - 按日滚动文件日志、结构化 JSON 报告、目录批量运行和常驻调度。
 - 首次配置向导、离线/在线诊断、通知独立测试、受控备份恢复和 Windows 自动运行管理。
 - Windows x86_64、Linux x86_64/ARM64/ARMv7、macOS ARM64/x86_64 发布包及多架构容器镜像。
+- 推送到 `main` 即编译全部平台，产物可在 Actions 运行页的 Artifacts 下载；正式版本汇总到 Release。
 
 ## 下载
 

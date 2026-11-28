@@ -155,21 +155,31 @@ jobs:
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
   build:
-    name: 编译 ${{ matrix.os }}
+    name: 编译 ${{ matrix.package_os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     env:
       GIT_COMMIT: ${{ github.sha }}
 
     strategy:
       fail-fast: false
       matrix:
-        # 只列 Linux 与 Windows：macOS runner 按 10 倍时长计费，额度不足时
-        # GitHub 会把 job 标成 `cancelled`，而 `continue-on-error` 只兜住
-        # `failure`、兜不住 `cancelled`，留在矩阵里会让整个 Rust CI 变红。
-        # macOS 编译验证因此独立成 `build-macos` job（手动触发，见文件末尾）。
-        os:
-          - ubuntu-latest
-          - windows-latest
+        # 默认编译全部平台并上传可下载产物。公开仓库的标准 GitHub-hosted
+        # runner 免费且不限量，macOS 也一样，因此直接放进必过矩阵。
+        #
+        # 标签说明：`macos-14` 已从可用列表移除，使用不存在的标签时 GitHub
+        # 不会排队，而是把 job 直接标记为 `cancelled`（数秒结束、无日志）。
+        # 当前可用 arm64 标签为 macos-latest / macos-15 / macos-26。
+        include:
+          - os: ubuntu-latest
+            package_os: linux-x86_64
+            package_arch: x86_64
+          - os: windows-latest
+            package_os: windows-x86_64
+            package_arch: x86_64
+          - os: macos-latest
+            package_os: macos-arm64
+            package_arch: arm64
 
     steps:
       - name: 检出代码
@@ -179,7 +189,7 @@ jobs:
         # 矩阵按 ${{ matrix.os }} 分 key，避免不同 OS 互相覆盖。
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "build-${{ matrix.os }}"
+          shared-key: "build-${{ matrix.package_os }}"
 
       - name: 确定 Linux 构建版本
         id: version_linux
@@ -362,39 +372,14 @@ jobs:
           shasum -a 256 "$package_name.tar.gz" > "$package_name.tar.gz.sha256"
 
       - name: 上传完整使用包
+        # 三个平台的版本步骤都定义了 `package_name`，但只有当前平台那一步会
+        # 实际执行；缺失的步骤输出为空串，因此这里统一取 `package_name`。
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.version_linux.outputs.package_name || steps.version_windows.outputs.package_name || steps.version_macos.outputs.package_name }}
           path: dist/*
           if-no-files-found: error
-
-  build-macos:
-    name: 编译 macOS（可选）
-    # 独立成 job 且默认不在 push 时运行：macOS runner 按 10 倍时长计费，
-    # 额度不足会被 GitHub 直接取消。留在必须通过的矩阵里会让主 CI 变红，
-    # 因此改为手动或定时验证 —— 用 workflow_dispatch 勾选或直接运行本 job。
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-14
-    timeout-minutes: 60
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Rust 构建缓存
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "build-macos"
-
-      - name: 安装 Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
-      - name: 编译 Release
-        run: cargo build --release --locked
-
-      - name: 验证程序可启动
-        run: ./target/release/MihoyoBBSToolsRS version
+          retention-days: 30
 
   build-linux-arm:
     name: 编译 Linux ${{ matrix.package_arch }}
@@ -480,3 +465,55 @@ jobs:
           else
             "$binary" version
           fi
+
+      - name: 确定 ARM 构建版本
+        id: version_arm
+        shell: bash
+        env:
+          RAW_VERSION: ${{ inputs.version }}
+          PACKAGE_ARCH: ${{ matrix.package_arch }}
+        run: |
+          raw_version="$RAW_VERSION"
+          if [[ -z "$raw_version" ]]; then
+            raw_version="ci-${GITHUB_RUN_NUMBER}"
+          fi
+          version="${raw_version#v}"
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "版本号只能包含字母、数字、点、下划线和连字符" >&2
+            exit 1
+          fi
+          echo "PACKAGE_NAME=MihoyoBBSToolsRS-$version-linux-$PACKAGE_ARCH" >> "$GITHUB_ENV"
+          echo "package_name=MihoyoBBSToolsRS-$version-linux-$PACKAGE_ARCH" >> "$GITHUB_OUTPUT"
+
+      - name: 打包 ARM 使用文件
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="$PACKAGE_NAME"
+          package_dir="package/$package_name"
+          binary_path="target/$CARGO_TARGET/release/MihoyoBBSToolsRS"
+          mkdir -p "$package_dir/config" "$package_dir/dacapo" dist
+          cp "$binary_path" "$package_dir/"
+          cp docs/使用说明.md "$package_dir/使用说明.md"
+          cp config/config.example.yaml "$package_dir/config/"
+          cp integrations/dacapo/template.yml "$package_dir/dacapo/"
+          tar -C package -czf "dist/$package_name.tar.gz" "$package_name"
+          binary_bytes=$(stat -c %s "$binary_path")
+          archive_bytes=$(stat -c %s "dist/$package_name.tar.gz")
+          {
+            echo "### Linux ${{ matrix.package_arch }} 体积"
+            echo "| 文件 | 字节数 |"
+            echo "|---|---:|"
+            echo "| MihoyoBBSToolsRS | $binary_bytes |"
+            echo "| $package_name.tar.gz | $archive_bytes |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cd dist
+          sha256sum "$package_name.tar.gz" > "$package_name.tar.gz.sha256"
+
+      - name: 上传 ARM 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version_arm.outputs.package_name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30

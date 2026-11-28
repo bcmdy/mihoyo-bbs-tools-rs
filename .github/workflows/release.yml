@@ -305,13 +305,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 标签说明：`macos-14` 已不在可用列表内，使用不存在的标签时 GitHub
+        # 会把 job 直接标记为 `cancelled`。当前可用 arm64 标签为
+        # macos-latest / macos-15 / macos-26，Intel 为 macos-15-intel 等。
+        # 两个架构都用原生 runner，避免 arm64 上交叉编译 x86_64 的不确定性。
         include:
           - target: aarch64-apple-darwin
             package_arch: arm64
-            runs_on: macos-14
+            runs_on: macos-latest
           - target: x86_64-apple-darwin
             package_arch: x86_64
-            runs_on: macos-14
+            runs_on: macos-15-intel
     env:
       CARGO_TARGET: ${{ matrix.target }}
       PACKAGE_ARCH: ${{ matrix.package_arch }}
@@ -363,8 +367,8 @@ jobs:
           rustup target add "$CARGO_TARGET"
 
       - name: 编译 Release
-        # macOS 没有 cross 工具链需求：macos-14 是 arm64 runner，
-        # 用 rustup target 直接产出两个架构的产物。
+        # 两个架构各自在原生 runner 上构建：arm64 用 macos-latest（M1），
+        # x86_64 用 macos-15-intel。因此不需要交叉编译工具链。
         shell: bash
         run: |
           set +e
@@ -381,20 +385,7 @@ jobs:
 
       - name: 验证目标程序可启动
         shell: bash
-        run: |
-          binary="target/$CARGO_TARGET/release/MihoyoBBSToolsRS"
-          if [[ "$CARGO_TARGET" == "aarch64-apple-darwin" ]]; then
-            "$binary" version
-          else
-            # Intel 产物在 arm64 runner 上经 Rosetta 运行；未安装 Rosetta 时
-            # 退化为只检查文件存在与可执行位。
-            if arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
-              arch -x86_64 "$binary" version
-            else
-              echo "未安装 Rosetta，跳过 x86_64 产物运行验证"
-              test -x "$binary"
-            fi
-          fi
+        run: "target/$CARGO_TARGET/release/MihoyoBBSToolsRS version"
 
       - name: 打包并生成校验文件
         shell: bash
@@ -433,10 +424,13 @@ jobs:
     # 不把 build-macos 列为 needs：macOS runner 额度不足时 GitHub 会把该 job
     # 标成 `cancelled`，而 `needs` 不区分失败与取消，会连带阻塞整个发布。
     # macOS 产物若成功上传会被一并发布，缺失则 Release 只含 Linux/Windows 包。
+    # 四个平台都作为前置：公开仓库的标准 runner 免费，macOS 与其它平台同等
+    # 可靠，任何平台构建失败都应当阻止发布（避免发出残缺版本）。
     needs:
       - quality
       - build-linux
       - build-windows
+      - build-macos
     runs-on: ubuntu-latest
     permissions:
       contents: write
